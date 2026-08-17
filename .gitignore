@@ -1,1 +1,21 @@
-# Repository-specific ignore rules will be added with implementation scaffolding.
+# Rust / Cargo build output
+target/
+*.rs.bk
+
+# Environment and secrets: bot token, webhook secret, local tunnel config
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Logs
+*.log
+
+# OS noise
+.DS_Store
+
+# Editors
+.idea/
+.vscode/
+*.swp
