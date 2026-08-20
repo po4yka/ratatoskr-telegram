@@ -1,10 +1,21 @@
 # Ratatoskr Telegram
 
-`ratatoskr-telegram` is the Telegram interaction bounded context for Ratatoskr Next. It provides a Bot API interface and Telegram Mini App authentication for submitting articles, adding or tracking GitHub repositories, following long-running operations, and receiving notifications from a local Ratatoskr deployment.
+`ratatoskr-telegram` is the Telegram interaction bounded context for Ratatoskr. It provides a Bot API interface and Telegram Mini App authentication for submitting articles, adding or tracking GitHub repositories, following long-running operations, and receiving notifications from a local Ratatoskr deployment.
 
 > **Status:** architecture bootstrap. No bot webhook, dispatcher, command handlers, Mini App authentication, database schema, or deployment configuration is implemented yet.
 
-## Role in Ratatoskr Next
+> [!IMPORTANT]
+> **Ratatoskr is in development.** No database holds data that has to survive a schema change.
+> While this status holds, these two rules replace what the documents below plan:
+>
+> - the API and the database keep their first version. There is no `v2` and no later major
+>   version.
+> - the database has no migrations. One schema definition exists, and a schema change edits it in
+>   place.
+>
+> Only the repository owner changes this status.
+
+## Role in Ratatoskr
 
 Telegram is a first-class integration rather than a generic adapter hidden inside Platform. It owns Telegram-specific credentials, identities, chats, update deduplication, dialogue state, callback confirmations, deep-link intents, and message projections.
 
