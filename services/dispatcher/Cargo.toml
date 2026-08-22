@@ -1,0 +1,24 @@
+[package]
+name        = "ratatoskr-telegram-dispatcher"
+description = "The Telegram dispatcher deployable: projects operations into ordered Bot API sends."
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+repository.workspace   = true
+
+[[bin]]
+name = "ratatoskr-telegram-dispatcher"
+path = "src/main.rs"
+
+[dependencies]
+ratatoskr-telegram-core.workspace = true
+ratatoskr-telegram-http.workspace = true
+tokio.workspace = true
+
+[dev-dependencies]
+ratatoskr-telegram-persistence = { workspace = true, features = ["test-support"] }
+tokio = { workspace = true, features = ["rt", "macros"] }
+
+[lints]
+workspace = true

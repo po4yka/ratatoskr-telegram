@@ -1,0 +1,60 @@
+# What `cargo deny check` enforces, and why each section is here rather than left to taste.
+#
+# This file exists because of what happened without it in the sibling services: nothing else in the
+# gate reads RustSec, and `ratatoskr-platform` carried five advisories in the TLS path of its
+# public-facing binary for six milestones — none of which `cargo clippy` or `cargo test` can see.
+# This workspace starts with the same file rather than relearning that.
+
+[advisories]
+version = 2
+yanked  = "deny"          # a yanked lockfile entry is a build that cannot be reproduced
+
+[licenses]
+version = 2
+# Every expression the current graph resolves to. The same list is used across the Ratatoskr Rust
+# workspaces, so the files can be compared rather than reasoned about separately.
+allow = [
+    "Apache-2.0",
+    "MIT",
+    "MIT-0",
+    "BSD-3-Clause",
+    "ISC",
+    "Unicode-3.0",
+    "Zlib",
+    "CDLA-Permissive-2.0",
+]
+# One shared list covers several graphs, so a few entries are unused in any one of them. That is the
+# price of the lists being identical, and it is not a defect worth a warning on every run.
+unused-allowed-license = "allow"
+
+[bans]
+# Two versions of one crate is usually accidental rather than wrong, so this warns rather than fails.
+# It earned its place in platform immediately: async-nats held an older rustls-webpki than the rest
+# of the graph, and removing the duplicate is what closed four of the five advisories.
+multiple-versions = "warn"
+
+# Replacement allocators are denied because of the deployment target's page size, not because of the
+# allocators. The host runs the 16 KiB-page kernel, and these size their internal structures from a
+# page size decided at BUILD time; `tikv-jemallocator` aborts at startup there without
+# `--with-lg-page=14`. The system allocator reads the page size at run time, which is the whole
+# reason the fleet's binaries start on that host at all. None of them is in the graph today; the
+# denial turns "add jemalloc, it is faster" into a failed gate rather than a crash-loop.
+deny = [
+    { name = "tikv-jemallocator" },
+    { name = "jemallocator" },
+    { name = "mimalloc" },
+    { name = "snmalloc-rs" },
+]
+
+[sources]
+unknown-registry = "deny"
+unknown-git      = "deny"
+# The rule the workspace manifest states in prose, now with an exit code behind it: "A branch moves
+# and a tag can be moved, so neither pins." Nothing else stops a future edit from replacing a git
+# `rev` with a branch, and that edit would look harmless in review.
+required-git-spec = "rev"
+# The git sources this workspace is allowed to have. `https://` and not `ssh://`: ratatoskr-contracts
+# is public, so an anonymous fetch resolves it and CI holds no key. The contracts crates are not
+# dependencies yet — the client-visible error arm and the first wire contracts bring them — but the
+# source policy is stated once, here, before that happens.
+allow-git = ["https://github.com/po4yka/ratatoskr-contracts"]
