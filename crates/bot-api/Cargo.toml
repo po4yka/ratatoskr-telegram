@@ -1,0 +1,28 @@
+[package]
+name        = "ratatoskr-telegram-bot-api"
+description = "The typed Telegram Bot API client boundary: six methods, one error taxonomy, update parsing."
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+repository.workspace   = true
+
+[lib]
+name = "bot_api"
+path = "src/lib.rs"
+
+[dependencies]
+teloxide.workspace = true
+reqwest.workspace  = true
+secrecy.workspace  = true
+url.workspace      = true
+thiserror.workspace = true
+serde.workspace    = true
+
+[dev-dependencies]
+axum.workspace    = true
+tokio = { workspace = true, features = ["rt", "macros"] }
+serde_json.workspace = true
+
+[lints]
+workspace = true

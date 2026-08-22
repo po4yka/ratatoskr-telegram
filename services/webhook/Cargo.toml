@@ -7,17 +7,34 @@ rust-version.workspace = true
 license.workspace      = true
 repository.workspace   = true
 
+[lib]
+name = "ratatoskr_telegram_webhook"
+path = "src/lib.rs"
+
 [[bin]]
 name = "ratatoskr-telegram-webhook"
 path = "src/main.rs"
 
 [dependencies]
-ratatoskr-telegram-core.workspace = true
-ratatoskr-telegram-http.workspace = true
-tokio.workspace = true
+ratatoskr-telegram-core.workspace        = true
+ratatoskr-telegram-http.workspace        = true
+ratatoskr-telegram-persistence.workspace = true
+ratatoskr-telegram-bot-api.workspace     = true
+ratatoskr-telegram-telemetry.workspace   = true
+axum.workspace    = true
+http.workspace    = true
+http-body-util.workspace = true
+metrics.workspace = true
+secrecy.workspace = true
+serde_json.workspace = true
+subtle.workspace  = true
+tokio.workspace   = true
+tracing.workspace = true
 
 [dev-dependencies]
 ratatoskr-telegram-persistence = { workspace = true, features = ["test-support"] }
+sqlx.workspace  = true
+tower.workspace = true
 tokio = { workspace = true, features = ["rt", "macros"] }
 
 [lints]

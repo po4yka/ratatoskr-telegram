@@ -1,0 +1,1 @@
+{"update_id": 1001, "message": {"message_id": 55, "from": {"id": 900700601, "is_bot": false, "first_name": "Synthetic", "username": "synthetic_user"}, "date": 1760000000, "chat": {"id": 900700601, "type": "private", "first_name": "Synthetic", "username": "synthetic_user"}, "text": "https://example.test/article"}}

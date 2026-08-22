@@ -16,10 +16,20 @@ use crate::lifecycle::RuntimeState;
 /// One listener being served, and the trigger that stops it accepting.
 #[derive(Debug)]
 pub struct Served {
+    /// The address this listener answers on, for startup records.
+    local_addr: std::net::SocketAddr,
     /// Resolves the server's graceful-shutdown future.
     close: oneshot::Sender<()>,
     /// Completes when every in-flight request on this listener has finished.
     task: JoinHandle<std::io::Result<()>>,
+}
+
+impl Served {
+    /// The address the listener accepted connections on.
+    #[must_use]
+    pub fn local_addr(&self) -> std::net::SocketAddr {
+        self.local_addr
+    }
 }
 
 /// Serves `router` on `listener` until [`drain_and_close`] closes it.
@@ -30,6 +40,12 @@ pub struct Served {
 #[must_use]
 pub fn serve(listener: TcpListener, router: Router) -> Served {
     let (close, closed) = oneshot::channel();
+    // A bound listener always knows its address; the fallback only keeps this total for a caller
+    // that somehow passed an unbound one, and is never rendered as meaningful.
+    let local_addr = match listener.local_addr() {
+        Ok(addr) => addr,
+        Err(_) => std::net::SocketAddr::from(([0, 0, 0, 0], 0)),
+    };
     let task = tokio::spawn(
         axum::serve(listener, router)
             .with_graceful_shutdown(async move {
@@ -38,7 +54,11 @@ pub fn serve(listener: TcpListener, router: Router) -> Served {
             })
             .into_future(),
     );
-    Served { close, task }
+    Served {
+        local_addr,
+        close,
+        task,
+    }
 }
 
 /// What the shutdown sequence did.

@@ -36,9 +36,8 @@ pub struct Violation {
 /// mid-drain under systemd's default 90-second stop timeout.
 pub const SHUTDOWN_CEILING_SECONDS: u64 = 120;
 
-/// Applies V1–V7 and returns every violation found, in rule order.
+/// Applies V1–V13 and returns every violation found, in rule order.
 pub(crate) fn validate(role: RuntimeRole, config: &TelegramConfig) -> Vec<Violation> {
-    let _ = role;
     let mut found = Vec::new();
 
     // V1 — a bad filter otherwise silences every log line at the moment you need them.
@@ -73,8 +72,23 @@ pub(crate) fn validate(role: RuntimeRole, config: &TelegramConfig) -> Vec<Violat
 
     found.extend(otlp_violations(config));
     found.extend(database_violations(config));
+    found.extend(bot_api_violations(config));
+    found.extend(webhook_violations(role, config));
 
     found
+}
+
+/// Whether `endpoint` carries a host and an http(s) scheme, with plain http allowed only for a
+/// loopback host. Shared by the OTLP exporter rule (V4) and the Bot API base URL (V9).
+fn loopback_or_https(endpoint: &url::Url) -> bool {
+    let loopback = endpoint.host().is_some_and(|host| {
+        matches!(host, url::Host::Ipv4(ip) if ip.is_loopback())
+            || matches!(host, url::Host::Domain(domain) if domain == "localhost")
+    });
+    let scheme = endpoint.scheme();
+    endpoint.host().is_none()
+        || !matches!(scheme, "http" | "https")
+        || (scheme == "http" && !loopback)
 }
 
 /// V4 to V7 — the OTLP exporter rules. One subsystem, one function, so [`validate`] stays inside
@@ -87,15 +101,7 @@ fn otlp_violations(config: &TelegramConfig) -> Vec<Violation> {
 
     // V4 — the scheme. `https` everywhere except a loopback collector, which is what a developer
     // runs without TLS on their own machine.
-    let loopback = otlp.endpoint.host().is_some_and(|host| {
-        matches!(host, url::Host::Ipv4(ip) if ip.is_loopback())
-            || matches!(host, url::Host::Domain(domain) if domain == "localhost")
-    });
-    let scheme = otlp.endpoint.scheme();
-    if otlp.endpoint.host().is_none()
-        || !matches!(scheme, "http" | "https")
-        || (scheme == "http" && !loopback)
-    {
+    if loopback_or_https(&otlp.endpoint) {
         found.push(Violation {
             key: "telemetry.otlp.endpoint",
             env_var: "RATATOSKR__TELEMETRY__OTLP__ENDPOINT",
@@ -188,6 +194,111 @@ fn is_header_name(name: &str) -> bool {
         && name
             .bytes()
             .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+}
+
+/// V9 and V10 — the Bot API endpoint rules. The base URL follows the same scheme rule as the OTLP
+/// collector (a plain-`http` endpoint is a developer's loopback harness, nothing else), and the
+/// call timeout stays inside one minute.
+fn bot_api_violations(config: &TelegramConfig) -> Vec<Violation> {
+    let mut found = Vec::new();
+    let bot_api = &config.bot_api;
+
+    if loopback_or_https(&bot_api.base_url) {
+        found.push(Violation {
+            key: "bot_api.base_url",
+            env_var: "RATATOSKR__BOT_API__BASE_URL",
+            rule: "must be an https URL with a host; http is accepted only for a loopback harness \
+                   server",
+        });
+    }
+
+    if !(1..=60).contains(&bot_api.timeout_seconds) {
+        found.push(Violation {
+            key: "bot_api.timeout_seconds",
+            env_var: "RATATOSKR__BOT_API__TIMEOUT_SECONDS",
+            rule: "must be 1..=60",
+        });
+    }
+
+    found
+}
+
+/// The webhook secret Telegram echoes back on every delivery: 16..=256 characters over
+/// `[A-Za-z0-9_-]` — Telegram's own charset for the value, with the floor forcing entropy.
+fn secret_token_ok(secret: &str) -> bool {
+    (16..=256).contains(&secret.len())
+        && secret
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+}
+
+/// V11 to V13 — the webhook table and the role requirements. An absent section means
+/// unconfigured; the rules below decide per role what that costs.
+fn webhook_violations(role: RuntimeRole, config: &TelegramConfig) -> Vec<Violation> {
+    let mut found = Vec::new();
+
+    // V13 first, so an unconfigured role reports its missing REQUIREMENTS rather than rules about
+    // values it never supplied. The dispatcher carries no intake requirement yet.
+    if role == RuntimeRole::Webhook {
+        if config.bot_api.token.expose_secret().is_empty() {
+            found.push(Violation {
+                key: "bot_api.token",
+                env_var: "RATATOSKR__BOT_API__TOKEN",
+                rule: "is required: the webhook role cannot name or authenticate its bot without \
+                       it",
+            });
+        }
+        let unconfigured = config.webhook.is_none()
+            || config
+                .webhook
+                .as_ref()
+                .is_some_and(|webhook| webhook.secret_token.expose_secret().is_empty());
+        if unconfigured {
+            found.push(Violation {
+                key: "webhook.secret_token",
+                env_var: "RATATOSKR__WEBHOOK__SECRET_TOKEN",
+                rule: "is required: every delivery must be admitted against the configured secret",
+            });
+        }
+        if config.database.is_none() {
+            found.push(Violation {
+                key: "database.url",
+                env_var: "RATATOSKR__DATABASE__URL",
+                rule: "is required: the webhook writes update deduplication through the database",
+            });
+        }
+    }
+
+    // V11 and V12 — value rules for the section, checked only when it exists.
+    let Some(webhook) = config.webhook.as_ref() else {
+        return found;
+    };
+    let supplied = !webhook.secret_token.expose_secret().is_empty();
+    if supplied && !secret_token_ok(webhook.secret_token.expose_secret()) {
+        found.push(Violation {
+            key: "webhook.secret_token",
+            env_var: "RATATOSKR__WEBHOOK__SECRET_TOKEN",
+            rule: "must be 16..=256 characters over [A-Za-z0-9_-]",
+        });
+    }
+    if !(1024..=1_048_576).contains(&webhook.max_body_bytes) {
+        found.push(Violation {
+            key: "webhook.max_body_bytes",
+            env_var: "RATATOSKR__WEBHOOK__MAX_BODY_BYTES",
+            rule: "must be 1024..=1048576; real updates are small and the cap bounds a forged read",
+        });
+    }
+    // V13 — two listeners on one address would silently hide one of them behind the other.
+    if webhook.bind == config.admin.bind {
+        found.push(Violation {
+            key: "webhook.bind",
+            env_var: "RATATOSKR__WEBHOOK__BIND",
+            rule: "must differ from admin.bind; both listeners answer different callers and must \
+                   not share an address",
+        });
+    }
+
+    found
 }
 
 /// The operator-facing report for a set of violations. One block per problem, stable order, no

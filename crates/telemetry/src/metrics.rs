@@ -18,6 +18,21 @@ pub const TELEGRAM_READINESS: &str = "telegram_readiness";
 /// The first thing anyone looks at when a deployment misbehaves: what is actually running.
 pub const TELEGRAM_BUILD_INFO: &str = "telegram_build_info";
 
+/// `telegram_webhook_requests_total{outcome}` — counter. One increment per delivered request,
+/// labelled by the closed admission vocabulary: `accepted`, `deduplicated`, `unauthorized`,
+/// `too_large`, `wrong_media_type`, `method_not_allowed`, `malformed`, `overloaded`.
+pub const TELEGRAM_WEBHOOK_REQUESTS_TOTAL: &str = "telegram_webhook_requests_total";
+
+/// `telegram_updates_received_total{update_kind}` — counter. One increment per delivery whose
+/// envelope parsed, whatever admission decided afterwards; unknown kinds collapse to `other`, so
+/// the label stays bounded by the update taxonomy, never by request content.
+pub const TELEGRAM_UPDATES_RECEIVED_TOTAL: &str = "telegram_updates_received_total";
+
+/// `telegram_webhook_duration_seconds` — histogram on [`DURATION_BUCKETS`]. Admission only:
+/// verification, limits, parse, dedupe insert and queue handoff — never downstream processing,
+/// which happens after the response.
+pub const TELEGRAM_WEBHOOK_DURATION_SECONDS: &str = "telegram_webhook_duration_seconds";
+
 /// Latency buckets, in seconds. Shared by every duration histogram this workspace will emit, so
 /// graphs of different subsystems stay comparable.
 pub const DURATION_BUCKETS: [f64; 11] = [

@@ -31,6 +31,9 @@ optional  = true
 
 [dev-dependencies]
 uuid.workspace = true
+# The suite drives the disposable-database harness through this crate's own public surface, so a
+# per-package `cargo test -p ratatoskr-telegram-persistence` enables it itself.
+ratatoskr-telegram-persistence = { path = ".", features = ["test-support"] }
 
 [lints]
 workspace = true

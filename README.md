@@ -2,7 +2,7 @@
 
 `ratatoskr-telegram` is the Telegram interaction bounded context for Ratatoskr. It provides a Bot API interface and Telegram Mini App authentication for submitting articles, adding or tracking GitHub repositories, following long-running operations, and receiving notifications from a local Ratatoskr deployment.
 
-> **Status:** plan item 1 implemented — the Rust service scaffold exists: typed `RATATOSKR__` configuration, structured telemetry, typed errors, per-role operator plane (`/health/live`, `/health/ready`, `/metrics`, `/version`), the first-version `telegram` schema, and the CI gate. No Bot API client, webhook, dispatcher pipeline, or Mini App authentication yet; no code path contacts Telegram. See `DEVELOPMENT.md` for what runs today and `docs/IMPLEMENTATION_PLAN.md` for what comes next.
+> **Status:** plan items 1–2 implemented — the Rust service scaffold (typed `RATATOSKR__` configuration, structured telemetry, typed errors, per-role operator plane, the first-version `telegram` schema, the CI gate) plus the Bot API client and the secure webhook intake: secret-verified admission before any parsing, method/content-type/body-size limits, `update_id` deduplication persisted in `telegram.updates`, and acknowledgment before any downstream work. Identity binding, command parsing, and the dispatcher pipeline are still ahead. See `DEVELOPMENT.md` for what runs today and `docs/IMPLEMENTATION_PLAN.md` for what comes next.
 
 > [!IMPORTANT]
 > **Ratatoskr is in development.** No database holds data that has to survive a schema change.
@@ -40,16 +40,17 @@ ratatoskr-telegram/
 ├── crates/
 │   ├── core/            # runtime role, typed configuration, error taxonomy
 │   ├── telemetry/       # tracing subscriber, OTLP export, metrics, build identity
-│   ├── http/            # run(role) lifecycle, operator plane, drain-then-close shutdown
-│   └── persistence/     # PostgreSQL pool, embedded schema, readiness probe
+│   ├── http/            # run(role, routes) lifecycle, operator plane, drain-then-close shutdown
+│   ├── persistence/     # PostgreSQL pool, embedded schema, update deduplication queries
+│   └── bot-api/         # the typed Bot API client boundary over teloxide (item 2)
 ├── services/
-│   ├── webhook/         # ratatoskr-telegram-webhook (Bot API intake; item 2+)
+│   ├── webhook/         # ratatoskr-telegram-webhook: intake admission + processing worker
 │   └── dispatcher/      # ratatoskr-telegram-dispatcher (projections; item 4+)
 └── schema.sql           # the first-version `telegram` schema, applied at startup
 ```
 
-Interaction-domain crates (`bot-api`, `interactions`, `mini-app-auth`, `message-projections`) are
-added by the plan items that own them, not pre-created empty.
+Interaction-domain crates (`interactions`, `mini-app-auth`, `message-projections`) are added by the
+plan items that own them, not pre-created empty.
 
 ### `ratatoskr-telegram-webhook`
 
@@ -466,4 +467,4 @@ Traces correlate Telegram update, interaction, Platform operation, downstream co
 
 ## Project status
 
-Plan item 1 of `docs/IMPLEMENTATION_PLAN.md` is done: the workspace builds, both binaries run and answer the operator plane, configuration refuses unknown or invalid values, telemetry correlates, the `telegram` schema applies at startup, and CI gates all of it. The sections above describe the intended Telegram Bot API and Mini App integration architecture; the Bot API client, webhook intake, dispatcher pipeline, identity binding, callback/dialogue machinery, and Mini App authentication are still to be built, in `docs/IMPLEMENTATION_PLAN.md` order.
+Plan items 1 and 2 of `docs/IMPLEMENTATION_PLAN.md` are done: the workspace builds, both binaries run and answer the operator plane, configuration refuses unknown or invalid values, telemetry correlates, the `telegram` schema applies at startup, and CI gates all of it. The webhook role admits Bot API deliveries through a secret-verified, size- and schema-limited endpoint that deduplicates updates in `telegram.updates` and acknowledges Telegram before any processing; the typed Bot API client exists behind `crates/bot-api`. The sections above describe the intended full integration architecture; identity binding, access control, command parsing, the dispatcher pipeline, callback/dialogue machinery, and Mini App authentication are still to be built, in `docs/IMPLEMENTATION_PLAN.md` order.
