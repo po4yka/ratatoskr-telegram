@@ -4,6 +4,12 @@
 //! block of `DEVELOPMENT.md` cannot rot: the admin plane is probed over a real socket, and the
 //! documented SIGTERM shutdown is asserted to exit `0`.
 //!
+//! Since plan item 2 the two roles have different requirements: the dispatcher still starts on
+//! defaults, while the webhook role demands its database, bot token and webhook secret, and
+//! refuses to start when the database it writes through cannot be reached. Its boot therefore
+//! also brings a disposable PostgreSQL database and an in-test harness Bot API server — no test
+//! contacts Telegram.
+//!
 //! It lives in `services/webhook` because that is the one package cargo builds both binaries for;
 //! `cargo test --workspace` is the documented command and it builds the other one alongside.
 
@@ -29,30 +35,108 @@ const READY_TIMEOUT: Duration = Duration::from_secs(30);
 /// Between readiness polls.
 const POLL_INTERVAL: Duration = Duration::from_millis(50);
 
-/// Each role starts on its documented environment, reports ready on its documented admin port, and
-/// exits `0` on SIGTERM after the drain. One test rather than two so the roles run sequentially:
-/// they bind fixed ports, which is the point — those ports are the ones `DEVELOPMENT.md` tells an
-/// operator to use.
-#[test]
-fn each_role_boots_on_its_documented_configuration_and_reports_ready() {
-    boots(
-        "ratatoskr-telegram-webhook",
-        &[("RATATOSKR__TELEMETRY__LOG_FORMAT", "pretty")],
-        9467,
-    );
+/// Synthetic intake credentials for the webhook role's environment. Never real ones.
+const SECRET_TOKEN: &str = "webhook-secret-0123456789abcdef";
+const BOT_TOKEN: &str = "123456:TEST-boot-harness-token";
 
-    boots("ratatoskr-telegram-dispatcher", &[], 9468);
+/// The dispatcher starts on its documented environment, reports ready on its documented admin
+/// port, and exits `0` on SIGTERM after the drain.
+#[test]
+fn the_dispatcher_boots_on_its_documented_defaults_and_reports_ready() {
+    boots(
+        "ratatoskr-telegram-dispatcher",
+        &[("RATATOSKR__TELEMETRY__LOG_FORMAT", "pretty")],
+        9468,
+    );
 }
 
-/// A role with a configured but unreachable database reports the database check failing and stays
-/// unready, rather than starting into a dependency it cannot see.
+/// The webhook role boots once everything it requires is configured: a reachable database, a bot
+/// token pointed at a harness Bot API server, and the webhook secret on both sides.
 #[test]
-fn an_unreachable_database_keeps_readiness_failing_and_names_the_check() {
-    const PORT: u16 = 9477;
+fn the_webhook_boots_with_full_intake_configuration_and_reports_ready() {
+    const ADMIN_PORT: u16 = 9478;
+    const PUBLIC_PORT: u16 = 9479;
+
+    let harness = harness_bot_api();
+    let runtime = tokio::runtime::Runtime::new().expect("boot runtime");
+    let database_url = runtime.block_on(async {
+        let test = telegram_persistence::test_support::TestDatabase::create()
+            .await
+            .expect("a disposable database");
+        test.url()
+    });
+
+    let outcome = boots(
+        "ratatoskr-telegram-webhook",
+        &[
+            ("RATATOSKR__TELEMETRY__LOG_FORMAT", "pretty"),
+            ("RATATOSKR__ADMIN__BIND", &format!("127.0.0.1:{ADMIN_PORT}")),
+            (
+                "RATATOSKR__WEBHOOK__BIND",
+                &format!("127.0.0.1:{PUBLIC_PORT}"),
+            ),
+            ("RATATOSKR__DATABASE__URL", database_url.as_str()),
+            ("RATATOSKR__BOT_API__BASE_URL", harness.url.as_str()),
+            ("RATATOSKR__BOT_API__TOKEN", BOT_TOKEN),
+            ("RATATOSKR__WEBHOOK__SECRET_TOKEN", SECRET_TOKEN),
+        ],
+        ADMIN_PORT,
+    );
+    assert!(
+        outcome.contains("bot identity"),
+        "the webhook should log which bot it serves:\n{outcome}",
+    );
+
+    // The harness saw exactly one call: getMe at startup. teloxide uses the Bot API's own
+    // method-name casing.
+    let calls = harness.calls.lock().expect("harness lock");
+    assert_eq!(calls.len(), 1, "startup must call getMe exactly once");
+    assert!(
+        calls[0].eq_ignore_ascii_case("/bot123456:TEST-boot-harness-token/getme"),
+        "the call was not getMe: {}",
+        calls[0],
+    );
+}
+
+/// A webhook whose database cannot be reached refuses to start: it writes through the pool, so
+/// staying up would mean binding a listener that cannot serve its purpose. Exit `1`, not `0`.
+#[test]
+fn a_webhook_whose_database_is_unreachable_refuses_to_start() {
     let path = built_binary("ratatoskr-telegram-webhook");
-    let mut child = Command::new(&path)
-        .env("RATATOSKR__ADMIN__BIND", format!("127.0.0.1:{PORT}"))
+    let refused = Command::new(&path)
         // Port 5 on loopback: nothing listens there, so connect fails fast instead of timing out.
+        .env(
+            "RATATOSKR__DATABASE__URL",
+            "postgres://nobody:nope@127.0.0.1:5/nowhere",
+        )
+        .env("RATATOSKR__BOT_API__TOKEN", BOT_TOKEN)
+        .env("RATATOSKR__WEBHOOK__SECRET_TOKEN", SECRET_TOKEN)
+        .output()
+        .expect("the binary must run");
+
+    let log = format!(
+        "{}{}",
+        strip_ansi(&String::from_utf8_lossy(&refused.stdout)),
+        String::from_utf8_lossy(&refused.stderr),
+    );
+    assert_eq!(
+        refused.status.code(),
+        Some(1),
+        "an unreachable database is a startup refusal for this role\n{log}",
+    );
+    assert!(
+        log.to_lowercase().contains("database"),
+        "the operator was not told the dependency failed:\n{log}",
+    );
+}
+
+/// A dispatcher with a configured but unreachable database keeps the OLD tolerance until its own
+/// plan item flips it: it stays up, unready, naming the failing check.
+#[test]
+fn a_dispatcher_with_an_unreachable_database_keeps_readiness_failing_and_names_the_check() {
+    const PORT: u16 = 9477;
+    let mut child = Command::new(built_binary("ratatoskr-telegram-dispatcher"))
+        .env("RATATOSKR__ADMIN__BIND", format!("127.0.0.1:{PORT}"))
         .env(
             "RATATOSKR__DATABASE__URL",
             "postgres://nobody:nope@127.0.0.1:5/nowhere",
@@ -63,8 +147,6 @@ fn an_unreachable_database_keeps_readiness_failing_and_names_the_check() {
         .spawn()
         .expect("the binary must spawn");
 
-    // The process must still be alive and serving liveness: an unreachable dependency is a
-    // readiness fact, not a crash.
     let live = poll_status(PORT, "/health/live", 200, READY_TIMEOUT);
     let (_, ready_body) = probe(PORT, "/health/ready");
     terminate(&mut child);
@@ -87,26 +169,56 @@ fn an_unreachable_database_keeps_readiness_failing_and_names_the_check() {
 /// `check-config` is the documented init-container and CI pre-flight, so its exit codes are an
 /// operational contract: `0` valid, `78` invalid, and the report never quotes a supplied value.
 #[test]
-fn check_config_exits_zero_on_a_valid_configuration_and_78_on_an_invalid_one() {
-    // Wired into each main separately, so each is exercised.
-    for binary in [
-        "ratatoskr-telegram-webhook",
-        "ratatoskr-telegram-dispatcher",
-    ] {
-        let output = Command::new(built_binary(binary))
-            .arg("check-config")
-            .env_remove("RATATOSKR__DATABASE__URL")
-            .output()
-            .expect("check-config must run");
-        assert_eq!(
-            output.status.code(),
-            Some(0),
-            "{binary} with defaults: {}",
-            String::from_utf8_lossy(&output.stderr),
-        );
+fn check_config_exits_zero_when_valid_and_78_when_invalid() {
+    // The dispatcher validates on defaults.
+    let output = Command::new(built_binary("ratatoskr-telegram-dispatcher"))
+        .arg("check-config")
+        .env_remove("RATATOSKR__DATABASE__URL")
+        .output()
+        .expect("check-config must run");
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "dispatcher with defaults: {}",
+        String::from_utf8_lossy(&output.stderr),
+    );
+
+    // The webhook does not: every intake requirement is named, and nothing is echoed.
+    let unconfigured = Command::new(built_binary("ratatoskr-telegram-webhook"))
+        .arg("check-config")
+        .env_remove("RATATOSKR__DATABASE__URL")
+        .output()
+        .expect("check-config must run");
+    let report = String::from_utf8_lossy(&unconfigured.stderr);
+    assert_eq!(unconfigured.status.code(), Some(78), "EX_CONFIG\n{report}");
+    for required in ["bot_api.token", "webhook.secret_token", "database.url"] {
+        assert!(report.contains(required), "{required} not named:\n{report}");
     }
 
-    let invalid = Command::new(built_binary("ratatoskr-telegram-webhook"))
+    // Fully configured, the webhook validates too.
+    let configured = Command::new(built_binary("ratatoskr-telegram-webhook"))
+        .arg("check-config")
+        .env(
+            "RATATOSKR__DATABASE__URL",
+            "postgres://telegram@127.0.0.1:5432/telegram",
+        )
+        .env("RATATOSKR__BOT_API__TOKEN", BOT_TOKEN)
+        .env("RATATOSKR__WEBHOOK__SECRET_TOKEN", SECRET_TOKEN)
+        .output()
+        .expect("check-config must run");
+    let report = String::from_utf8_lossy(&configured.stderr);
+    assert_eq!(
+        configured.status.code(),
+        Some(0),
+        "EX_OK expected\n{report}"
+    );
+    assert!(
+        !report.contains(BOT_TOKEN) && !report.contains(SECRET_TOKEN),
+        "check-config echoed a secret:\n{report}",
+    );
+
+    // And a bad database scheme is still a value-free report.
+    let invalid = Command::new(built_binary("ratatoskr-telegram-dispatcher"))
         .arg("check-config")
         .env(
             "RATATOSKR__DATABASE__URL",
@@ -150,10 +262,63 @@ fn a_listener_that_cannot_bind_exits_one() {
     );
 }
 
+/// An in-process harness Bot API server: answers every request with a recorded `getMe` body and
+/// records the paths it was asked for.
+struct HarnessBotApi {
+    url: String,
+    calls: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+}
+
+/// Spawns the harness on an ephemeral port. One OS thread; it lives until the test process does,
+/// which is exactly as long as the child needs it.
+fn harness_bot_api() -> HarnessBotApi {
+    use std::io::BufRead as _;
+    use std::sync::{Arc, Mutex};
+
+    let calls: Arc<Mutex<Vec<String>>> = Arc::default();
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("harness binds");
+    let port = listener.local_addr().expect("local addr").port();
+    let recorder = Arc::clone(&calls);
+    std::thread::spawn(move || {
+        let body = include_str!("../../../crates/bot-api/tests/fixtures/get_me.json");
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\
+             Connection: close\r\n\r\n{body}",
+            body.len(),
+        );
+        for stream in listener.incoming() {
+            let Ok(stream) = stream else { break };
+            let mut writer = std::io::BufWriter::new(&stream);
+            let mut reader = std::io::BufReader::new(&stream);
+            // One request head, then answer: `Connection: close` ends the conversation.
+            let mut request_line = String::new();
+            if reader.read_line(&mut request_line).is_err() || request_line.is_empty() {
+                continue;
+            }
+            loop {
+                let mut header = String::new();
+                match reader.read_line(&mut header) {
+                    Ok(0) | Err(_) => break,
+                    Ok(_) if header == "\r\n" => break,
+                    Ok(_) => {}
+                }
+            }
+            if let Some(path) = request_line.split_whitespace().nth(1) {
+                recorder.lock().expect("harness lock").push(path.to_owned());
+            }
+            let _ = writer.write_all(response.as_bytes());
+        }
+    });
+    HarnessBotApi {
+        url: format!("http://127.0.0.1:{port}"),
+        calls,
+    }
+}
+
 /// Spawns `binary` with `env`, waits for readiness on `admin_port`, sends SIGTERM, and asserts a
 /// clean exit. Both streams are reported with every failure: stdout carries the log records, stderr
-/// only what is written before a subscriber exists.
-fn boots(binary: &str, env: &[(&str, &str)], admin_port: u16) {
+/// only what is written before a subscriber exists. Returns stdout for content assertions.
+fn boots(binary: &str, env: &[(&str, &str)], admin_port: u16) -> String {
     let path = built_binary(binary);
     let mut child = Command::new(&path)
         .envs(env.iter().copied())
@@ -193,6 +358,7 @@ fn boots(binary: &str, env: &[(&str, &str)], admin_port: u16) {
         out.contains("\"graceful\":true") || out.contains("graceful: true"),
         "{binary} logged no graceful shutdown\n{log}"
     );
+    out
 }
 
 /// `text` without ANSI control sequences.

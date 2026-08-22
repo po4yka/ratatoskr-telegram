@@ -7,6 +7,7 @@
 use std::process::ExitCode;
 
 use telegram_core::RuntimeRole;
+use telegram_http::PublicRoutes;
 
 const ROLE: RuntimeRole = RuntimeRole::Dispatcher;
 
@@ -15,5 +16,6 @@ async fn main() -> ExitCode {
     if std::env::args().nth(1).as_deref() == Some("check-config") {
         return telegram_http::check_config(ROLE);
     }
-    telegram_http::run(ROLE).await
+    // No public listener: the dispatcher sends, it does not receive.
+    telegram_http::run(ROLE, PublicRoutes::none()).await
 }

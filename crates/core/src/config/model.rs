@@ -18,27 +18,122 @@ use url::Url;
 /// members are `#[serde(skip_serializing)]`, so a default can never carry a secret and a serialized
 /// configuration can never leak one.
 ///
-/// Fields without a consumer are deliberately absent: the bot token, the webhook secret and a
-/// public-listener table arrive with the plan item that reads them, so every field here has a test
-/// and a default that someone has reasoned about.
+/// Fields without a consumer are deliberately absent: a field arrives with the plan item that reads
+/// it, so every field here has a test and a default that someone has reasoned about.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TelegramConfig {
     /// The operator listener. Every role binds one.
     pub admin: AdminConfig,
 
-    /// The `PostgreSQL` connection. Optional at this milestone — nothing reads persisted data yet —
-    /// so a process configured without one starts, serves its probes, and reports no database
-    /// check. That is deliberately not "degraded": no request path touches the database, so
-    /// claiming degradation would make readiness lie in the safe direction, which is still a lie.
+    /// The Bot API endpoint, call budget and bot credential. Present for every role: the values
+    /// are defaulted and harmless until a role's validation demands the token.
+    #[serde(default)]
+    pub bot_api: BotApiConfig,
+
+    /// The `PostgreSQL` connection. Required by the webhook role since it writes through the pool;
+    /// the dispatcher carries no such requirement yet.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub database: Option<DatabaseConfig>,
+
+    /// The public update-intake listener. Webhook-role specific; absent means unconfigured, which
+    /// the role requirements refuse.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub webhook: Option<WebhookConfig>,
 
     /// The two phases of a graceful stop.
     pub shutdown: ShutdownConfig,
 
     /// Logging, filtering and span export.
     pub telemetry: TelemetryConfig,
+}
+
+/// The Bot API endpoint this service calls, its call budget, and the credential it calls with.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BotApiConfig {
+    /// `RATATOSKR__BOT_API__BASE_URL`. Default `https://api.telegram.org`.
+    ///
+    /// Configurable so tests and local runs point at a harness server instead of Telegram; rule V9
+    /// keeps a plain-`http` endpoint on loopback only.
+    #[serde(default = "default_bot_api_base_url")]
+    pub base_url: Url,
+
+    /// `RATATOSKR__BOT_API__TIMEOUT_SECONDS`. 1..=60, default 10.
+    ///
+    /// The whole-call budget: a Bot API call that outlives its caller's request is a hang with
+    /// extra steps. Bounded well under the webhook's acknowledgment expectations.
+    #[serde(default = "default_bot_api_timeout_seconds")]
+    pub timeout_seconds: u64,
+
+    /// `RATATOSKR__BOT_API__TOKEN`. The bot credential. SECRET.
+    ///
+    /// Empty default: there is no value that is not either wrong or a secret in the source tree,
+    /// and the role requirements refuse an empty token where one is needed (V13).
+    #[serde(default, skip_serializing)]
+    pub token: SecretString,
+}
+
+impl Default for BotApiConfig {
+    fn default() -> Self {
+        Self {
+            base_url: default_bot_api_base_url(),
+            timeout_seconds: default_bot_api_timeout_seconds(),
+            token: SecretString::default(),
+        }
+    }
+}
+
+/// The public update-intake listener and everything admission needs.
+///
+/// Present only when configured; the webhook role's validation refuses absence (V13), every other
+/// role ignores it.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WebhookConfig {
+    /// `RATATOSKR__WEBHOOK__BIND`. Default `127.0.0.1:9469`, continuing this service's allocation
+    /// block behind the admin ports.
+    ///
+    /// Loopback by default (`SECURITY.md`: deny by default). A deployment sets its ingress-facing
+    /// address explicitly; what terminates TLS in front of it is the deployment's trusted path.
+    #[serde(default = "default_webhook_bind")]
+    pub bind: SocketAddr,
+
+    /// `RATATOSKR__WEBHOOK__SECRET_TOKEN`. The value Telegram echoes in
+    /// `X-Telegram-Bot-Api-Secret-Token` on every delivery. SECRET.
+    ///
+    /// Rule V11 bounds it to 16..=256 characters over `[A-Za-z0-9_-]` — Telegram's charset for the
+    /// value, with the floor forcing entropy above anything guessable.
+    #[serde(default, skip_serializing)]
+    pub secret_token: SecretString,
+
+    /// `RATATOSKR__WEBHOOK__MAX_BODY_BYTES`. 1024..=1048576, default 262144.
+    ///
+    /// An admission ceiling, not a target: real updates are small, and the cap exists so a forged
+    /// delivery cannot buy memory with bytes.
+    #[serde(default = "default_max_body_bytes")]
+    pub max_body_bytes: u32,
+}
+
+const fn default_max_body_bytes() -> u32 {
+    262_144
+}
+
+fn default_webhook_bind() -> SocketAddr {
+    SocketAddr::new(std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST), 9469)
+}
+
+fn default_bot_api_base_url() -> Url {
+    // The site exception is the honest spelling for parsing a compile-time literal.
+    #[expect(
+        clippy::expect_used,
+        reason = "a compile-time constant URL cannot fail to parse"
+    )]
+    Url::parse("https://api.telegram.org").expect("constant URL")
+}
+
+const fn default_bot_api_timeout_seconds() -> u64 {
+    10
 }
 
 /// The operator plane: `/health/live`, `/health/ready`, `/metrics`, `/version`. Never the public

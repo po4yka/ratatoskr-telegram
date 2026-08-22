@@ -5,6 +5,7 @@ members = [
     "crates/telemetry",
     "crates/http",
     "crates/persistence",
+    "crates/bot-api",
     "services/webhook",
     "services/dispatcher",
 ]
@@ -22,14 +23,19 @@ ratatoskr-telegram-core        = { version = "0.1.0", path = "crates/core" }
 ratatoskr-telegram-telemetry   = { version = "0.1.0", path = "crates/telemetry" }
 ratatoskr-telegram-http        = { version = "0.1.0", path = "crates/http" }
 ratatoskr-telegram-persistence = { version = "0.1.0", path = "crates/persistence" }
+ratatoskr-telegram-bot-api     = { version = "0.1.0", path = "crates/bot-api" }
 
 # ---- Telegram Bot API ----
-# The sanctioned client for every Telegram API call this service will make (plan item 2 onward:
-# webhook updates, sendMessage/editMessageText delivery). Declared here so the choice is pinned in
-# one place; no crate depends on it yet, which also means it is not in `Cargo.lock` and not yet
-# covered by `cargo deny` — the task that first uses it owns moving it onto that audit surface.
+# The sanctioned client for every Telegram API call this service makes (plan item 2 onward:
+# webhook updates, sendMessage/editMessageText delivery). `ratatoskr-telegram-bot-api` is the only
+# crate that may depend on it, so the token and the URL shapes that carry it stay in one boundary.
 # `default-features = false` drops `native-tls`; `rustls` matches the fleet's TLS posture.
 teloxide = { version = "0.17.0", default-features = false, features = ["rustls"] }
+# Pinned to the same major teloxide-core builds against, so the two share one connection stack.
+reqwest = { version = "0.12.7", default-features = false, features = ["json", "rustls-tls"] }
+
+# Constant-time secret comparison for the webhook admission gate.
+subtle = { version = "2.6.1", default-features = false }
 
 # ---- persistence ----
 # No `migrate` feature: the schema is one file, `include_str!`d into the binary by
@@ -71,7 +77,7 @@ uuid = { version = "1.18.1", features = ["v7"] }
 
 # ---- dev only ----
 tower         = "0.5.3"
-http-body-util = "0.1.5"
+http-body-util = "0.1.5"   # also a regular dependency of the webhook intake's capped body reader
 
 [workspace.lints.rust]
 unsafe_code                   = "forbid"

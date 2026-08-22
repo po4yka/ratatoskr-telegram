@@ -8,6 +8,11 @@
 [advisories]
 version = 2
 yanked  = "deny"          # a yanked lockfile entry is a build that cannot be reproduced
+# RUSTSEC-2026-0173: `proc-macro-error2` is unmaintained. It arrives transitively through
+# `teloxide -> aquamarine` (a proc macro that renders mermaid diagrams into rustdoc) and has no
+# safe upgrade; the affected code is compile-time only and never ships in a binary. Ignored, not
+# forgotten: drop this entry the day teloxide drops aquamarine.
+ignore  = ["RUSTSEC-2026-0173"]
 
 [licenses]
 version = 2
@@ -15,10 +20,12 @@ version = 2
 # workspaces, so the files can be compared rather than reasoned about separately.
 allow = [
     "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",   # ar_archive_writer, a build dependency of psm via teloxide
     "MIT",
     "MIT-0",
     "BSD-3-Clause",
     "ISC",
+    "MPL-2.0",                          # colored, via teloxide's doc-diagram macro
     "Unicode-3.0",
     "Zlib",
     "CDLA-Permissive-2.0",

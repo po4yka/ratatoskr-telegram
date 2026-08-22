@@ -12,6 +12,10 @@
 #[cfg(feature = "test-support")]
 pub mod test_support;
 
+pub mod updates;
+
+pub use updates::{AdmittedUpdate, RecordOutcome, UpdateState};
+
 use std::time::Duration;
 
 /// How long a pooled connection may sit idle before it is closed rather than handed out.
@@ -57,6 +61,11 @@ pub enum PersistenceError {
     /// A query failed.
     #[error("a database query failed")]
     Query(#[source] sqlx::Error),
+
+    /// A settlement named an update that was never admitted. A state transition for a row that
+    /// does not exist is a bug, and silently succeeding would hide it.
+    #[error("the update was never admitted")]
+    UnknownUpdate,
 }
 
 impl From<PersistenceError> for TelegramError {

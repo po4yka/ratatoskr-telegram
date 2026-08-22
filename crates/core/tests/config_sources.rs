@@ -15,30 +15,50 @@ use figment::Jail;
 use telegram_core::config;
 use telegram_core::role::RuntimeRole;
 
-/// An empty environment loads per-role built-in defaults, including each role's own admin port.
+/// An empty environment loads per-role built-in defaults. Since item 2 the webhook role demands its
+/// intake configuration (rule V13), so defaults-only loading is asserted for the dispatcher, whose
+/// requirements are still none.
 #[test]
 fn an_empty_environment_loads_the_role_defaults() {
     Jail::expect_with(|jail| {
         jail.clear_env();
-        for role in [RuntimeRole::Webhook, RuntimeRole::Dispatcher] {
-            let config = config::load_from(role, config::figment(role)).expect("defaults load");
-            assert_eq!(config.admin.bind.port(), role.default_admin_port());
-            assert!(config.admin.bind.ip().is_loopback(), "deny by default");
-            assert!(
-                config.database.is_none(),
-                "no database is configured by default",
-            );
-        }
+        let config = config::load_from(
+            RuntimeRole::Dispatcher,
+            config::figment(RuntimeRole::Dispatcher),
+        )
+        .expect("defaults load");
+        assert_eq!(
+            config.admin.bind.port(),
+            RuntimeRole::Dispatcher.default_admin_port(),
+        );
+        assert!(config.admin.bind.ip().is_loopback(), "deny by default");
+        assert!(
+            config.database.is_none(),
+            "no database is configured by default"
+        );
         Ok(())
     });
 }
 
-/// One variable overrides exactly one field.
+/// One variable overrides exactly one field — under a configuration that satisfies the role's
+/// requirements, so the assertion is about the override and nothing else.
 #[test]
 fn one_variable_overrides_exactly_one_field() {
     Jail::expect_with(|jail| {
         jail.clear_env();
         jail.set_env("RATATOSKR__ADMIN__BIND", "127.0.0.1:9998");
+        jail.set_env(
+            "RATATOSKR__BOT_API__TOKEN",
+            "123456:TEST-config-source-token",
+        );
+        jail.set_env(
+            "RATATOSKR__WEBHOOK__SECRET_TOKEN",
+            "webhook-secret-0123456789abcdef",
+        );
+        jail.set_env(
+            "RATATOSKR__DATABASE__URL",
+            "postgres://telegram@127.0.0.1:5432/telegram",
+        );
         let config = config::load_from(RuntimeRole::Webhook, config::figment(RuntimeRole::Webhook))
             .expect("the override parses");
         assert_eq!(config.admin.bind.port(), 9998);
@@ -58,6 +78,14 @@ fn nested_tables_parse_from_joined_variables() {
             "postgres://telegram:telegram@127.0.0.1:5432/telegram",
         );
         jail.set_env("RATATOSKR__DATABASE__MAX_CONNECTIONS", "3");
+        jail.set_env(
+            "RATATOSKR__BOT_API__TOKEN",
+            "123456:TEST-config-source-token",
+        );
+        jail.set_env(
+            "RATATOSKR__WEBHOOK__SECRET_TOKEN",
+            "webhook-secret-0123456789abcdef",
+        );
         let config = config::load_from(RuntimeRole::Webhook, config::figment(RuntimeRole::Webhook))
             .expect("the nested table parses");
         let database = config.database.expect("the database table is present");

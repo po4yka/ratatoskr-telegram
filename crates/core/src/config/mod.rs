@@ -26,8 +26,8 @@ use figment::Figment;
 use figment::providers::{Env, Serialized};
 
 pub use crate::config::model::{
-    AdminConfig, DatabaseConfig, LogFormat, OtlpConfig, ShutdownConfig, TelegramConfig,
-    TelemetryConfig,
+    AdminConfig, BotApiConfig, DatabaseConfig, LogFormat, OtlpConfig, ShutdownConfig,
+    TelegramConfig, TelemetryConfig, WebhookConfig,
 };
 pub use crate::config::validate::{SHUTDOWN_CEILING_SECONDS, Violation};
 use crate::role::RuntimeRole;
@@ -100,6 +100,10 @@ impl TelegramConfig {
             // Absent by default, in every role. A database URL carries a credential, so there is
             // no default that is not either wrong or a secret in the source tree.
             database: None,
+            bot_api: BotApiConfig::default(),
+            // The intake listener is webhook-role configuration; its requirements are enforced by
+            // rule V13 per role, not by a default that would silently satisfy them.
+            webhook: None,
             // Windows that are safe on the smallest deployment: long enough that nothing is lost
             // to a weekend outage, short enough that no drain outlives its supervisor.
             shutdown: ShutdownConfig {

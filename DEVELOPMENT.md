@@ -1,12 +1,12 @@
 # Developing Ratatoskr Telegram
 
-> Status: Implemented for plan item 1; items 2 through 10 are Proposed.  
+> Status: Implemented for plan items 1 and 2; items 3 through 10 are Proposed.  
 > Last reviewed: 2026-08-22
 
 ## Current stage
 
-Plan item 1 of `docs/IMPLEMENTATION_PLAN.md` is implemented and the commands marked **real** below
-are real. The Cargo workspace, its pinned toolchain and its committed `Cargo.lock`; the
+Plan items 1 and 2 of `docs/IMPLEMENTATION_PLAN.md` are implemented and the commands marked **real**
+below are real. The Cargo workspace, its pinned toolchain and its committed `Cargo.lock`; the
 `ratatoskr-telegram-core`, `ratatoskr-telegram-telemetry`, `ratatoskr-telegram-http` and
 `ratatoskr-telegram-persistence` library crates; the `ratatoskr-telegram-webhook` and
 `ratatoskr-telegram-dispatcher` binaries; typed configuration loaded from `RATATOSKR__` environment
@@ -16,22 +16,30 @@ readiness, Prometheus metrics and version on a per-role operator listener (webho
 9468); SIGTERM draining; the first-version `telegram` schema in `schema.sql`, applied at startup to
 a configured database; and the CI gate in `.github/workflows/ci.yml`.
 
-Not present yet, in plan order: the Bot API client and secure webhook (item 2), identity/chat
-binding and access control (item 3), the dispatcher's projections and outbound queue (item 4), and
-everything after. No code path contacts Telegram. `teloxide` is declared as the Bot API dependency
-in the workspace manifest for item 2 to take up.
+Plan item 2 added the `ratatoskr-telegram-bot-api` crate — the typed Bot API client over `teloxide`
+(`get_me`, `set_webhook`, `send_message`, `edit_message_text`, `answer_callback_query`,
+`send_chat_action`) — and the secure webhook intake: the public listener on 9469 that verifies the
+secret header in constant time before reading anything, enforces method/content-type/body-size
+limits, parses updates against the Bot API schema, deduplicates them by `(bot_id, update_id)` in
+`telegram.updates`, and acknowledges Telegram before any downstream work through a bounded in-process
+queue and worker. Malformed payloads are acked and logged, never retried into a storm.
 
-The database is OPTIONAL for both roles at this milestone: nothing reads persisted data yet, so a
-process configured without one starts, serves its probes, and reports no database check. A process
-configured WITH an unreachable one starts too, and reports that check failing — when the first
-feature writes through the pool, this becomes a refusal to start, as the sibling services treat a
-dependency their routes cannot serve without.
+Not present yet, in plan order: identity/chat binding and access control (item 3), the dispatcher's
+projections and outbound queue (item 4), and everything after. No test contacts Telegram: the client
+is exercised against a local harness server with recorded fixtures.
+
+The database is REQUIRED for the webhook role since item 2: intake writes update deduplication
+through the pool, so a webhook that cannot reach its database refuses to start. The dispatcher still
+starts without one (and with an unreachable one, reporting that check failing) until its own plan
+item makes it write through the pool.
 
 ## Toolchain
 
 Rust/Tokio/Axum/SQLx, pinned by `rust-toolchain.toml`. The Telegram Bot API client is `teloxide`
-(pinned in the workspace manifest, rustls TLS). PostgreSQL 17 locally through `compose.yaml`. There
-are no migrations by development-status rule: one schema file, applied fresh, edited in place.
+(pinned in the workspace manifest, rustls TLS); only `ratatoskr-telegram-bot-api` may depend on it,
+which keeps the token and the URL shapes that carry it in one boundary. PostgreSQL 17 locally through
+`compose.yaml`. There are no migrations by development-status rule: one schema file, applied fresh,
+edited in place.
 
 ## Code size limits
 
@@ -96,15 +104,32 @@ proves nothing.
 ```bash
 docker compose up -d          # the local PostgreSQL the integration tests use
 
-# webhook role, operator plane on 9467
-RATATOSKR__TELEMETRY__LOG_FORMAT=pretty cargo run -p ratatoskr-telegram-webhook
-# dispatcher role, operator plane on 9468
+# dispatcher role, operator plane on 9468; starts with no configuration at all
 RATATOSKR__TELEMETRY__LOG_FORMAT=pretty cargo run -p ratatoskr-telegram-dispatcher
+
+# webhook role: needs its intake configuration before it will start (rule V13)
+RATATOSKR__TELEMETRY__LOG_FORMAT=pretty \
+RATATOSKR__DATABASE__URL=postgres://telegram:telegram@127.0.0.1:5432/telegram \
+RATATOSKR__BOT_API__TOKEN='123456:your-bot-token' \
+RATATOSKR__WEBHOOK__SECRET_TOKEN='at-least-16-chars-of-entropy' \
+cargo run -p ratatoskr-telegram-webhook
+# admin plane on 9467, public intake on 127.0.0.1:9469. Startup calls getMe once to learn the bot
+# identity deduplication keys on, so the token must work — point RATATOSKR__BOT_API__BASE_URL at a
+# loopback harness for an offline play.
 
 curl -s http://127.0.0.1:9467/health/live
 curl -s http://127.0.0.1:9467/health/ready
 curl -s http://127.0.0.1:9467/metrics | head
 curl -s http://127.0.0.1:9467/version
+
+# deliver a synthetic update through the whole admission path
+curl -si http://127.0.0.1:9469/webhook \
+  -X POST \
+  -H "X-Telegram-Bot-Api-Secret-Token: $RATATOSKR__WEBHOOK__SECRET_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"update_id": 1, "message": {"message_id": 1, "date": 1760000000,
+       "chat": {"id": 900700601, "type": "private"}, "text": "https://example.test/a"}}'
+# 200 = accepted and queued; repeat it and it is still 200 but dropped as a duplicate.
 
 # validate a configuration without starting anything (exit 0 or 78)
 cargo run -p ratatoskr-telegram-webhook -- check-config
@@ -113,9 +138,11 @@ cargo run -p ratatoskr-telegram-webhook -- check-config
 kill -TERM <pid>
 ```
 
-Both binaries start with no configuration at all: loopback admin listeners on their own default
-ports, JSON logs, no exporter. A database appears only when `RATATOSKR__DATABASE__URL` is set, and
-then the embedded `schema.sql` is applied at startup before readiness can pass.
+The dispatcher starts with no configuration at all: loopback admin listener on its default port,
+JSON logs, no exporter. The webhook role additionally demands its database URL, bot token and
+webhook secret, and refuses to start when the database cannot be reached. Registering the webhook
+with Telegram (`setWebhook`) remains an explicit operational write done outside this process; the
+client method exists for the tooling that will own it.
 
 ### Schema — real
 
@@ -141,8 +168,9 @@ own their first writer.
 5. Test replay, ordering, callback expiry, rate limits, partial domain results, edits/deletes,
    restart, and reauthorization as those items land.
 
-CI uses synthetic updates only and never a production bot token; there is no bot token in this tree
-at all until item 2 introduces the credential plumbing that keeps it in the secret store.
+CI uses synthetic updates and synthetic tokens only. The real bot token reaches a process only
+through `RATATOSKR__BOT_API__TOKEN`, is a `SecretString` from load to request path, and appears in
+no test, fixture, log line or error rendering.
 
 ## What a clone needs before you plan a change
 

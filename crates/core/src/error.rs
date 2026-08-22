@@ -60,6 +60,8 @@ pub enum Subsystem {
     Http,
     /// The database pool, the schema, or a query.
     Persistence,
+    /// The Telegram Bot API client boundary.
+    BotApi,
 }
 
 impl core::fmt::Display for Subsystem {
@@ -69,6 +71,7 @@ impl core::fmt::Display for Subsystem {
             Self::Telemetry => "telemetry",
             Self::Http => "http",
             Self::Persistence => "persistence",
+            Self::BotApi => "bot_api",
         })
     }
 }

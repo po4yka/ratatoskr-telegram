@@ -21,6 +21,7 @@
 
 mod admin;
 mod lifecycle;
+mod public;
 mod shutdown;
 
 use std::process::ExitCode;
@@ -32,6 +33,7 @@ use tracing::field::Empty;
 
 pub use crate::admin::admin_router;
 pub use crate::lifecycle::{Check, CheckName, CheckReason, CheckState, RuntimeState};
+pub use crate::public::{PublicContext, PublicRoutes};
 pub use crate::shutdown::{Served, ShutdownOutcome, drain_and_close, serve};
 
 /// How often the database prober asks whether the dependency is still there.
@@ -54,15 +56,17 @@ const DATABASE_PROBE_INTERVAL: Duration = Duration::from_secs(5);
 ///    `telegram_build_info` is set by `telegram_telemetry::init`.
 /// 4. Connect the configured database and apply the embedded schema — all BEFORE any listener
 ///    binds, so a process never reports itself ready with an unverified or unprepared dependency.
-///    A configured database that cannot be reached is a WARN and a failing readiness check, not an
-///    abort: see `prepare_database`.
-/// 5. Bind the admin listener. On failure log at ERROR and exit `1`.
-/// 6. [`RuntimeState::mark_startup_complete`] — readiness flips to 200.
-/// 7. Serve until SIGTERM or SIGINT, then [`drain_and_close`].
-/// 8. Stop the prober, close the pool, `TelemetryGuard::shutdown()`; exit `0`.
-pub async fn run(role: telegram_core::RuntimeRole) -> ExitCode {
+///    A role whose routes write through the pool (the webhook) REFUSES to start when that fails;
+///    a role without such routes yet (the dispatcher) degrades to a failing readiness check.
+/// 5. Build and bind the public listener through `routes`, when the role brings one. A failed
+///    build or bind logs at ERROR, runs the standard cleanup, and exits `1`.
+/// 6. Bind the admin listener. On failure log at ERROR and exit `1`.
+/// 7. [`RuntimeState::mark_startup_complete`] — readiness flips to 200.
+/// 8. Serve until SIGTERM or SIGINT, then [`drain_and_close`].
+/// 9. Stop the prober, close the pool, `TelemetryGuard::shutdown()`; exit `0`.
+pub async fn run(role: telegram_core::RuntimeRole, routes: PublicRoutes) -> ExitCode {
     let config = match telegram_core::config::load(role) {
-        Ok(config) => config,
+        Ok(config) => Arc::new(config),
         Err(error) => {
             eprintln!("{}", error.report(role));
             return ExitCode::from(error.exit_code());
@@ -88,12 +92,44 @@ pub async fn run(role: telegram_core::RuntimeRole) -> ExitCode {
         git_sha = telegram_telemetry::identity::GIT_SHA,
         duration_ms = Empty,
     );
-    announce(role, &config);
+    announce(&config);
 
     let runtime = Arc::new(RuntimeState::new(role));
     let metrics_handle = guard.metrics_handle();
 
     let database = prepare_database(&config, &runtime).await;
+    if database.is_none() && role_requires_database(role) {
+        tracing::error!(
+            "the configured database could not be prepared; {} writes update deduplication \
+             through it and cannot serve updates without it",
+            role.binary_name(),
+        );
+        guard.shutdown();
+        return ExitCode::FAILURE;
+    }
+
+    // The public listener comes from the role. Its factory runs inside the startup span so its
+    // failures carry the same fields as every other startup record.
+    let public = match routes.take() {
+        None => None,
+        Some(build) => {
+            let context = PublicContext {
+                config: Arc::clone(&config),
+                database: database.clone(),
+            };
+            match startup.in_scope(|| build(context)).await {
+                Ok(router) => startup.in_scope(|| bind_public(&config, router)).await,
+                Err(error) => {
+                    error.log();
+                    if let Some(database) = database.as_ref() {
+                        database.close().await;
+                    }
+                    guard.shutdown();
+                    return ExitCode::FAILURE;
+                }
+            }
+        }
+    };
 
     let Some(admin) = startup
         .in_scope(|| bind_admin(&config, Arc::clone(&runtime), metrics_handle))
@@ -115,6 +151,10 @@ pub async fn run(role: telegram_core::RuntimeRole) -> ExitCode {
     startup.in_scope(|| {
         tracing::info!(
             admin = %config.admin.bind,
+            public = public.as_ref().map(|served| served.local_addr()).map_or(
+                "none".to_owned(),
+                |addr| addr.to_string(),
+            ),
             database = database.is_some(),
             "startup complete",
         );
@@ -122,7 +162,11 @@ pub async fn run(role: telegram_core::RuntimeRole) -> ExitCode {
     drop(startup);
 
     shutdown::signal().await;
-    drain_and_close(&runtime, &config.shutdown, vec![admin], shutdown::signal()).await;
+    let mut servers = vec![admin];
+    if let Some(public) = public {
+        servers.push(public);
+    }
+    drain_and_close(&runtime, &config.shutdown, servers, shutdown::signal()).await;
 
     if let Some(prober) = prober {
         prober.abort();
@@ -163,10 +207,9 @@ pub fn check_config(role: telegram_core::RuntimeRole) -> ExitCode {
 
 /// The single INFO line that says what the process actually believes, and the one non-fatal
 /// warning. Safe by type: `SecretString` has no `Display` and renders as `[REDACTED]`.
-fn announce(role: telegram_core::RuntimeRole, config: &telegram_core::TelegramConfig) {
+fn announce(config: &telegram_core::TelegramConfig) {
     tracing::info!(
         config = ?config,
-        role = %role,
         version = telegram_telemetry::identity::VERSION,
         git_sha = telegram_telemetry::identity::GIT_SHA,
         "effective configuration",
@@ -188,13 +231,10 @@ fn announce(role: telegram_core::RuntimeRole, config: &telegram_core::TelegramCo
 
 /// Connect and prepare the configured database, if there is one.
 ///
-/// Absent configuration is NOT a failure — no request path reads the database yet, and a role
-/// without one reports no database check rather than a failing one. A PRESENT configuration that
-/// cannot be reached or prepared is also not a startup abort at this milestone: no route consumes
-/// the database, so refusing to start would take down a process that could still serve its operator
-/// plane truthfully reporting `dependency_unavailable`. Readiness stays 503 and the reason is
-/// logged; when the first feature that writes through the pool arrives, this branch becomes a
-/// refusal, exactly as the sibling services treat a dependency their routes cannot serve without.
+/// Absent configuration is NOT itself a failure — for a role with no requirement. A PRESENT
+/// configuration that cannot be reached or prepared returns `None` and the caller decides: the
+/// webhook writes through the pool and refuses to start ([`role_requires_database`]); the
+/// dispatcher, with no such route yet, degrades to a failing readiness check while staying up.
 async fn prepare_database(
     config: &telegram_core::TelegramConfig,
     runtime: &Arc<RuntimeState>,
@@ -219,11 +259,18 @@ async fn prepare_database(
         return None;
     }
 
-    // The first probe happens BEFORE the listener opens, so the process never reports itself ready
+    // The first probe happens BEFORE any listener opens, so the process never reports itself ready
     // with an unverified dependency.
     runtime.set_database_reachable(database.ping().await.is_ok());
 
     Some(database)
+}
+
+/// Whether this role's routes write through the database, so an unreachable one is a startup
+/// refusal rather than a degraded-but-up state. The dispatcher joins here when its first write
+/// lands (plan item 4).
+const fn role_requires_database(role: telegram_core::RuntimeRole) -> bool {
+    matches!(role, telegram_core::RuntimeRole::Webhook)
 }
 
 /// Probe the database on a fixed interval until the task is aborted.
@@ -259,6 +306,27 @@ async fn bind_admin(
         }
         Err(error) => {
             tracing::error!(bind = %config.admin.bind, %error, "the admin listener could not bind");
+            None
+        }
+    }
+}
+
+/// Bind the public listener the role built, when it built one.
+///
+/// `None` on failure; the caller exits `1` through the same path as an admin bind failure.
+async fn bind_public(
+    config: &telegram_core::TelegramConfig,
+    router: axum::Router,
+) -> Option<Served> {
+    let Some(webhook) = config.webhook.as_ref() else {
+        // A factory without webhook configuration cannot have produced a router that needs one —
+        // and validation refuses the combination anyway. Unreachable, but total.
+        return None;
+    };
+    match TcpListener::bind(webhook.bind).await {
+        Ok(listener) => Some(serve(listener, router)),
+        Err(error) => {
+            tracing::error!(bind = %webhook.bind, %error, "the public listener could not bind");
             None
         }
     }
