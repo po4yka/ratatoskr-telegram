@@ -1,0 +1,39 @@
+msrv = "1.97"
+
+# Test bodies may assert with unwrap/expect; production code may not (the workspace lints deny both).
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+# Same rule, same reason, for the two slicing lints the workspace now denies. A test that indexes the
+# violation list it just built is asserting a shape it controls; a service that indexes a slice it
+# was handed returns a 500.
+allow-indexing-slicing-in-tests = true
+
+disallowed-methods = [
+  { path = "std::env::var",    reason = "configuration is read only by telegram_core::config" },
+  { path = "std::env::var_os", reason = "configuration is read only by telegram_core::config" },
+]
+
+# ---- Size limits ----
+#
+# Three numbers, and only one of them is a new gate. `too_many_lines` arrives with `pedantic` and
+# `too_many_arguments` is warn-by-default in `clippy::complexity`, so `-D warnings` in CI already
+# makes both fatal. Their thresholds are written down at clippy's current defaults so that a
+# toolchain bump raising a default cannot loosen this tree without a commit that says so.
+# `excessive-nesting-threshold` is the behavioural change: its default is 0, and 0 disables the lint.
+#
+# The numbers are the fleet's (`ratatoskr-workspace/docs/QUALITY_GATES.md`): each is the worst case
+# measured across the Rust workspaces when adopted, so this tree starts at the same ratchet instead
+# of choosing looser numbers for code that does not exist yet. Clippy fires when the count EXCEEDS
+# the threshold, so an item sitting exactly on a number is silent and the next line, argument or
+# block is the failure. `--all-targets` measures test bodies too, and the `allow-*-in-tests`
+# settings above cover none of these three lints.
+#
+# An exception is taken at the site, as `#[expect(clippy::too_many_lines, reason = "...")]`, and
+# never by raising a number here — a raised number applies to code nobody has written yet.
+
+too-many-lines-threshold = 100
+
+too-many-arguments-threshold = 7
+
+# The default is 0, and 0 disables the lint, so this line is what turns `excessive_nesting` on.
+excessive-nesting-threshold = 5

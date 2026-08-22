@@ -1,0 +1,37 @@
+[package]
+name        = "ratatoskr-telegram-telemetry"
+description = "Tracing subscriber, OpenTelemetry resource and build identity, and metrics."
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+repository.workspace   = true
+
+[lib]
+name = "telegram_telemetry"
+path = "src/lib.rs"
+
+# No axum: interaction crates emit spans and metrics and must not inherit an HTTP server to do it.
+[dependencies]
+ratatoskr-telegram-core.workspace = true
+tracing.workspace                 = true
+tracing-subscriber.workspace      = true
+tracing-opentelemetry.workspace   = true
+opentelemetry.workspace           = true
+opentelemetry_sdk.workspace       = true
+opentelemetry-otlp.workspace      = true
+metrics.workspace                 = true
+metrics-exporter-prometheus.workspace = true
+http.workspace      = true
+secrecy.workspace   = true
+thiserror.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
+# `init` is documented as requiring a Tokio runtime when an OTLP endpoint is configured — the tonic
+# channel spawns a task — so the test that the exporter builds for an `https` endpoint cannot run
+# without one.
+tokio.workspace = true
+
+[lints]
+workspace = true

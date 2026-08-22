@@ -1,0 +1,33 @@
+[package]
+name        = "ratatoskr-telegram-http"
+description = "The shared HTTP harness: run(role), the operator plane, lifecycle, shutdown."
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+repository.workspace   = true
+
+[lib]
+name = "telegram_http"
+path = "src/lib.rs"
+
+[dependencies]
+ratatoskr-telegram-core.workspace        = true
+ratatoskr-telegram-telemetry.workspace   = true
+ratatoskr-telegram-persistence.workspace = true
+metrics-exporter-prometheus.workspace    = true
+axum.workspace    = true
+http.workspace    = true
+tokio.workspace   = true
+serde.workspace   = true
+tracing.workspace = true
+metrics.workspace = true
+
+[dev-dependencies]
+tower = { workspace = true, features = ["util"] }
+tokio = { workspace = true, features = ["test-util", "rt"] }
+http-body-util.workspace = true
+serde_json.workspace     = true
+
+[lints]
+workspace = true

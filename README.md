@@ -2,7 +2,7 @@
 
 `ratatoskr-telegram` is the Telegram interaction bounded context for Ratatoskr. It provides a Bot API interface and Telegram Mini App authentication for submitting articles, adding or tracking GitHub repositories, following long-running operations, and receiving notifications from a local Ratatoskr deployment.
 
-> **Status:** architecture bootstrap. No bot webhook, dispatcher, command handlers, Mini App authentication, database schema, or deployment configuration is implemented yet.
+> **Status:** plan item 1 implemented — the Rust service scaffold exists: typed `RATATOSKR__` configuration, structured telemetry, typed errors, per-role operator plane (`/health/live`, `/health/ready`, `/metrics`, `/version`), the first-version `telegram` schema, and the CI gate. No Bot API client, webhook, dispatcher pipeline, or Mini App authentication yet; no code path contacts Telegram. See `DEVELOPMENT.md` for what runs today and `docs/IMPLEMENTATION_PLAN.md` for what comes next.
 
 > [!IMPORTANT]
 > **Ratatoskr is in development.** No database holds data that has to survive a schema change.
@@ -30,21 +30,26 @@ It does **not** own:
 
 For domain work, Telegram creates authenticated commands through Platform and renders the resulting operation state back into Telegram messages.
 
-## Planned deployables
+## Workspace layout
+
+The workspace exists. Library crates carry the shared concerns; the two planned deployables are
+thin binaries over one harness:
 
 ```text
 ratatoskr-telegram/
 ├── crates/
-│   ├── bot-api/
-│   ├── interactions/
-│   ├── mini-app-auth/
-│   ├── message-projections/
-│   └── telegram-infrastructure/
+│   ├── core/            # runtime role, typed configuration, error taxonomy
+│   ├── telemetry/       # tracing subscriber, OTLP export, metrics, build identity
+│   ├── http/            # run(role) lifecycle, operator plane, drain-then-close shutdown
+│   └── persistence/     # PostgreSQL pool, embedded schema, readiness probe
 ├── services/
-│   ├── webhook/
-│   └── dispatcher/
-└── migrations/
+│   ├── webhook/         # ratatoskr-telegram-webhook (Bot API intake; item 2+)
+│   └── dispatcher/      # ratatoskr-telegram-dispatcher (projections; item 4+)
+└── schema.sql           # the first-version `telegram` schema, applied at startup
 ```
+
+Interaction-domain crates (`bot-api`, `interactions`, `mini-app-auth`, `message-projections`) are
+added by the plan items that own them, not pre-created empty.
 
 ### `ratatoskr-telegram-webhook`
 
@@ -461,4 +466,4 @@ Traces correlate Telegram update, interaction, Platform operation, downstream co
 
 ## Project status
 
-This README defines the intended Telegram Bot API and Mini App integration architecture. No webhook, bot client, dispatcher, authentication validator, persistence layer, or command implementation exists yet.
+Plan item 1 of `docs/IMPLEMENTATION_PLAN.md` is done: the workspace builds, both binaries run and answer the operator plane, configuration refuses unknown or invalid values, telemetry correlates, the `telegram` schema applies at startup, and CI gates all of it. The sections above describe the intended Telegram Bot API and Mini App integration architecture; the Bot API client, webhook intake, dispatcher pipeline, identity binding, callback/dialogue machinery, and Mini App authentication are still to be built, in `docs/IMPLEMENTATION_PLAN.md` order.
