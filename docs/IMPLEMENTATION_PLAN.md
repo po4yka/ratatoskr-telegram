@@ -11,4 +11,4 @@
 9. Implement Mini App `initData` validation and short-lived Platform assertion exchange.
 10. Add notifications/preferences, deployment/runbooks, failure recovery, and workspace integration.
 
-Definition of Done: forged/duplicate updates have no effects; webhook stays fast; identities and Mini App auth are secure; callbacks replay-safe; projections ordered/rate-limited; article/GitHub flows and migrations/tests/workspace integration pass. Deferred: MTProto/userbot, payments, and broad group administration.
+Definition of Done: forged/duplicate updates have no effects; webhook stays fast; identities and Mini App auth are secure; callbacks replay-safe; projections ordered/rate-limited; article/GitHub flows, current-schema tests, and workspace integration pass. Deferred: MTProto/userbot, payments, and broad group administration.

@@ -1,7 +1,7 @@
 # Developing Ratatoskr Telegram
 
 > Status: Implemented for plan items 1 and 2; items 3 through 10 are Proposed.  
-> Last reviewed: 2026-08-22
+> Last reviewed: 2026-08-23
 
 ## Current stage
 
@@ -20,9 +20,11 @@ Plan item 2 added the `ratatoskr-telegram-bot-api` crate — the typed Bot API c
 (`get_me`, `set_webhook`, `send_message`, `edit_message_text`, `answer_callback_query`,
 `send_chat_action`) — and the secure webhook intake: the public listener on 9469 that verifies the
 secret header in constant time before reading anything, enforces method/content-type/body-size
-limits, parses updates against the Bot API schema, deduplicates them by `(bot_id, update_id)` in
-`telegram.updates`, and acknowledges Telegram before any downstream work through a bounded in-process
-queue and worker. Malformed payloads are acked and logged, never retried into a storm.
+limits, parses updates against the Bot API schema, and persists the payload and deduplication key
+`(bot_id, update_id)` in `telegram.updates` before acknowledgment. A worker claims pending work from
+PostgreSQL, including after restart; the bounded in-process channel is only a wake-up and backpressure
+hint. Terminal settlement removes the processable payload while keeping deduplication evidence.
+Malformed payloads are acked and logged, never retried into a storm.
 
 Not present yet, in plan order: identity/chat binding and access control (item 3), the dispatcher's
 projections and outbound queue (item 4), and everything after. No test contacts Telegram: the client

@@ -4,11 +4,13 @@ references:
   - { id: ratatoskr-workspace, remote: "git@github.com:po4yka/ratatoskr-workspace.git" }
 
 context: |
-  `ratatoskr-telegram` — The Telegram interaction bounded context. It provides a Bot API interface and Mini App authentication for submitting articles, tracking GitHub repositories, following long-running operations and receiving notifications.
+  `ratatoskr-telegram` — The Telegram interaction bounded context. It provides a Bot API interface and will provide Mini App authentication for submitting articles, tracking GitHub repositories, following long-running operations and receiving notifications.
 
-  Stack: Rust/Tokio, Axum/Tower, the Telegram Bot API over Reqwest, SQLx/PostgreSQL, NATS JetStream, typed callback and deep-link intents, Mini App initData verification, tracing, WireMock, testcontainers.
+  Current stack: Rust/Tokio, Axum/Tower, the Telegram Bot API through `teloxide`, SQLx/PostgreSQL, tracing, and local HTTP test harnesses. The repository has core, telemetry, HTTP, persistence, and Bot API crates; webhook and dispatcher binaries; an operator plane; the first-version schema; and CI.
 
-  This repository holds no code yet. Its documents describe intent; a change here plans behaviour, and the first code arrives with its own ci.yml, its lint configuration carrying the size limits, and its tests.
+  The webhook currently verifies admission before parsing, applies request limits, persists each parsed payload and deduplication identity before acknowledgment, and uses PostgreSQL as the authority for claims and restart recovery. Its bounded in-process queue is a wake-up hint. Terminal settlement removes the processable payload while retaining deduplication evidence.
+
+  Identity/chat binding, command and Platform operation flow, outbound dispatcher projections, callbacks, deep links, Mini App initData verification, and NATS integration are planned, not implemented.
 
   The gate command list is the fenced block in DEVELOPMENT.md. That list and .github/workflows/ci.yml are one list, and a step in ci.yml fails when they differ, so change both or neither.
 

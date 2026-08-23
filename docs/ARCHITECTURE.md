@@ -1,6 +1,6 @@
 # Ratatoskr Telegram Architecture
 
-> Status: target architecture. This repository is in architecture bootstrap; the document defines the intended Telegram Bot API, Mini App authentication, interaction-state, and outbound-projection boundaries.
+> Status: target architecture. Plan items 1 and 2 are implemented: the Rust service foundation, Bot API client, secure webhook, durable update admission, PostgreSQL-backed recovery, and terminal settlement. The remaining sections define the intended identity, Mini App authentication, interaction-state, Platform, eventing, and outbound-projection boundaries.
 
 ## 1. Purpose
 
@@ -70,7 +70,7 @@ ratatoskr-telegram/
 ├── services/
 │   ├── webhook/
 │   └── dispatcher/
-├── migrations/
+├── schema.sql
 ├── fixtures/
 ├── tests/
 └── docs/
@@ -779,7 +779,7 @@ User/chat/message IDs are controlled trace fields, not unbounded metric labels.
 ### Integration
 
 - webhook secret and update deduplication;
-- SQLx migrations and transactions;
+- current-schema creation and SQLx transactions;
 - fake Bot API send/edit failures and `Retry-After`;
 - Platform command/idempotency flow;
 - outbox/inbox replay;

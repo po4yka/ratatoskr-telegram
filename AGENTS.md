@@ -532,7 +532,7 @@ Rules:
 - make opt-out/revocation clear;
 - do not build a generic automation engine inside Telegram.
 
-## Persistence and migrations
+## Persistence and schema
 
 Telegram writes only its owned schema.
 
@@ -559,7 +559,7 @@ Rules:
 - uniqueness enforces update/callback/message/idempotency identities;
 - bot tokens/secrets are not stored in general tables;
 - domain resource data remains a reference/projection, not copied ownership;
-- migrations preserve dedupe, binding, audit, and replay safety;
+- edits to the current schema preserve dedupe, binding, audit, and replay safety;
 - retention minimizes raw Telegram message content.
 
 ## Commands and events
@@ -628,7 +628,7 @@ When implementation exists, include applicable tests for:
 - Markdown/HTML injection escaping;
 - outbound per-chat ordering, edit coalescing, rate-limit, blocked/deleted-message outcomes;
 - notification deduplication/preferences;
-- outbox/inbox replay and migrations.
+- outbox/inbox replay and current-schema creation.
 
 Use synthetic updates and fake Bot API servers. Never test normal CI with the production bot token, real chats, personal messages, or private files.
 
@@ -672,4 +672,4 @@ A task is complete only when:
 - dynamic markup/content is escaped and private data stays out of logs/notifications;
 - no MTProto/userbot/provider-domain responsibility is introduced;
 - relevant webhook, auth, callback, dialogue, projection, and Bot API tests pass;
-- contracts, migrations, telemetry, deployment, and cross-repository rollout are documented.
+- contracts, the current schema, telemetry, deployment, and cross-repository rollout are documented.

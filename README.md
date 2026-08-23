@@ -1,8 +1,8 @@
 # Ratatoskr Telegram
 
-`ratatoskr-telegram` is the Telegram interaction bounded context for Ratatoskr. It provides a Bot API interface and Telegram Mini App authentication for submitting articles, adding or tracking GitHub repositories, following long-running operations, and receiving notifications from a local Ratatoskr deployment.
+`ratatoskr-telegram` is the Telegram interaction bounded context for Ratatoskr. It provides a Bot API interface and will provide Telegram Mini App authentication for submitting articles, adding or tracking GitHub repositories, following long-running operations, and receiving notifications from a local Ratatoskr deployment.
 
-> **Status:** plan items 1–2 implemented — the Rust service scaffold (typed `RATATOSKR__` configuration, structured telemetry, typed errors, per-role operator plane, the first-version `telegram` schema, the CI gate) plus the Bot API client and the secure webhook intake: secret-verified admission before any parsing, method/content-type/body-size limits, `update_id` deduplication persisted in `telegram.updates`, and acknowledgment before any downstream work. Identity binding, command parsing, and the dispatcher pipeline are still ahead. See `DEVELOPMENT.md` for what runs today and `docs/IMPLEMENTATION_PLAN.md` for what comes next.
+> **Status:** plan items 1–2 implemented — the Rust service scaffold (typed `RATATOSKR__` configuration, structured telemetry, typed errors, per-role operator plane, the first-version `telegram` schema, the CI gate) plus the Bot API client and the secure webhook intake: secret-verified admission before any parsing, method/content-type/body-size limits, and durable `update_id` admission in `telegram.updates` before acknowledgment. PostgreSQL is the work authority; the in-process queue is only a wake-up hint, and terminal settlement removes the processable payload while retaining deduplication evidence. Identity binding, command parsing, and the dispatcher pipeline are still ahead. See `DEVELOPMENT.md` for what runs today and `docs/IMPLEMENTATION_PLAN.md` for what comes next.
 
 > [!IMPORTANT]
 > **Ratatoskr is in development.** No database holds data that has to survive a schema change.
@@ -41,10 +41,10 @@ ratatoskr-telegram/
 │   ├── core/            # runtime role, typed configuration, error taxonomy
 │   ├── telemetry/       # tracing subscriber, OTLP export, metrics, build identity
 │   ├── http/            # run(role, routes) lifecycle, operator plane, drain-then-close shutdown
-│   ├── persistence/     # PostgreSQL pool, embedded schema, update deduplication queries
+│   ├── persistence/     # PostgreSQL pool, embedded schema, durable update admission and claims
 │   └── bot-api/         # the typed Bot API client boundary over teloxide (item 2)
 ├── services/
-│   ├── webhook/         # ratatoskr-telegram-webhook: intake admission + processing worker
+│   ├── webhook/         # ratatoskr-telegram-webhook: durable intake + recovery worker
 │   └── dispatcher/      # ratatoskr-telegram-dispatcher (projections; item 4+)
 └── schema.sql           # the first-version `telegram` schema, applied at startup
 ```
@@ -58,16 +58,18 @@ The webhook process:
 
 - accepts Telegram Bot API updates;
 - verifies the configured webhook secret;
-- deduplicates update IDs;
-- resolves Telegram identity and access policy;
-- parses commands, messages, callbacks, forwards, and files;
-- creates an interaction and Platform operation;
-- sends or schedules a prompt acknowledgement;
-- returns a successful HTTP response without waiting for extraction, LLM, GitHub, or backup work.
+- persists each parsed payload and deduplication identity before a successful response;
+- uses PostgreSQL, not the in-process wake-up queue, as the authority for pending work;
+- claims admitted work after restart and settles it to a terminal state;
+- removes the processable payload at terminal settlement while retaining deduplication evidence;
+- returns a successful HTTP response without waiting for downstream work.
+
+Identity and access resolution, command/message/callback/file parsing, interaction creation, and
+Platform operation submission are planned for items 3 and later.
 
 ### `ratatoskr-telegram-dispatcher`
 
-The dispatcher:
+The planned dispatcher:
 
 - consumes operation and domain events;
 - maintains per-chat ordering and rate limits;
@@ -450,21 +452,21 @@ Traces correlate Telegram update, interaction, Platform operation, downstream co
 
 ## Initial milestones
 
-1. Define Telegram identity, update, interaction, callback, intent, and message-binding schemas.
-2. Implement the Bot API client and secret-verified webhook.
-3. Add update deduplication and owner access control.
-4. Implement plain URL article submission and operation projections.
-5. Add GitHub repository `metadata`, `track`, and confirmed `star` flows.
+1. Scaffold the Rust service and define the first-version `telegram` schema.
+2. Implement the Bot API client, secure webhook, durable update admission, deduplication, and restart recovery.
+3. Add identity/chat binding and owner access control.
+4. Implement the dispatcher and operation projections.
+5. Add plain URL article submission.
 6. Add file/PDF and forwarded-message ingestion.
-7. Implement dispatcher retries, ordering, and progress-message editing.
-8. Add Mini App `initData` validation and Platform identity assertions.
-9. Add opaque deep-link intents and notification preferences.
-10. Add integration tests against Platform, Extractor, GitHub, Vault, Knowledge, and the Mini App frontend.
+7. Add GitHub repository `metadata`, `track`, and confirmed `star` flows.
+8. Add callback tokens, dialogue state, and opaque deep-link intents.
+9. Add Mini App `initData` validation and Platform identity assertions.
+10. Add notifications, deployment and recovery runbooks, and workspace integration tests.
 
 ## Workspace integration
 
-`ratatoskr-workspace` pins Telegram with compatible Platform, Contracts, Extractor, Knowledge, GitHub, Vault, and web/Mini App commits. The repository remains independently buildable and testable using recorded Bot API fixtures and a mock Telegram server.
+The planned workspace snapshot will pin Telegram with compatible Platform, Contracts, Extractor, Knowledge, GitHub, Vault, and web/Mini App commits. No workspace pin or integration profile exists yet. This repository remains independently buildable and testable using recorded Bot API fixtures and a mock Telegram server.
 
 ## Project status
 
-Plan items 1 and 2 of `docs/IMPLEMENTATION_PLAN.md` are done: the workspace builds, both binaries run and answer the operator plane, configuration refuses unknown or invalid values, telemetry correlates, the `telegram` schema applies at startup, and CI gates all of it. The webhook role admits Bot API deliveries through a secret-verified, size- and schema-limited endpoint that deduplicates updates in `telegram.updates` and acknowledges Telegram before any processing; the typed Bot API client exists behind `crates/bot-api`. The sections above describe the intended full integration architecture; identity binding, access control, command parsing, the dispatcher pipeline, callback/dialogue machinery, and Mini App authentication are still to be built, in `docs/IMPLEMENTATION_PLAN.md` order.
+Plan items 1 and 2 of `docs/IMPLEMENTATION_PLAN.md` are done: the workspace builds, both binaries run and answer the operator plane, configuration refuses unknown or invalid values, telemetry correlates, the `telegram` schema applies at startup, and CI gates all of it. The webhook role admits Bot API deliveries through a secret-verified, size- and schema-limited endpoint. It persists the parsed payload and deduplication identity in `telegram.updates` before acknowledgment, then a worker claims pending work from PostgreSQL; the bounded in-process queue is only a wake-up hint. Terminal settlement removes the payload while keeping deduplication evidence. The typed Bot API client exists behind `crates/bot-api`. The sections above describe the intended full integration architecture; identity binding, access control, command parsing, the dispatcher pipeline, callback/dialogue machinery, and Mini App authentication are still to be built, in `docs/IMPLEMENTATION_PLAN.md` order.

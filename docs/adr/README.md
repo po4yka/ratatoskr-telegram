@@ -1,6 +1,6 @@
 # Telegram integration ADRs
 
-Use `NNNN-short-title.md` with context, options, decision, consequences, security/privacy, Bot API/rate-limit behavior, migration, validation, and follow-up.
+Use `NNNN-short-title.md` with context, options, decision, consequences, security/privacy, Bot API/rate-limit behavior, schema impact, validation, and follow-up.
 
 Initial backlog:
 

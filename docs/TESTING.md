@@ -10,7 +10,7 @@ Required tests:
 - Article flow and GitHub metadata/track/star/list/policy confirmation/partial-result matrices.
 - Message projection ordering, stale events, send/edit failure, deletion, retry-after, global/per-chat limits.
 - Notification preferences/privacy, safe escaping, no-secret/content logging.
-- SQL migrations, outbox/inbox replay, WireMock Bot API, and workspace Telegram -> Platform -> domain flow.
+- current-schema creation, outbox/inbox replay, mock Bot API, and workspace Telegram -> Platform -> domain flow.
 
 Fixtures use synthetic IDs/updates/files and a mock Bot API; no production bot token.
 
