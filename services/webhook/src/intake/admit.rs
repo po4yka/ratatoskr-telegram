@@ -86,6 +86,17 @@ pub(crate) async fn admit_ordered(intake: &Intake, parts: &Parts, body: Body) ->
     // 6. Record and hand off. The capacity reservation happens BEFORE the insert: if the queue has
     //    no room, nothing was persisted and 503 lets Telegram try again later.
     let kind = kind_label(&update.kind);
+    let payload = match serde_json::to_string(&update) {
+        Ok(payload) => payload,
+        Err(error) => {
+            tracing::error!(
+                error = %error,
+                class = "serialization_failure",
+                "the parsed update could not be stored",
+            );
+            return Outcome::Overloaded;
+        }
+    };
     metrics::counter!(TELEGRAM_UPDATES_RECEIVED_TOTAL, "update_kind" => kind).increment(1);
     match intake.sender.try_reserve() {
         Ok(permit) => {
@@ -93,6 +104,7 @@ pub(crate) async fn admit_ordered(intake: &Intake, parts: &Parts, body: Body) ->
                 bot_id: intake.settings.bot_id,
                 update_id: i64::from(update.id.0),
                 kind: kind.to_owned(),
+                payload,
             };
             match intake.database.record_update(&admitted).await {
                 Ok(RecordOutcome::Inserted) => {

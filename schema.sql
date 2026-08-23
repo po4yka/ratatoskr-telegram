@@ -45,20 +45,23 @@ comment on schema telegram is
 -- handoff. The composite key IS the deduplication decision: insert-or-ignore over
 -- (bot_id, update_id) makes redelivered and out-of-order duplicates no-ops while genuinely unseen
 -- ids — including ones below the highest seen id — still insert. `kind` holds a CLOSED
--- classification label (`message`, `callback_query`, ..., `unsupported`), never raw content: the
--- payload itself stays with Telegram. `state` walks accepted -> processing -> exactly one of
--- processed / unsupported / failed.
+-- classification label (`message`, `callback_query`, ..., `unsupported`). The authenticated,
+-- parsed payload remains processable across a restart until terminal settlement removes it.
+-- `state` walks accepted -> processing -> exactly one of processed / unsupported / failed.
 create table telegram.updates (
     bot_id      bigint      not null,
     update_id   bigint      not null,
     kind        text        not null,
+    payload     jsonb,
     state       text        not null default 'accepted'
                 check (state in ('accepted', 'processing', 'processed', 'unsupported', 'failed')),
     received_at timestamptz not null default now(),
     settled_at  timestamptz,
-    primary key (bot_id, update_id)
+    primary key (bot_id, update_id),
+    constraint update_payload_exists_only_while_processable
+        check ((state in ('accepted', 'processing')) = (payload is not null))
 );
 
 comment on table telegram.updates is
     'Admitted Bot API updates and their processing state. One row per (bot, update id); the '
-    'primary key is the deduplication identity. No raw payload is stored.';
+    'primary key is the deduplication identity. Payload is retained only while processable.';

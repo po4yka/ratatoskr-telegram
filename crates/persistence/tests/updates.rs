@@ -24,6 +24,7 @@ fn admitted(bot_id: i64, update_id: i64) -> AdmittedUpdate {
         bot_id,
         update_id,
         kind: "message".to_owned(),
+        payload: format!(r#"{{"update_id":{update_id}}}"#),
     }
 }
 
@@ -83,11 +84,11 @@ fn first_insert_is_inserted_and_the_redelivery_is_a_duplicate() {
         let db = &test.database;
 
         assert!(matches!(
-            db.record_update(&admitted(700100200, 42)).await,
+            db.record_update(&admitted(700_100_200, 42)).await,
             Ok(RecordOutcome::Inserted),
         ));
         assert!(matches!(
-            db.record_update(&admitted(700100200, 42)).await,
+            db.record_update(&admitted(700_100_200, 42)).await,
             Ok(RecordOutcome::Duplicate),
         ));
         assert_eq!(row_count(db).await, 1);
@@ -104,11 +105,11 @@ fn the_same_update_id_under_another_bot_is_not_a_duplicate() {
         let db = &test.database;
 
         assert!(matches!(
-            db.record_update(&admitted(700100200, 42)).await,
+            db.record_update(&admitted(700_100_200, 42)).await,
             Ok(RecordOutcome::Inserted),
         ));
         assert!(matches!(
-            db.record_update(&admitted(700100201, 42)).await,
+            db.record_update(&admitted(700_100_201, 42)).await,
             Ok(RecordOutcome::Inserted),
         ));
         assert_eq!(row_count(db).await, 2);
@@ -126,9 +127,10 @@ fn settlement_moves_an_admitted_row_to_its_terminal_state() {
         let db = &test.database;
 
         db.record_update(&AdmittedUpdate {
-            bot_id: 700100200,
+            bot_id: 700_100_200,
             update_id: 7,
             kind: "callback_query".to_owned(),
+            payload: r#"{"update_id":7}"#.to_owned(),
         })
         .await
         .expect("the insert");
@@ -145,7 +147,7 @@ fn settlement_moves_an_admitted_row_to_its_terminal_state() {
         assert!(before.get::<bool, _>("stamped"));
         assert!(before.get::<bool, _>("open"));
 
-        db.settle_update(700100200, 7, UpdateState::Processed)
+        db.settle_update(700_100_200, 7, UpdateState::Processed)
             .await
             .expect("the settlement");
 
@@ -162,6 +164,42 @@ fn settlement_moves_an_admitted_row_to_its_terminal_state() {
     });
 }
 
+/// Terminal settlement keeps the dedupe evidence but removes the processable payload.
+#[test]
+fn terminal_settlement_removes_the_processable_payload() {
+    let runtime = tokio::runtime::Runtime::new().expect("test runtime");
+    runtime.block_on(async {
+        let test = database().await;
+        let db = &test.database;
+
+        db.record_update(&admitted(700_100_200, 8))
+            .await
+            .expect("the insert");
+        db.settle_update(700_100_200, 8, UpdateState::Processed)
+            .await
+            .expect("the terminal settlement");
+
+        let row = sqlx::query(
+            "select bot_id, update_id, kind, state, payload is null as payload_removed
+             from telegram.updates where bot_id = 700100200 and update_id = 8",
+        )
+        .fetch_one(db.pool())
+        .await
+        .expect("the settled row");
+        let bot_id = row.get::<i64, _>("bot_id");
+        let update_id = row.get::<i64, _>("update_id");
+        let kind = row.get::<&str, _>("kind").to_owned();
+        let state = row.get::<&str, _>("state").to_owned();
+        let payload_removed = row.get::<bool, _>("payload_removed");
+        test.cleanup().await.expect("cleanup");
+
+        assert_eq!((bot_id, update_id), (700_100_200, 8));
+        assert_eq!(kind, "message");
+        assert_eq!(state, "processed");
+        assert!(payload_removed, "terminal payload must be removed");
+    });
+}
+
 /// Settling an update that was never admitted fails and writes nothing.
 #[test]
 fn settling_an_unknown_pair_fails_writing_nothing() {
@@ -171,7 +209,7 @@ fn settling_an_unknown_pair_fails_writing_nothing() {
         let db = &test.database;
 
         let outcome = db
-            .settle_update(700100999, 99, UpdateState::Unsupported)
+            .settle_update(700_100_999, 99, UpdateState::Unsupported)
             .await;
         assert!(outcome.is_err(), "an unknown pair must fail");
         assert_eq!(row_count(db).await, 0);

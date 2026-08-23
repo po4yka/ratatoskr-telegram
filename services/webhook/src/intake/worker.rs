@@ -1,14 +1,14 @@
 //! The processing worker: the asynchronous half of admission.
 //!
-//! One task drains the bounded queue. For every accepted update it walks the row through
+//! One task uses the bounded queue as a wake-up hint and claims work from `PostgreSQL`. For every
+//! accepted update it walks the row through
 //! `processing` to exactly one terminal state — `processed` for kinds this build acts on,
 //! `unsupported` for kinds it does not — and logs settlement failures with their class rather
 //! than swallowing them. Plan items 3+ replace the body of [`process_one`]; the intake contract
 //! around it does not move.
 //!
 //! The task is detached by design: after the shutdown grace window closes, queued-but-unprocessed
-//! items remain as `accepted` rows — visible in the database rather than silently gone. The
-//! durable inbound path arrives with the outbox/inbox work (plan item 4).
+//! items remain processable in the database rather than silently gone.
 
 use telegram_persistence::{Database, UpdateState};
 use tracing::Instrument as _;
@@ -21,8 +21,47 @@ pub async fn run_worker(
     database: Database,
     mut receiver: tokio::sync::mpsc::Receiver<QueuedUpdate>,
 ) {
-    while let Some(item) = receiver.recv().await {
-        process_one(&database, &item).await;
+    loop {
+        match database.claim_update().await {
+            Ok(Some(pending)) => match serde_json::from_str(&pending.payload) {
+                Ok(update) => {
+                    process_one(
+                        &database,
+                        &QueuedUpdate {
+                            bot_id: pending.bot_id,
+                            update,
+                        },
+                    )
+                    .await;
+                }
+                Err(error) => {
+                    tracing::error!(
+                        error = %error,
+                        class = "stored_payload_invalid",
+                        update_id = pending.update_id,
+                        bot_id = pending.bot_id,
+                        "a durable update payload could not be parsed",
+                    );
+                    let _ = database
+                        .settle_update(pending.bot_id, pending.update_id, UpdateState::Failed)
+                        .await;
+                }
+            },
+            Ok(None) => {
+                tokio::select! {
+                    item = receiver.recv() => {
+                        if item.is_none() {
+                            break;
+                        }
+                    }
+                    () = tokio::time::sleep(std::time::Duration::from_secs(1)) => {}
+                }
+            }
+            Err(error) => {
+                tracing::error!(error = %error, class = "claim_failed", "pending updates could not be claimed");
+                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+            }
+        }
     }
 }
 

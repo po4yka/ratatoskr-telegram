@@ -319,6 +319,33 @@ async fn a_valid_update_is_accepted_once_and_queued_once() {
     fixture.cleanup().await;
 }
 
+/// A replacement worker recovers an acknowledged update without the process-local notification.
+#[tokio::test]
+async fn an_admitted_update_is_processed_after_worker_restart() {
+    let mut fixture = Fixture::create().await;
+    assert_eq!(fixture.deliver(message_update(4002)).await, StatusCode::OK);
+
+    let Fixture {
+        database,
+        receiver,
+        app,
+    } = fixture;
+    drop(receiver);
+    drop(app);
+
+    let (restart_sender, restart_receiver) = tokio::sync::mpsc::channel(1);
+    drop(restart_sender);
+    intake::run_worker(database.database.clone(), restart_receiver).await;
+
+    let state: String = sqlx::query("select state from telegram.updates where update_id = 4002")
+        .fetch_one(database.pool())
+        .await
+        .expect("the admitted update remains durable")
+        .get("state");
+    database.cleanup().await.expect("cleanup");
+    assert_eq!(state, "processed");
+}
+
 /// Duplicate delivery has no effect the second time — including older ids arriving out of order —
 /// while genuinely unseen older ids still process.
 #[tokio::test]

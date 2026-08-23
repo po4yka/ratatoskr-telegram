@@ -7,8 +7,7 @@
 
 use crate::{Database, PersistenceError};
 
-/// An admitted update as the intake records it: who sent it, its identity on the wire, and its
-/// CLOSED classification label. No raw payload crosses this boundary.
+/// An admitted update as the intake records it, including its authenticated processable payload.
 #[derive(Debug, Clone)]
 pub struct AdmittedUpdate {
     /// The bot's user id, learned from `getMe` at startup.
@@ -17,6 +16,19 @@ pub struct AdmittedUpdate {
     pub update_id: i64,
     /// The classification label (`message`, `callback_query`, ..., `unsupported`).
     pub kind: String,
+    /// The parsed Bot API update serialized as JSON.
+    pub payload: String,
+}
+
+/// One durable update claimed for processing.
+#[derive(Debug, Clone)]
+pub struct PendingUpdate {
+    /// The receiving bot.
+    pub bot_id: i64,
+    /// Telegram's update identity.
+    pub update_id: i64,
+    /// The parsed Bot API update serialized as JSON.
+    pub payload: String,
 }
 
 /// What one [`Database::record_update`] decided. `Duplicate` is not an error: a redelivery is
@@ -73,13 +85,15 @@ impl Database {
         update: &AdmittedUpdate,
     ) -> Result<RecordOutcome, PersistenceError> {
         let inserted: Option<bool> = sqlx::query_scalar(
-            "insert into telegram.updates (bot_id, update_id, kind) values ($1, $2, $3)
+            "insert into telegram.updates (bot_id, update_id, kind, payload)
+             values ($1, $2, $3, $4::jsonb)
              on conflict (bot_id, update_id) do nothing
              returning true",
         )
         .bind(update.bot_id)
         .bind(update.update_id)
         .bind(&update.kind)
+        .bind(&update.payload)
         .fetch_optional(&self.pool)
         .await
         .map_err(PersistenceError::Query)?;
@@ -89,6 +103,38 @@ impl Database {
         } else {
             RecordOutcome::Duplicate
         })
+    }
+
+    /// Claim the oldest processable update, including one interrupted during processing.
+    ///
+    /// # Errors
+    ///
+    /// [`PersistenceError::Query`] if the claim fails.
+    pub async fn claim_update(&self) -> Result<Option<PendingUpdate>, PersistenceError> {
+        let row: Option<(i64, i64, String)> = sqlx::query_as(
+            "with pending as (
+                 select bot_id, update_id
+                 from telegram.updates
+                 where state in ('accepted', 'processing') and payload is not null
+                 order by received_at, bot_id, update_id
+                 for update skip locked
+                 limit 1
+             )
+             update telegram.updates as updates
+             set state = 'processing'
+             from pending
+             where updates.bot_id = pending.bot_id and updates.update_id = pending.update_id
+             returning updates.bot_id, updates.update_id, updates.payload::text",
+        )
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(PersistenceError::Query)?;
+
+        Ok(row.map(|(bot_id, update_id, payload)| PendingUpdate {
+            bot_id,
+            update_id,
+            payload,
+        }))
     }
 
     /// Move an admitted update's state forward, stamping the settle time on terminal states.
@@ -112,7 +158,9 @@ impl Database {
             "update telegram.updates
              set state = $3,
                  settled_at = case when $3 in ('processed', 'unsupported', 'failed')
-                                   then now() else settled_at end
+                                   then now() else settled_at end,
+                 payload = case when $3 in ('processed', 'unsupported', 'failed')
+                                then null else payload end
              where bot_id = $1 and update_id = $2",
         )
         .bind(bot_id)

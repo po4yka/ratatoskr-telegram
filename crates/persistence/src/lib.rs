@@ -14,7 +14,7 @@ pub mod test_support;
 
 pub mod updates;
 
-pub use updates::{AdmittedUpdate, RecordOutcome, UpdateState};
+pub use updates::{AdmittedUpdate, PendingUpdate, RecordOutcome, UpdateState};
 
 use std::time::Duration;
 
