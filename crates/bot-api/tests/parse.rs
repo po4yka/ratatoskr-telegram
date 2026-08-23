@@ -56,14 +56,12 @@ fn an_unknown_kind_is_unrecognized_not_malformed() {
 fn an_envelope_without_update_id_fails() {
     let raw = include_str!("fixtures/missing_id.json");
     serde_json::from_str::<bot_api::Update>(raw)
-        .err()
-        .expect("an envelope without an update id must fail to parse");
+        .expect_err("an envelope without an update id must fail to parse");
 }
 
 /// A body that is not JSON at all fails parsing.
 #[test]
 fn a_non_json_body_fails() {
     serde_json::from_str::<bot_api::Update>("<html>not json</html>")
-        .err()
-        .expect("non-JSON must fail to parse");
+        .expect_err("non-JSON must fail to parse");
 }

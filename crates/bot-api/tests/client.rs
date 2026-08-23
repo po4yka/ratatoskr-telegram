@@ -140,7 +140,7 @@ fn client(base_url: &Url) -> Client {
     .expect("the harness client must build")
 }
 
-fn ok_result(result: Value) -> Value {
+fn ok_result(result: &Value) -> Value {
     json!({"ok": true, "result": result})
 }
 
@@ -157,7 +157,7 @@ async fn get_me_returns_the_bot_identity() {
         .await
         .expect("get_me must resolve");
 
-    assert_eq!(me.user.id.0, 700100200);
+    assert_eq!(me.user.id.0, 700_100_200);
     assert_eq!(me.username(), "ratatoskr_test_bot");
 
     let captured = &harness.requests()[0];
@@ -180,10 +180,9 @@ async fn an_api_error_surfaces_as_its_class_without_the_token() {
     })
     .await;
     let failure = client(&harness.base_url)
-        .send_message(ChatId(900700601), "synthetic text")
+        .send_message(ChatId(900_700_601), "synthetic text")
         .await
-        .err()
-        .expect("an API error must fail the call");
+        .expect_err("an API error must fail the call");
 
     match failure {
         BotApiError::Api { description } => {
@@ -202,7 +201,7 @@ async fn an_api_error_surfaces_as_its_class_without_the_token() {
     );
 }
 
-/// A 429 with retry_after surfaces as the rate_limited class carrying that delay.
+/// A 429 with `retry_after` surfaces as the `rate_limited` class carrying that delay.
 #[tokio::test]
 async fn a_rate_limited_answer_carries_its_retry_delay() {
     let harness = Harness::spawn({
@@ -211,10 +210,9 @@ async fn a_rate_limited_answer_carries_its_retry_delay() {
     })
     .await;
     let failure = client(&harness.base_url)
-        .send_message(ChatId(900700601), "synthetic text")
+        .send_message(ChatId(900_700_601), "synthetic text")
         .await
-        .err()
-        .expect("429 must fail the call");
+        .expect_err("429 must fail the call");
     match failure {
         BotApiError::RateLimited { retry_after } => {
             assert_eq!(retry_after, Duration::from_secs(7));
@@ -237,8 +235,7 @@ async fn an_unreachable_endpoint_is_a_network_failure() {
     let failure = client(&base_url)
         .get_me()
         .await
-        .err()
-        .expect("closed port must fail");
+        .expect_err("closed port must fail");
     assert!(
         matches!(failure, BotApiError::Network(_)),
         "expected Network, got {failure:?}",
@@ -250,7 +247,7 @@ async fn an_unreachable_endpoint_is_a_network_failure() {
 async fn a_call_beyond_the_timeout_is_a_network_failure() {
     let harness = Harness::spawn(|_| {
         std::thread::sleep(Duration::from_secs(1));
-        ok_result(json!(true))
+        ok_result(&json!(true))
     })
     .await;
     let slow = Client::new(
@@ -262,8 +259,7 @@ async fn a_call_beyond_the_timeout_is_a_network_failure() {
     let failure = slow
         .get_me()
         .await
-        .err()
-        .expect("the timeout must fail the call");
+        .expect_err("the timeout must fail the call");
     assert!(matches!(failure, BotApiError::Network(_)), "{failure:?}");
 }
 
@@ -271,11 +267,11 @@ async fn a_call_beyond_the_timeout_is_a_network_failure() {
 #[tokio::test]
 async fn send_message_posts_its_typed_payload() {
     let harness = Harness::spawn(move |_| {
-        ok_result(fixture(include_str!("fixtures/message.json"))["message"].clone())
+        ok_result(&fixture(include_str!("fixtures/message.json"))["message"])
     })
     .await;
     let message = client(&harness.base_url)
-        .send_message(ChatId(900700602), "synthetic text")
+        .send_message(ChatId(900_700_602), "synthetic text")
         .await
         .expect("send_message must deliver");
     assert_eq!(message.id.0, 55);
@@ -283,24 +279,23 @@ async fn send_message_posts_its_typed_payload() {
     let captured = &harness.requests()[0];
     assert_eq!(captured.path, format!("/bot{TOKEN}/SendMessage"));
     let body = captured.body.clone().expect("sendMessage carries a body");
-    assert_eq!(body["chat_id"], 900700602);
+    assert_eq!(body["chat_id"], 900_700_602);
     assert_eq!(body["text"], "synthetic text");
 }
 
 /// `edit_message_text` addresses one message by chat and message id.
 #[tokio::test]
 async fn edit_message_text_addresses_one_message() {
-    let harness = Harness::spawn(|_| {
-        ok_result(fixture(include_str!("fixtures/message.json"))["message"].clone())
-    })
-    .await;
+    let harness =
+        Harness::spawn(|_| ok_result(&fixture(include_str!("fixtures/message.json"))["message"]))
+            .await;
     client(&harness.base_url)
-        .edit_message_text(ChatId(900700602), MessageId(55), "edited text")
+        .edit_message_text(ChatId(900_700_602), MessageId(55), "edited text")
         .await
         .expect("edit_message_text must deliver");
 
     let body = harness.requests()[0].body.clone().expect("body");
-    assert_eq!(body["chat_id"], 900700602);
+    assert_eq!(body["chat_id"], 900_700_602);
     assert_eq!(body["message_id"], 55);
     assert_eq!(body["text"], "edited text");
 }
@@ -308,7 +303,7 @@ async fn edit_message_text_addresses_one_message() {
 /// `answer_callback_query` names only the query id it answers.
 #[tokio::test]
 async fn answer_callback_query_names_the_query_id() {
-    let harness = Harness::spawn(|_| ok_result(json!(true))).await;
+    let harness = Harness::spawn(|_| ok_result(&json!(true))).await;
     client(&harness.base_url)
         .answer_callback_query("4382fecwq")
         .await
@@ -321,14 +316,14 @@ async fn answer_callback_query_names_the_query_id() {
 /// `send_chat_action` posts the typed action's wire name.
 #[tokio::test]
 async fn send_chat_action_posts_the_wire_action_name() {
-    let harness = Harness::spawn(|_| ok_result(json!(true))).await;
+    let harness = Harness::spawn(|_| ok_result(&json!(true))).await;
     client(&harness.base_url)
-        .send_chat_action(ChatId(900700602), ChatAction::Typing)
+        .send_chat_action(ChatId(900_700_602), ChatAction::Typing)
         .await
         .expect("send_chat_action must deliver");
 
     let body = harness.requests()[0].body.clone().expect("body");
-    assert_eq!(body["chat_id"], 900700602);
+    assert_eq!(body["chat_id"], 900_700_602);
     assert_eq!(body["action"], "typing");
 }
 
@@ -336,7 +331,7 @@ async fn send_chat_action_posts_the_wire_action_name() {
 /// teloxide frames this method as multipart because of its optional certificate parameter.
 #[tokio::test]
 async fn set_webhook_carries_the_url_and_the_secret() {
-    let harness = Harness::spawn(|_| ok_result(json!(true))).await;
+    let harness = Harness::spawn(|_| ok_result(&json!(true))).await;
     let webhook_secret = SecretString::new("webhook-secret-0123456789abcdef".into());
     client(&harness.base_url)
         .set_webhook(

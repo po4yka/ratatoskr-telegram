@@ -67,7 +67,7 @@ impl std::fmt::Debug for Intake {
             .field("secret", &"[REDACTED]")
             .field("max_body_bytes", &self.settings.max_body_bytes)
             .field("bot_id", &self.settings.bot_id)
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 
@@ -96,7 +96,6 @@ impl Intake {
     }
 
     /// The public router. One route; admission order lives in [`admit`].
-    #[must_use]
     pub fn router(self: &Arc<Self>) -> Router {
         Router::new()
             .route(WEBHOOK_PATH, any(admit))

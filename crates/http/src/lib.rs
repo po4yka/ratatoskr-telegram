@@ -58,13 +58,13 @@ const DATABASE_PROBE_INTERVAL: Duration = Duration::from_secs(5);
 ///    binds, so a process never reports itself ready with an unverified or unprepared dependency.
 ///    A role whose routes write through the pool (the webhook) REFUSES to start when that fails;
 ///    a role without such routes yet (the dispatcher) degrades to a failing readiness check.
-/// 5. Build and bind the public listener through `routes`, when the role brings one. A failed
+/// 5. Build and bind the public listener through `public_routes`, when the role brings one. A failed
 ///    build or bind logs at ERROR, runs the standard cleanup, and exits `1`.
 /// 6. Bind the admin listener. On failure log at ERROR and exit `1`.
 /// 7. [`RuntimeState::mark_startup_complete`] — readiness flips to 200.
 /// 8. Serve until SIGTERM or SIGINT, then [`drain_and_close`].
 /// 9. Stop the prober, close the pool, `TelemetryGuard::shutdown()`; exit `0`.
-pub async fn run(role: telegram_core::RuntimeRole, routes: PublicRoutes) -> ExitCode {
+pub async fn run(role: telegram_core::RuntimeRole, public_routes: PublicRoutes) -> ExitCode {
     let config = match telegram_core::config::load(role) {
         Ok(config) => Arc::new(config),
         Err(error) => {
@@ -95,7 +95,6 @@ pub async fn run(role: telegram_core::RuntimeRole, routes: PublicRoutes) -> Exit
     announce(&config);
 
     let runtime = Arc::new(RuntimeState::new(role));
-    let metrics_handle = guard.metrics_handle();
 
     let database = prepare_database(&config, &runtime).await;
     if database.is_none() && role_requires_database(role) {
@@ -110,7 +109,7 @@ pub async fn run(role: telegram_core::RuntimeRole, routes: PublicRoutes) -> Exit
 
     // The public listener comes from the role. Its factory runs inside the startup span so its
     // failures carry the same fields as every other startup record.
-    let public = match routes.take() {
+    let public = match public_routes.take() {
         None => None,
         Some(build) => {
             let context = PublicContext {
@@ -132,7 +131,7 @@ pub async fn run(role: telegram_core::RuntimeRole, routes: PublicRoutes) -> Exit
     };
 
     let Some(admin) = startup
-        .in_scope(|| bind_admin(&config, Arc::clone(&runtime), metrics_handle))
+        .in_scope(|| bind_admin(&config, Arc::clone(&runtime), guard.metrics_handle()))
         .await
     else {
         if let Some(database) = database.as_ref() {
@@ -151,7 +150,7 @@ pub async fn run(role: telegram_core::RuntimeRole, routes: PublicRoutes) -> Exit
     startup.in_scope(|| {
         tracing::info!(
             admin = %config.admin.bind,
-            public = public.as_ref().map(|served| served.local_addr()).map_or(
+            public = public.as_ref().map(shutdown::Served::local_addr).map_or(
                 "none".to_owned(),
                 |addr| addr.to_string(),
             ),

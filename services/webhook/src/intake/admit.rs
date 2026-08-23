@@ -126,11 +126,11 @@ pub(crate) async fn admit_ordered(intake: &Intake, parts: &Parts, body: Body) ->
                 }
             }
         }
-        Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
+        Err(tokio::sync::mpsc::error::TrySendError::Full(())) => {
             tracing::warn!(class = "queue_saturated", "the processing queue is full");
             Outcome::Overloaded
         }
-        Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
+        Err(tokio::sync::mpsc::error::TrySendError::Closed(())) => {
             tracing::error!(class = "queue_closed", "the processing queue is closed");
             Outcome::Overloaded
         }
@@ -183,6 +183,10 @@ pub struct BodyTooLarge;
 ///
 /// Frames are summed as they arrive, so neither a lying `Content-Length` nor a chunked stream can
 /// turn a forged delivery into allocated memory.
+///
+/// # Errors
+///
+/// Returns [`BodyTooLarge`] when the body exceeds `max_bytes` or a body frame cannot be read.
 pub async fn read_body_capped(
     mut body: Body,
     max_bytes: usize,

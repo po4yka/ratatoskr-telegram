@@ -27,7 +27,7 @@ use telegram_persistence::test_support::TestDatabase;
 use tower::ServiceExt;
 
 /// The synthetic bot identity every test uses.
-const BOT_ID: i64 = 700100200;
+const BOT_ID: i64 = 700_100_200;
 
 /// A synthetic high-entropy webhook secret.
 const SECRET: &str = "webhook-secret-0123456789abcdef";
@@ -38,9 +38,9 @@ fn message_update(update_id: i64) -> Value {
         "update_id": update_id,
         "message": {
             "message_id": 55,
-            "from": {"id": 900700601, "is_bot": false, "first_name": "Synthetic"},
-            "date": 1760000000i64,
-            "chat": {"id": 900700601, "type": "private", "first_name": "Synthetic"},
+            "from": {"id": 900_700_601, "is_bot": false, "first_name": "Synthetic"},
+            "date": 1_760_000_000_i64,
+            "chat": {"id": 900_700_601, "type": "private", "first_name": "Synthetic"},
             "text": "https://example.test/article",
         },
     })
@@ -451,7 +451,7 @@ async fn the_worker_settles_every_kind_it_classifies() {
         "update_id": 9001,
         "callback_query": {
             "id": "cq-test", "chat_instance": "-1",
-            "from": {"id": 900700601, "is_bot": false, "first_name": "Synthetic"},
+            "from": {"id": 900_700_601, "is_bot": false, "first_name": "Synthetic"},
             "data": "opaque-intent-token",
         },
     });

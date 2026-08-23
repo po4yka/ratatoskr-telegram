@@ -7,7 +7,7 @@
 //! Since plan item 2 the two roles have different requirements: the dispatcher still starts on
 //! defaults, while the webhook role demands its database, bot token and webhook secret, and
 //! refuses to start when the database it writes through cannot be reached. Its boot therefore
-//! also brings a disposable PostgreSQL database and an in-test harness Bot API server — no test
+//! also brings a disposable `PostgreSQL` database and an in-test harness Bot API server — no test
 //! contacts Telegram.
 //!
 //! It lives in `services/webhook` because that is the one package cargo builds both binaries for;
