@@ -1,11 +1,11 @@
 # Developing Ratatoskr Telegram
 
-> Status: Implemented for plan items 1 and 2; items 3 through 10 are Proposed.  
-> Last reviewed: 2026-08-23
+> Status: Implemented for plan items 1 through 3; items 4 through 10 are Proposed.  
+> Last reviewed: 2026-08-24
 
 ## Current stage
 
-Plan items 1 and 2 of `docs/IMPLEMENTATION_PLAN.md` are implemented and the commands marked **real**
+Plan items 1 through 3 of `docs/IMPLEMENTATION_PLAN.md` are implemented and the commands marked **real**
 below are real. The Cargo workspace, its pinned toolchain and its committed `Cargo.lock`; the
 `ratatoskr-telegram-core`, `ratatoskr-telegram-telemetry`, `ratatoskr-telegram-http` and
 `ratatoskr-telegram-persistence` library crates; the `ratatoskr-telegram-webhook` and
@@ -26,9 +26,17 @@ PostgreSQL, including after restart; the bounded in-process channel is only a wa
 hint. Terminal settlement removes the processable payload while keeping deduplication evidence.
 Malformed payloads are acked and logged, never retried into a storm.
 
-Not present yet, in plan order: identity/chat binding and access control (item 3), the dispatcher's
-projections and outbound queue (item 4), and everything after. No test contacts Telegram: the client
-is exercised against a local harness server with recorded fixtures.
+Plan item 3 added identity/chat binding and the owner access gate. `telegram.identities` and
+`telegram.chats` persist who the deployment admits (closed `enabled`/`disabled` vocabularies,
+private-only chats); the worker resolves sender and chat before any domain action and settles
+refusals as a new terminal `denied` state — silently, with class-only telemetry, externally
+indistinguishable across the three refusal classes. Startup seeds exactly one enabled owner row
+from `RATATOSKR__ACCESS__OWNER_TELEGRAM_USER_ID` (validation rule V14, required for the webhook
+role only); bootstrap is insert-if-absent, so an operator-disabled owner survives restarts.
+
+Not present yet, in plan order: the dispatcher's projections and outbound queue (item 4), plain-URL
+article submission (item 5), and everything after. No test contacts Telegram: the client is
+exercised against a local harness server with recorded fixtures.
 
 The database is REQUIRED for the webhook role since item 2: intake writes update deduplication
 through the pool, so a webhook that cannot reach its database refuses to start. The dispatcher still
