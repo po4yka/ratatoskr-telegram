@@ -22,7 +22,8 @@ use thiserror::Error as ThisError;
 use url::Url;
 
 pub use teloxide::types::{
-    CallbackQuery, ChatAction, ChatId, Me, Message, MessageId, Update, UpdateKind, User,
+    CallbackQuery, Chat, ChatAction, ChatId, ChatKind, MaybeInaccessibleMessage, Me, Message,
+    MessageId, Update, UpdateKind, User,
 };
 
 /// Why one Bot API call failed. Closed, extendable, and safe to render: no variant carries the

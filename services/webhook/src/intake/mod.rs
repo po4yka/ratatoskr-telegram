@@ -6,6 +6,7 @@
 //! Telegram's retry machinery never turns one bad body into a storm. Downstream work happens only
 //! through the bounded queue the handler hands to, never inline.
 
+mod access;
 mod admit;
 mod build;
 mod classify;

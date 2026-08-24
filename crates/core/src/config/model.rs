@@ -26,6 +26,11 @@ pub struct TelegramConfig {
     /// The operator listener. Every role binds one.
     pub admin: AdminConfig,
 
+    /// Who may talk to this deployment. Present for every role; only the webhook role requires
+    /// anything of it today (V14).
+    #[serde(default)]
+    pub access: AccessConfig,
+
     /// The Bot API endpoint, call budget and bot credential. Present for every role: the values
     /// are defaulted and harmless until a role's validation demands the token.
     #[serde(default)]
@@ -148,6 +153,21 @@ pub struct AdminConfig {
     /// firewall, not the bind address. An any-address default would silently publish `/metrics` on
     /// a developer's LAN, and one variable in an environment file is a loud, deliberate override.
     pub bind: SocketAddr,
+}
+
+/// Who may talk to this deployment: the owner-first access policy seed.
+///
+/// One member today; more arrives with the plan items that read it, never before.
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AccessConfig {
+    /// `RATATOSKR__ACCESS__OWNER_TELEGRAM_USER_ID`. The deployment owner's Telegram user id.
+    ///
+    /// A positive i64 (rule V14 refuses every other value). The webhook role requires it: it
+    /// resolves every delivery against this id and seeds its identity row at startup. Absent
+    /// means unconfigured, which that role's validation refuses.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner_telegram_user_id: Option<i64>,
 }
 
 /// The `PostgreSQL` connection this service owns. It reaches the `telegram` schema and no other.

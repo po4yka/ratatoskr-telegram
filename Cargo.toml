@@ -41,7 +41,7 @@ subtle = { version = "2.6.1", default-features = false }
 # No `migrate` feature: the schema is one file, `include_str!`d into the binary by
 # `ratatoskr-telegram-persistence`, so a deployment cannot drift from its schema and there is no
 # ledger to record.
-sqlx = { version = "0.8.6", default-features = false, features = ["runtime-tokio", "tls-rustls-ring", "postgres"] }
+    sqlx = { version = "0.8.6", default-features = false, features = ["runtime-tokio", "tls-rustls-ring", "postgres", "uuid"] }
 
 # ---- async runtime and HTTP ----
 tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros", "signal", "net", "time", "sync"] }

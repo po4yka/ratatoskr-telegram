@@ -1,4 +1,4 @@
-//! The startup validation rules V1–V7 and the operator-facing failure report.
+//! The startup validation rules and the operator-facing failure report.
 //!
 //! Order at startup is strictly: extract, validate, initialise telemetry, bind listeners. Telemetry
 //! is initialised *after* validation so that an invalid `log_filter` fails as a configuration
@@ -36,7 +36,7 @@ pub struct Violation {
 /// mid-drain under systemd's default 90-second stop timeout.
 pub const SHUTDOWN_CEILING_SECONDS: u64 = 120;
 
-/// Applies V1–V13 and returns every violation found, in rule order.
+/// Applies V1–V14 and returns every violation found, in rule order.
 pub(crate) fn validate(role: RuntimeRole, config: &TelegramConfig) -> Vec<Violation> {
     let mut found = Vec::new();
 
@@ -73,6 +73,7 @@ pub(crate) fn validate(role: RuntimeRole, config: &TelegramConfig) -> Vec<Violat
     found.extend(otlp_violations(config));
     found.extend(database_violations(config));
     found.extend(bot_api_violations(config));
+    found.extend(access_violations(config));
     found.extend(webhook_violations(role, config));
 
     found
@@ -223,6 +224,23 @@ fn bot_api_violations(config: &TelegramConfig) -> Vec<Violation> {
     found
 }
 
+/// V14 — value half: a Telegram user id is a positive i64. Zero and negatives are not ids any
+/// Telegram principal carries; refusing them at startup beats discovering the policy admits
+/// nobody, silently, on the first delivery.
+fn access_violations(config: &TelegramConfig) -> Vec<Violation> {
+    let mut found = Vec::new();
+    if let Some(owner) = config.access.owner_telegram_user_id
+        && owner <= 0
+    {
+        found.push(Violation {
+            key: "access.owner_telegram_user_id",
+            env_var: "RATATOSKR__ACCESS__OWNER_TELEGRAM_USER_ID",
+            rule: "must be a positive Telegram user id",
+        });
+    }
+    found
+}
+
 /// The webhook secret Telegram echoes back on every delivery: 16..=256 characters over
 /// `[A-Za-z0-9_-]` — Telegram's own charset for the value, with the floor forcing entropy.
 fn secret_token_ok(secret: &str) -> bool {
@@ -265,6 +283,15 @@ fn webhook_violations(role: RuntimeRole, config: &TelegramConfig) -> Vec<Violati
                 key: "database.url",
                 env_var: "RATATOSKR__DATABASE__URL",
                 rule: "is required: the webhook writes update deduplication through the database",
+            });
+        }
+        // V14 — requirement half. The gate resolves every delivery against this id and startup
+        // seeds its identity row; without it the process cannot tell anyone from anyone.
+        if config.access.owner_telegram_user_id.is_none() {
+            found.push(Violation {
+                key: "access.owner_telegram_user_id",
+                env_var: "RATATOSKR__ACCESS__OWNER_TELEGRAM_USER_ID",
+                rule: "is required: the webhook admits senders against the configured owner",
             });
         }
     }
@@ -378,5 +405,78 @@ const fn reason_of(error: &figment::Error) -> &'static str {
         Kind::UnknownField(_, _) => "is not a configuration key of this process",
         Kind::MissingField(_) => "is required and was not supplied",
         _ => "could not be read as the type of this field",
+    }
+}
+
+#[cfg(test)]
+mod access_owner_tests {
+    #![allow(
+        clippy::expect_used,
+        clippy::panic,
+        reason = "assertions in a test module"
+    )]
+    #![allow(
+        clippy::result_large_err,
+        reason = "as the integration suites: figment::Error is the specified payload"
+    )]
+
+    use figment::Jail;
+
+    use crate::config::{ConfigError, figment, load_from};
+    use crate::role::RuntimeRole;
+
+    /// The environment a webhook-role load needs besides the value under test.
+    fn admit_webhook_basics(jail: &mut Jail) {
+        jail.set_env("RATATOSKR__BOT_API__TOKEN", "123456:TEST-owner-rules-token");
+        jail.set_env(
+            "RATATOSKR__WEBHOOK__SECRET_TOKEN",
+            "webhook-secret-0123456789abcdef",
+        );
+        jail.set_env(
+            "RATATOSKR__DATABASE__URL",
+            "postgres://telegram@127.0.0.1:5432/telegram",
+        );
+    }
+
+    /// Rule V14, requirement half: a webhook process without an owner id has no policy to admit
+    /// against and must refuse to start rather than improvise one.
+    #[test]
+    fn the_webhook_role_requires_the_owner_telegram_user_id() {
+        Jail::expect_with(|jail| {
+            jail.clear_env();
+            admit_webhook_basics(jail);
+            let error = load_from(RuntimeRole::Webhook, figment(RuntimeRole::Webhook))
+                .expect_err("a webhook without an owner id must be refused");
+            let ConfigError::Invalid(violations) = &error else {
+                panic!("expected semantic violations, got {error:?}");
+            };
+            let violation = violations
+                .iter()
+                .find(|violation| violation.key == "access.owner_telegram_user_id")
+                .expect("the missing owner id to be named");
+            assert_eq!(
+                violation.env_var,
+                "RATATOSKR__ACCESS__OWNER_TELEGRAM_USER_ID"
+            );
+            assert!(
+                violation.rule.contains("required"),
+                "the rule must say the value is required: {:?}",
+                violation.rule
+            );
+            Ok(())
+        });
+    }
+
+    /// The dispatcher owns no intake, so it validates cleanly with no access configuration at
+    /// all: the requirement is per role, not global.
+    #[test]
+    fn the_dispatcher_validates_without_any_access_configuration() {
+        Jail::expect_with(|jail| {
+            jail.clear_env();
+            let config = load_from(RuntimeRole::Dispatcher, figment(RuntimeRole::Dispatcher))
+                .expect("dispatcher defaults must validate");
+            assert_eq!(config.access.owner_telegram_user_id, None);
+            Ok(())
+        });
     }
 }
