@@ -26,7 +26,7 @@ use figment::Figment;
 use figment::providers::{Env, Serialized};
 
 pub use crate::config::model::{
-    AdminConfig, BotApiConfig, DatabaseConfig, LogFormat, OtlpConfig, ShutdownConfig,
+    AccessConfig, AdminConfig, BotApiConfig, DatabaseConfig, LogFormat, OtlpConfig, ShutdownConfig,
     TelegramConfig, TelemetryConfig, WebhookConfig,
 };
 pub use crate::config::validate::{SHUTDOWN_CEILING_SECONDS, Violation};
@@ -97,6 +97,9 @@ impl TelegramConfig {
             admin: AdminConfig {
                 bind: std::net::SocketAddr::new(loopback, role.default_admin_port()),
             },
+            // No owner by default: an owner id names a real Telegram principal, so there is no
+            // default that is not either wrong or fabricated. The webhook role demands one (V14).
+            access: AccessConfig::default(),
             // Absent by default, in every role. A database URL carries a credential, so there is
             // no default that is not either wrong or a secret in the source tree.
             database: None,
@@ -157,5 +160,103 @@ impl ConfigError {
     #[must_use]
     pub const fn exit_code(&self) -> u8 {
         78
+    }
+}
+
+#[cfg(test)]
+mod access_owner_tests {
+    #![allow(
+        clippy::expect_used,
+        clippy::panic,
+        reason = "assertions in a test module"
+    )]
+    #![allow(
+        clippy::result_large_err,
+        reason = "as the integration suites: figment::Error is the specified payload"
+    )]
+
+    use figment::Jail;
+
+    use super::{RuntimeRole, figment, load_from};
+    use crate::config::{ConfigError, TelegramConfig};
+
+    /// The environment a webhook-role load needs besides the value under test, so an assertion is
+    /// about that value alone.
+    fn admit_webhook_basics(jail: &mut Jail) {
+        jail.set_env(
+            "RATATOSKR__BOT_API__TOKEN",
+            "123456:TEST-owner-config-token",
+        );
+        jail.set_env(
+            "RATATOSKR__WEBHOOK__SECRET_TOKEN",
+            "webhook-secret-0123456789abcdef",
+        );
+        jail.set_env(
+            "RATATOSKR__DATABASE__URL",
+            "postgres://telegram@127.0.0.1:5432/telegram",
+        );
+    }
+
+    #[test]
+    fn access_owner_telegram_user_id_parses_positive_i64() {
+        Jail::expect_with(|jail| {
+            jail.clear_env();
+            admit_webhook_basics(jail);
+            jail.set_env("RATATOSKR__ACCESS__OWNER_TELEGRAM_USER_ID", "700100200");
+            let config = load_from(RuntimeRole::Webhook, figment(RuntimeRole::Webhook))
+                .expect("a positive id parses");
+            assert_eq!(config.access.owner_telegram_user_id, Some(700_100_200));
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn access_owner_telegram_user_id_refuses_zero_negative_non_integer() {
+        Jail::expect_with(|jail| {
+            jail.clear_env();
+            admit_webhook_basics(jail);
+
+            // Zero and a negative parse as i64 but are refused by rule V14: Telegram user ids
+            // are positive. The refusal names the key and never echoes the value.
+            for bad in ["0", "-700100200"] {
+                jail.set_env("RATATOSKR__ACCESS__OWNER_TELEGRAM_USER_ID", bad);
+                let error = load_from(RuntimeRole::Webhook, figment(RuntimeRole::Webhook))
+                    .expect_err("a non-positive owner id must be refused");
+                let ConfigError::Invalid(violations) = &error else {
+                    panic!("expected a V14 violation for a non-positive id, got {error:?}");
+                };
+                let violation = violations
+                    .iter()
+                    .find(|violation| violation.key == "access.owner_telegram_user_id")
+                    .expect("the V14 violation to name the key");
+                assert_eq!(
+                    violation.env_var,
+                    "RATATOSKR__ACCESS__OWNER_TELEGRAM_USER_ID"
+                );
+                assert!(
+                    violation.rule.contains("positive"),
+                    "the rule must say what positive means: {:?}",
+                    violation.rule
+                );
+            }
+
+            // A non-integer cannot even be extracted; the report names the key and no value.
+            jail.set_env("RATATOSKR__ACCESS__OWNER_TELEGRAM_USER_ID", "not-a-number");
+            let error = load_from(RuntimeRole::Webhook, figment(RuntimeRole::Webhook))
+                .expect_err("a non-integer owner id must not parse");
+            let report = error.report(RuntimeRole::Webhook);
+            assert!(report.contains("access.owner_telegram_user_id"), "{report}");
+            assert!(!report.contains("not-a-number"), "{report}");
+            Ok(())
+        });
+    }
+
+    /// The defaults carry no owner: one names a real principal and cannot be fabricated. Kept
+    /// next to the parse tests because both pin [`AccessConfig`]'s contract inside
+    /// [`TelegramConfig`].
+    #[test]
+    fn the_access_section_defaults_to_no_owner() {
+        let config = TelegramConfig::defaults(RuntimeRole::Dispatcher);
+        assert_eq!(config.access.owner_telegram_user_id, None);
     }
 }

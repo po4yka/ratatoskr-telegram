@@ -200,6 +200,42 @@ fn terminal_settlement_removes_the_processable_payload() {
     });
 }
 
+/// A settlement the access policy forced — an unauthorized sender — is an ordinary terminal
+/// transition at this layer: the dedupe evidence stays, the settle time stamps, and the
+/// processable payload goes. Whether to deny lives above this crate; that the denial is recorded
+/// truthfully lives here.
+#[test]
+fn settle_denied_marks_terminal_and_minimizes_payload() {
+    let runtime = tokio::runtime::Runtime::new().expect("test runtime");
+    runtime.block_on(async {
+        let test = database().await;
+        let db = &test.database;
+
+        db.record_update(&admitted(700_100_200, 9))
+            .await
+            .expect("the insert");
+        db.settle_update(700_100_200, 9, UpdateState::Denied)
+            .await
+            .expect("the denied settlement");
+
+        let row = sqlx::query(
+            "select state, settled_at is not null as settled, payload is null as payload_removed
+             from telegram.updates where bot_id = 700100200 and update_id = 9",
+        )
+        .fetch_one(db.pool())
+        .await
+        .expect("the settled row");
+        assert_eq!(row.get::<&str, _>("state"), "denied");
+        assert!(row.get::<bool, _>("settled"));
+        assert!(
+            row.get::<bool, _>("payload_removed"),
+            "a denied update must \
+            lose its processable payload just like any other terminal state"
+        );
+        test.cleanup().await.expect("cleanup");
+    });
+}
+
 /// Settling an update that was never admitted fails and writes nothing.
 #[test]
 fn settling_an_unknown_pair_fails_writing_nothing() {

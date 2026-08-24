@@ -53,6 +53,7 @@ fn a_violation_report_never_quotes_the_supplied_value() {
             "RATATOSKR__DATABASE__URL",
             "mysql://user:secret-password@db.example:3306/x",
         );
+        jail.set_env("RATATOSKR__ACCESS__OWNER_TELEGRAM_USER_ID", "700100200");
         let error = config::load_from(RuntimeRole::Webhook, config::figment(RuntimeRole::Webhook))
             .expect_err("the scheme rule must fail");
         let report = error.report(RuntimeRole::Webhook);

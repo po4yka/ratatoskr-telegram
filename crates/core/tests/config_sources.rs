@@ -59,6 +59,7 @@ fn one_variable_overrides_exactly_one_field() {
             "RATATOSKR__DATABASE__URL",
             "postgres://telegram@127.0.0.1:5432/telegram",
         );
+        jail.set_env("RATATOSKR__ACCESS__OWNER_TELEGRAM_USER_ID", "700100200");
         let config = config::load_from(RuntimeRole::Webhook, config::figment(RuntimeRole::Webhook))
             .expect("the override parses");
         assert_eq!(config.admin.bind.port(), 9998);
@@ -86,6 +87,7 @@ fn nested_tables_parse_from_joined_variables() {
             "RATATOSKR__WEBHOOK__SECRET_TOKEN",
             "webhook-secret-0123456789abcdef",
         );
+        jail.set_env("RATATOSKR__ACCESS__OWNER_TELEGRAM_USER_ID", "700100200");
         let config = config::load_from(RuntimeRole::Webhook, config::figment(RuntimeRole::Webhook))
             .expect("the nested table parses");
         let database = config.database.expect("the database table is present");

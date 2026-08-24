@@ -12,8 +12,10 @@
 #[cfg(feature = "test-support")]
 pub mod test_support;
 
+pub mod bindings;
 pub mod updates;
 
+pub use bindings::{AccessState, ChatRecord, IdentityProfile, IdentityRecord};
 pub use updates::{AdmittedUpdate, PendingUpdate, RecordOutcome, UpdateState};
 
 use std::time::Duration;

@@ -31,6 +31,7 @@ fn webhook_env(jail: &mut Jail) {
         "RATATOSKR__DATABASE__URL",
         "postgres://telegram@127.0.0.1:5432/telegram",
     );
+    jail.set_env("RATATOSKR__ACCESS__OWNER_TELEGRAM_USER_ID", "700100200");
 }
 
 fn violations_of(role: RuntimeRole) -> Vec<String> {
@@ -142,15 +143,20 @@ fn identical_admin_and_public_binds_are_refused() {
     });
 }
 
-/// V13 — the webhook role demands its token, its secret and its database by name, in one report,
-/// when none are configured.
+/// V13 and V14 — the webhook role demands its token, its secret, its database and its owner by
+/// name, in one report, when none are configured.
 #[test]
 fn the_webhook_role_names_every_missing_requirement() {
     Jail::expect_with(|jail| {
         jail.clear_env();
 
         let keys = violations_of(RuntimeRole::Webhook);
-        for required in ["bot_api.token", "webhook.secret_token", "database.url"] {
+        for required in [
+            "bot_api.token",
+            "webhook.secret_token",
+            "database.url",
+            "access.owner_telegram_user_id",
+        ] {
             assert!(
                 keys.contains(&required.to_owned()),
                 "{required} not named: {keys:#?}"

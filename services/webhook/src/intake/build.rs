@@ -10,6 +10,7 @@ use std::time::Duration;
 use axum::Router;
 use telegram_core::{Subsystem, TelegramError};
 use telegram_http::PublicContext;
+use telegram_persistence::IdentityProfile;
 
 use crate::intake::{self, Intake, IntakeSettings};
 
@@ -60,6 +61,23 @@ pub async fn build(context: PublicContext) -> Result<Router, TelegramError> {
 
     // Telegram bot ids fit u32 today; the dedupe column is bigint, so widen once here.
     let bot_id = i64::from(u32::try_from(me.user.id.0).unwrap_or(u32::MAX));
+
+    // Design D3: the owner row exists before the first delivery is admitted, inserted only when
+    // absent — an operator-disabled row survives every restart. Rule V14 guarantees the value
+    // for this role; the defensive arm refuses rather than serve a policy with no principal.
+    let Some(owner_id) = context.config.access.owner_telegram_user_id else {
+        return Err(TelegramError::internal(
+            Subsystem::Http,
+            std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "the owner telegram user id was not configured",
+            ),
+        ));
+    };
+    database
+        .ensure_identity(owner_id, &IdentityProfile::default())
+        .await?;
+    tracing::debug!("the configured owner identity is present");
 
     let settings = IntakeSettings {
         secret: webhook.secret_token.clone(),

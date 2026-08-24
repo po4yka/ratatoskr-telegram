@@ -28,6 +28,12 @@ pub const TELEGRAM_WEBHOOK_REQUESTS_TOTAL: &str = "telegram_webhook_requests_tot
 /// the label stays bounded by the update taxonomy, never by request content.
 pub const TELEGRAM_UPDATES_RECEIVED_TOTAL: &str = "telegram_updates_received_total";
 
+/// `telegram_updates_denied_total{class}` — counter. One increment per update the authorization
+/// gate refuses, labelled by the closed outcome vocabulary: `unknown_sender`, `disabled_identity`,
+/// `non_private_chat`. Deliberately identifier-free: the three classes are externally
+/// indistinguishable by design, and the labels must not become an enrollment oracle either.
+pub const TELEGRAM_UPDATES_DENIED_TOTAL: &str = "telegram_updates_denied_total";
+
 /// `telegram_webhook_duration_seconds` — histogram on [`DURATION_BUCKETS`]. Admission only:
 /// verification, limits, parse, dedupe insert and queue handoff — never downstream processing,
 /// which happens after the response.

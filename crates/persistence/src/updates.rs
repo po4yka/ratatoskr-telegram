@@ -55,6 +55,9 @@ pub enum UpdateState {
     Unsupported,
     /// Processing failed after acceptance; the row records it rather than hiding it.
     Failed,
+    /// The access policy refused the sender or chat before any processing ran. The webhook
+    /// decides this; this layer only records the outcome.
+    Denied,
 }
 
 impl UpdateState {
@@ -66,6 +69,7 @@ impl UpdateState {
             Self::Processed => "processed",
             Self::Unsupported => "unsupported",
             Self::Failed => "failed",
+            Self::Denied => "denied",
         }
     }
 }
@@ -157,9 +161,9 @@ impl Database {
         let result = sqlx::query(
             "update telegram.updates
              set state = $3,
-                 settled_at = case when $3 in ('processed', 'unsupported', 'failed')
+                 settled_at = case when $3 in ('processed', 'unsupported', 'failed', 'denied')
                                    then now() else settled_at end,
-                 payload = case when $3 in ('processed', 'unsupported', 'failed')
+                 payload = case when $3 in ('processed', 'unsupported', 'failed', 'denied')
                                 then null else payload end
              where bot_id = $1 and update_id = $2",
         )

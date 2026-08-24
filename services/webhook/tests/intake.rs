@@ -23,24 +23,53 @@ use ratatoskr_telegram_webhook::intake::{self, Intake, IntakeSettings, QueuedUpd
 use secrecy::SecretString;
 use serde_json::{Value, json};
 use sqlx::Row;
+use telegram_persistence::IdentityProfile;
 use telegram_persistence::test_support::TestDatabase;
 use tower::ServiceExt;
 
 /// The synthetic bot identity every test uses.
 const BOT_ID: i64 = 700_100_200;
 
+/// The deployment owner the fixtures bootstrap, mirroring what startup does from configuration.
+const OWNER_TELEGRAM_USER_ID: i64 = 900_700_601;
+
 /// A synthetic high-entropy webhook secret.
 const SECRET: &str = "webhook-secret-0123456789abcdef";
 
-/// A valid Bot API message update with the given id.
+/// A valid Bot API message update from the owner in a private chat, with the given id.
 fn message_update(update_id: i64) -> Value {
+    message_from(
+        update_id,
+        OWNER_TELEGRAM_USER_ID,
+        OWNER_TELEGRAM_USER_ID,
+        "private",
+    )
+}
+
+/// A message update from an arbitrary sender into an arbitrary chat.
+fn message_from(update_id: i64, sender: i64, chat_id: i64, chat_type: &str) -> Value {
     json!({
         "update_id": update_id,
         "message": {
             "message_id": 55,
-            "from": {"id": 900_700_601, "is_bot": false, "first_name": "Synthetic"},
+            "from": {"id": sender, "is_bot": false, "first_name": "Synthetic"},
             "date": 1_760_000_000_i64,
-            "chat": {"id": 900_700_601, "type": "private", "first_name": "Synthetic"},
+            "chat": {"id": chat_id, "type": chat_type, "first_name": "Synthetic"},
+            "text": "https://example.test/article",
+        },
+    })
+}
+
+/// A message update delivered into a group conversation: the shape the policy must refuse
+/// without creating a chat row for it.
+fn group_message_update(update_id: i64, sender: i64) -> Value {
+    json!({
+        "update_id": update_id,
+        "message": {
+            "message_id": 56,
+            "from": {"id": sender, "is_bot": false, "first_name": "Synthetic"},
+            "date": 1_760_000_000_i64,
+            "chat": {"id": -100_200_300, "type": "group", "title": "Synthetic Group"},
             "text": "https://example.test/article",
         },
     })
@@ -67,6 +96,14 @@ impl Fixture {
 
     async fn with_settings(settings: IntakeSettings) -> Self {
         let database = TestDatabase::create().await.expect("disposable database");
+        // The production bootstrap seeds exactly one enabled owner from configuration before any
+        // delivery; every fixture does the same so its expectations are about the gate, not
+        // about enrollment.
+        database
+            .database
+            .ensure_identity(OWNER_TELEGRAM_USER_ID, &IdentityProfile::default())
+            .await
+            .expect("the fixture owner identity");
         let (intake, receiver) = Intake::new(settings, database.database.clone());
         let app = intake.router();
         Self {
@@ -452,6 +489,11 @@ async fn the_worker_settles_every_kind_it_classifies() {
         "callback_query": {
             "id": "cq-test", "chat_instance": "-1",
             "from": {"id": 900_700_601, "is_bot": false, "first_name": "Synthetic"},
+            "message": {
+                "message_id": 77,
+                "date": 1_760_000_000_i64,
+                "chat": {"id": 900_700_601, "type": "private", "first_name": "Synthetic"},
+            },
             "data": "opaque-intent-token",
         },
     });
@@ -482,6 +524,133 @@ async fn the_worker_settles_every_kind_it_classifies() {
     assert_eq!(fixture.states_of(9003).await, ["processed"]);
     assert_eq!(fixture.states_of(9001).await, ["processed"]);
     assert_eq!(fixture.states_of(9002).await, ["unsupported"]);
+    fixture.cleanup().await;
+}
+
+/// An update from a sender with no identity record never reaches domain processing: it settles
+/// `denied`, its processable payload is minimized, nothing enrolls the stranger, and no chat row
+/// appears. There is no outbound Bot API call to observe: the worker holds no client at all, and
+/// the boot suite pins the process-wide total (exactly one startup `getMe`) so any future reply
+/// path would break these assertions together.
+#[tokio::test]
+async fn unauthorized_sender_settles_denied_without_outbound_calls() {
+    const STRANGER: i64 = 800_800_801;
+
+    let mut fixture = Fixture::create().await;
+    assert_eq!(
+        fixture
+            .deliver(message_from(12_001, STRANGER, STRANGER, "private"))
+            .await,
+        StatusCode::OK
+    );
+    let item = fixture.receiver.try_recv().expect("queued");
+    intake::process_one(&fixture.database.database, &item).await;
+
+    assert_eq!(fixture.states_of(12_001).await, ["denied"]);
+    let minimized: bool = sqlx::query(
+        "select payload is null as minimized from telegram.updates where update_id = 12001",
+    )
+    .fetch_one(fixture.database.pool())
+    .await
+    .expect("the settled row")
+    .get("minimized");
+    assert!(minimized, "a denied update must not keep its payload");
+
+    let strangers: i64 = sqlx::query(
+        "select count(*)::bigint as n from telegram.identities where telegram_user_id = $1",
+    )
+    .bind(STRANGER)
+    .fetch_one(fixture.database.pool())
+    .await
+    .expect("count")
+    .get("n");
+    assert_eq!(strangers, 0, "an unauthorized sender must not be enrolled");
+
+    let chats: i64 =
+        sqlx::query("select count(*)::bigint as n from telegram.chats where chat_id = $1")
+            .bind(STRANGER)
+            .fetch_one(fixture.database.pool())
+            .await
+            .expect("count")
+            .get("n");
+    assert_eq!(chats, 0, "a denied delivery must not create a chat row");
+
+    fixture.cleanup().await;
+}
+
+/// The rest of the policy matrix: an enrolled-but-disabled identity and a group conversation
+/// deny exactly like an unknown sender — same terminal state, same minimized payload — and a
+/// group chat gains no row even when the sender is the enabled owner.
+#[tokio::test]
+async fn a_disabled_identity_and_a_group_chat_deny_like_an_unknown_sender() {
+    const DISABLED_STRANGER: i64 = 800_800_802;
+
+    let mut fixture = Fixture::create().await;
+
+    // Enrolled yesterday, disabled since: the gate must not resurrect or admit them.
+    fixture
+        .database
+        .database
+        .ensure_identity(DISABLED_STRANGER, &IdentityProfile::default())
+        .await
+        .expect("the enrolled identity");
+    sqlx::query(
+        "update telegram.identities set access_state = 'disabled' where telegram_user_id = $1",
+    )
+    .bind(DISABLED_STRANGER)
+    .execute(fixture.database.pool())
+    .await
+    .expect("the disable");
+
+    for (update_id, update) in [
+        (
+            12_101,
+            message_from(12_101, DISABLED_STRANGER, DISABLED_STRANGER, "private"),
+        ),
+        (12_201, group_message_update(12_201, OWNER_TELEGRAM_USER_ID)),
+    ] {
+        assert_eq!(fixture.deliver(update).await, StatusCode::OK);
+        let item = fixture.receiver.try_recv().expect("queued");
+        assert_eq!(item.update.id.0, u32::try_from(update_id).expect("fits"));
+        intake::process_one(&fixture.database.database, &item).await;
+        assert_eq!(fixture.states_of(update_id).await, ["denied"]);
+        let minimized: bool = sqlx::query(
+            "select payload is null as minimized from telegram.updates where update_id = $1",
+        )
+        .bind(update_id)
+        .fetch_one(fixture.database.pool())
+        .await
+        .expect("the settled row")
+        .get("minimized");
+        assert!(minimized, "{update_id}: every denial minimizes the payload");
+    }
+
+    // Identical observable shape across classes: state, kind, no payload.
+    let shapes: Vec<(String, String)> = sqlx::query(
+        "select kind, coalesce(state, '') as state from telegram.updates where payload is null \
+         and state in ('denied') order by update_id",
+    )
+    .fetch_all(fixture.database.pool())
+    .await
+    .expect("rows")
+    .into_iter()
+    .map(|row| {
+        (
+            row.get::<&str, _>("kind").to_owned(),
+            row.get::<&str, _>("state").to_owned(),
+        )
+    })
+    .collect();
+    assert_eq!(shapes, vec![("message".to_owned(), "denied".to_owned()); 2]);
+
+    let group_rows: i64 =
+        sqlx::query("select count(*)::bigint as n from telegram.chats where chat_id = -100200300")
+            .fetch_one(fixture.database.pool())
+            .await
+            .expect("count")
+            .get("n");
+    assert_eq!(group_rows, 0, "a refused group must gain no chat row");
+
     fixture.cleanup().await;
 }
 

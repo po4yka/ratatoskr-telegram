@@ -28,6 +28,8 @@ use std::process::{Child, Command, Stdio};
 use std::thread::sleep;
 use std::time::{Duration, Instant};
 
+use sqlx::Row as _;
+
 /// How long a binary may take to answer `/health/ready` with `200`. Generous: a loaded CI runner
 /// starting a cold process is the slow case, and the cost of a too-short timeout is a flake.
 const READY_TIMEOUT: Duration = Duration::from_secs(30);
@@ -79,6 +81,7 @@ fn the_webhook_boots_with_full_intake_configuration_and_reports_ready() {
             ("RATATOSKR__BOT_API__BASE_URL", harness.url.as_str()),
             ("RATATOSKR__BOT_API__TOKEN", BOT_TOKEN),
             ("RATATOSKR__WEBHOOK__SECRET_TOKEN", SECRET_TOKEN),
+            ("RATATOSKR__ACCESS__OWNER_TELEGRAM_USER_ID", "700100200"),
         ],
         ADMIN_PORT,
     );
@@ -98,6 +101,89 @@ fn the_webhook_boots_with_full_intake_configuration_and_reports_ready() {
     );
 }
 
+/// D3 end to end, as real processes: startup seeds exactly one enabled owner row from the
+/// configured id, and an operator-disabled row survives a restart unchanged and singular —
+/// bootstrap is insert-if-absent, never a resurrection.
+#[test]
+fn startup_provisions_owner_once_without_resurrection() {
+    const ADMIN_PORT: u16 = 9481;
+    const PUBLIC_PORT: u16 = 9482;
+
+    let harness = harness_bot_api();
+    let runtime = tokio::runtime::Runtime::new().expect("boot runtime");
+    let test = runtime
+        .block_on(async { telegram_persistence::test_support::TestDatabase::create().await })
+        .expect("a disposable database");
+    let database_url = test.url();
+    let pool = runtime.block_on(async {
+        sqlx::postgres::PgPoolOptions::new()
+            .max_connections(1)
+            .connect(&database_url)
+            .await
+            .expect("the fixture database connects")
+    });
+
+    let env = [
+        ("RATATOSKR__TELEMETRY__LOG_FORMAT", "pretty"),
+        ("RATATOSKR__ADMIN__BIND", &format!("127.0.0.1:{ADMIN_PORT}")),
+        (
+            "RATATOSKR__WEBHOOK__BIND",
+            &format!("127.0.0.1:{PUBLIC_PORT}"),
+        ),
+        ("RATATOSKR__DATABASE__URL", database_url.as_str()),
+        ("RATATOSKR__BOT_API__BASE_URL", harness.url.as_str()),
+        ("RATATOSKR__BOT_API__TOKEN", BOT_TOKEN),
+        ("RATATOSKR__WEBHOOK__SECRET_TOKEN", SECRET_TOKEN),
+        ("RATATOSKR__ACCESS__OWNER_TELEGRAM_USER_ID", "700100200"),
+    ];
+
+    boots("ratatoskr-telegram-webhook", &env, ADMIN_PORT);
+
+    let enabled: i64 = runtime.block_on(async {
+        sqlx::query_scalar(
+            "select count(*)::bigint from telegram.identities where access_state = 'enabled'",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("the count")
+    });
+    assert_eq!(
+        enabled, 1,
+        "a fresh database gains exactly one enabled owner"
+    );
+
+    // The documented interim control: direct SQL while the process is down.
+    runtime.block_on(async {
+        sqlx::query("update telegram.identities set access_state = 'disabled'")
+            .execute(&pool)
+            .await
+            .expect("the disable");
+    });
+
+    boots("ratatoskr-telegram-webhook", &env, ADMIN_PORT);
+
+    let states: Vec<String> = runtime.block_on(async {
+        sqlx::query("select access_state from telegram.identities")
+            .fetch_all(&pool)
+            .await
+            .expect("the rows")
+            .into_iter()
+            .map(|row| row.get::<String, _>("access_state"))
+            .collect()
+    });
+    assert_eq!(states.len(), 1, "a restart must not duplicate the owner");
+    assert_eq!(
+        states.first().map(String::as_str),
+        Some("disabled"),
+        "a restart must not resurrect a disabled owner"
+    );
+
+    runtime.block_on(async {
+        pool.close().await;
+        test.cleanup().await.expect("cleanup");
+    });
+}
+
 /// A webhook whose database cannot be reached refuses to start: it writes through the pool, so
 /// staying up would mean binding a listener that cannot serve its purpose. Exit `1`, not `0`.
 #[test]
@@ -111,6 +197,7 @@ fn a_webhook_whose_database_is_unreachable_refuses_to_start() {
         )
         .env("RATATOSKR__BOT_API__TOKEN", BOT_TOKEN)
         .env("RATATOSKR__WEBHOOK__SECRET_TOKEN", SECRET_TOKEN)
+        .env("RATATOSKR__ACCESS__OWNER_TELEGRAM_USER_ID", "700100200")
         .output()
         .expect("the binary must run");
 
@@ -191,7 +278,12 @@ fn check_config_exits_zero_when_valid_and_78_when_invalid() {
         .expect("check-config must run");
     let report = String::from_utf8_lossy(&unconfigured.stderr);
     assert_eq!(unconfigured.status.code(), Some(78), "EX_CONFIG\n{report}");
-    for required in ["bot_api.token", "webhook.secret_token", "database.url"] {
+    for required in [
+        "bot_api.token",
+        "webhook.secret_token",
+        "database.url",
+        "access.owner_telegram_user_id",
+    ] {
         assert!(report.contains(required), "{required} not named:\n{report}");
     }
 
@@ -204,6 +296,7 @@ fn check_config_exits_zero_when_valid_and_78_when_invalid() {
         )
         .env("RATATOSKR__BOT_API__TOKEN", BOT_TOKEN)
         .env("RATATOSKR__WEBHOOK__SECRET_TOKEN", SECRET_TOKEN)
+        .env("RATATOSKR__ACCESS__OWNER_TELEGRAM_USER_ID", "700100200")
         .output()
         .expect("check-config must run");
     let report = String::from_utf8_lossy(&configured.stderr);
