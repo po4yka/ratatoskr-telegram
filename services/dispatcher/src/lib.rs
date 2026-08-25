@@ -5,6 +5,7 @@
 //! package split. The startup factory (`build.rs`) and the worker modules land with their own
 //! test-first pairs of the dispatcher change.
 
+pub mod build;
 pub mod outbound;
 pub mod projection;
 

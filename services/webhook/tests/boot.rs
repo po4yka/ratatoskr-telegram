@@ -4,10 +4,9 @@
 //! block of `DEVELOPMENT.md` cannot rot: the admin plane is probed over a real socket, and the
 //! documented SIGTERM shutdown is asserted to exit `0`.
 //!
-//! Since plan item 2 the two roles have different requirements: the dispatcher still starts on
-//! defaults, while the webhook role demands its database, bot token and webhook secret, and
-//! refuses to start when the database it writes through cannot be reached. Its boot therefore
-//! also brings a disposable `PostgreSQL` database and an in-test harness Bot API server — no test
+//! Since plan item 4 both roles write through `PostgreSQL` and refuse to start without a prepared
+//! database; the webhook role additionally demands its bot token and webhook secret, and its boot
+//! brings a disposable `PostgreSQL` database and an in-test harness Bot API server — no test
 //! contacts Telegram.
 //!
 //! It lives in `services/webhook` because that is the one package cargo builds both binaries for;
@@ -37,18 +36,89 @@ const READY_TIMEOUT: Duration = Duration::from_secs(30);
 /// Between readiness polls.
 const POLL_INTERVAL: Duration = Duration::from_millis(50);
 
+/// How long a correctly-refusing process has to exit on its own. A refusing binary writes its
+/// report and exits immediately; the timeout only bounds a regression that stays up.
+const REFUSAL_TIMEOUT: Duration = Duration::from_secs(15);
+
 /// Synthetic intake credentials for the webhook role's environment. Never real ones.
 const SECRET_TOKEN: &str = "webhook-secret-0123456789abcdef";
 const BOT_TOKEN: &str = "123456:TEST-boot-harness-token";
 
-/// The dispatcher starts on its documented environment, reports ready on its documented admin
-/// port, and exits `0` on SIGTERM after the drain.
+/// The dispatcher writes every projection through `PostgreSQL` since item 4: without a database
+/// URL it refuses to start with the `EX_CONFIG` report naming `DATABASE__URL`, never binding
+/// anything.
 #[test]
-fn the_dispatcher_boots_on_its_documented_defaults_and_reports_ready() {
-    boots(
-        "ratatoskr-telegram-dispatcher",
-        &[("RATATOSKR__TELEMETRY__LOG_FORMAT", "pretty")],
-        9468,
+fn the_dispatcher_requires_a_database_configuration_to_start() {
+    let mut child = Command::new(built_binary("ratatoskr-telegram-dispatcher"))
+        .env_remove("RATATOSKR__DATABASE__URL")
+        .env("RATATOSKR__TELEMETRY__LOG_FORMAT", "pretty")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("the binary must spawn");
+
+    let refused = wait_for_exit(&mut child, REFUSAL_TIMEOUT);
+    // Kill before draining: reading the pipe of a process that is still running blocks forever.
+    if refused.is_none() {
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+    let log = format!(
+        "--- stdout ---\n{}--- stderr ---\n{}",
+        drain(child.stdout.take()),
+        drain(child.stderr.take()),
+    );
+
+    let status = refused.expect("the dispatcher must exit on its own when refusing");
+    assert_eq!(
+        status.code(),
+        Some(78),
+        "a missing database is EX_CONFIG for this role\n{log}"
+    );
+    assert!(
+        log.contains("DATABASE__URL"),
+        "the report must name DATABASE__URL\n{log}",
+    );
+}
+
+/// A configured but unreachable database is equally a startup refusal since item 4: the
+/// dispatcher claims and settles through the pool, so staying up would mean workers that cannot
+/// work. Exit `1` — a runtime dependency failure, not a configuration one — and the operator is
+/// told the database failed.
+#[test]
+fn a_dispatcher_with_an_unreachable_database_refuses_to_start() {
+    let mut child = Command::new(built_binary("ratatoskr-telegram-dispatcher"))
+        .env("RATATOSKR__TELEMETRY__LOG_FORMAT", "pretty")
+        // Port 5 on loopback: nothing listens there, so connect fails fast instead of timing out.
+        .env(
+            "RATATOSKR__DATABASE__URL",
+            "postgres://nobody:nope@127.0.0.1:5/nowhere",
+        )
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("the binary must spawn");
+
+    let refused = wait_for_exit(&mut child, REFUSAL_TIMEOUT);
+    if refused.is_none() {
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+    let log = format!(
+        "--- stdout ---\n{}--- stderr ---\n{}",
+        drain(child.stdout.take()),
+        drain(child.stderr.take()),
+    );
+
+    let status = refused.expect("the dispatcher must exit on its own when refusing");
+    assert_eq!(
+        status.code(),
+        Some(1),
+        "an unreachable database is a startup refusal for this role\n{log}"
+    );
+    assert!(
+        log.to_lowercase().contains("database"),
+        "the operator was not told the dependency failed:\n{log}",
     );
 }
 
@@ -217,57 +287,41 @@ fn a_webhook_whose_database_is_unreachable_refuses_to_start() {
     );
 }
 
-/// A dispatcher with a configured but unreachable database keeps the OLD tolerance until its own
-/// plan item flips it: it stays up, unready, naming the failing check.
-#[test]
-fn a_dispatcher_with_an_unreachable_database_keeps_readiness_failing_and_names_the_check() {
-    const PORT: u16 = 9477;
-    let mut child = Command::new(built_binary("ratatoskr-telegram-dispatcher"))
-        .env("RATATOSKR__ADMIN__BIND", format!("127.0.0.1:{PORT}"))
-        .env(
-            "RATATOSKR__DATABASE__URL",
-            "postgres://nobody:nope@127.0.0.1:5/nowhere",
-        )
-        .env("RATATOSKR__TELEMETRY__LOG_FORMAT", "pretty")
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("the binary must spawn");
-
-    let live = poll_status(PORT, "/health/live", 200, READY_TIMEOUT);
-    let (_, ready_body) = probe(PORT, "/health/ready");
-    terminate(&mut child);
-    let status = child.wait().expect("the child must be waitable");
-    let log = format!(
-        "--- stdout ---\n{}--- stderr ---\n{}",
-        drain(child.stdout.take()),
-        drain(child.stderr.take()),
-    );
-
-    assert!(live, "liveness never answered 200\n{log}");
-    assert!(
-        ready_body.contains("\"name\":\"database\"")
-            && ready_body.contains("dependency_unavailable"),
-        "the database check must be failing by name\n{ready_body}",
-    );
-    assert_eq!(status.code(), Some(0), "SIGTERM must still exit 0\n{log}");
-}
-
 /// `check-config` is the documented init-container and CI pre-flight, so its exit codes are an
 /// operational contract: `0` valid, `78` invalid, and the report never quotes a supplied value.
 #[test]
 fn check_config_exits_zero_when_valid_and_78_when_invalid() {
-    // The dispatcher validates on defaults.
-    let output = Command::new(built_binary("ratatoskr-telegram-dispatcher"))
+    // The dispatcher requires its database since item 4, exactly like the webhook's intake set.
+    let unconfigured_dispatcher = Command::new(built_binary("ratatoskr-telegram-dispatcher"))
         .arg("check-config")
         .env_remove("RATATOSKR__DATABASE__URL")
         .output()
         .expect("check-config must run");
+    let dispatcher_report = String::from_utf8_lossy(&unconfigured_dispatcher.stderr);
     assert_eq!(
-        output.status.code(),
+        unconfigured_dispatcher.status.code(),
+        Some(78),
+        "EX_CONFIG\n{dispatcher_report}"
+    );
+    assert!(
+        dispatcher_report.contains("database.url"),
+        "the missing database url must be named:\n{dispatcher_report}"
+    );
+
+    // And with one present, it validates on defaults alone.
+    let configured_dispatcher = Command::new(built_binary("ratatoskr-telegram-dispatcher"))
+        .arg("check-config")
+        .env(
+            "RATATOSKR__DATABASE__URL",
+            "postgres://telegram@127.0.0.1:5432/telegram",
+        )
+        .output()
+        .expect("check-config must run");
+    assert_eq!(
+        configured_dispatcher.status.code(),
         Some(0),
-        "dispatcher with defaults: {}",
-        String::from_utf8_lossy(&output.stderr),
+        "dispatcher with a database url validates: {}",
+        String::from_utf8_lossy(&configured_dispatcher.stderr),
     );
 
     // The webhook does not: every intake requirement is named, and nothing is echoed.
@@ -338,6 +392,12 @@ fn a_listener_that_cannot_bind_exits_one() {
 
     let refused = Command::new(built_binary("ratatoskr-telegram-dispatcher"))
         .env("RATATOSKR__ADMIN__BIND", format!("127.0.0.1:{port}"))
+        // A reachable database, so the process gets past preparation and reaches the bind that
+        // this test is about.
+        .env(
+            "RATATOSKR__DATABASE__URL",
+            "postgres://telegram:telegram@127.0.0.1:15437/telegram",
+        )
         .output()
         .expect("the binary must run");
 
@@ -510,20 +570,6 @@ fn wait_until_ready(admin_port: u16) -> bool {
     false
 }
 
-/// Polls one path until it answers `status`, or the timeout expires.
-fn poll_status(admin_port: u16, path: &str, status: u16, timeout: Duration) -> bool {
-    let deadline = Instant::now() + timeout;
-    while Instant::now() < deadline {
-        if let Some(response) = probe(admin_port, path).0
-            && response.starts_with(&format!("HTTP/1.1 {status}"))
-        {
-            return true;
-        }
-        sleep(POLL_INTERVAL);
-    }
-    false
-}
-
 /// One `GET path` written onto a raw socket; `(status line, body)`.
 ///
 /// The admin plane speaks plain HTTP/1.1 and `Connection: close` makes the whole response readable
@@ -552,6 +598,18 @@ fn probe(admin_port: u16, path: &str) -> (Option<String>, String) {
         .map(|(_, body)| body.to_owned())
         .unwrap_or_default();
     (status, body)
+}
+
+/// Polls `try_wait` until the child exits or the timeout expires; `None` means still running.
+fn wait_for_exit(child: &mut Child, timeout: Duration) -> Option<std::process::ExitStatus> {
+    let deadline = Instant::now() + timeout;
+    while Instant::now() < deadline {
+        if let Ok(Some(status)) = child.try_wait() {
+            return Some(status);
+        }
+        sleep(POLL_INTERVAL);
+    }
+    child.try_wait().ok().flatten()
 }
 
 /// Sends SIGTERM, the signal the shutdown sequence listens for.

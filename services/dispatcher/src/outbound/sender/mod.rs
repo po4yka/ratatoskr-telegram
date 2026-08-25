@@ -123,8 +123,10 @@ impl OutboundSender {
     /// `wake` is a hint channel: receiving an item retries immediately instead of waiting out the
     /// idle poll, and a CLOSED channel (every sender dropped) ends the loop — shutdown owns the
     /// senders, so closing them is the stop signal. Mirrors the webhook worker's shape.
-    pub async fn run_forever(self, mut wake: tokio::sync::mpsc::Receiver<()>) {
+    /// Every cycle also samples the queue-depth gauge, so its staleness is bounded by `idle_poll`.
+    pub async fn run_forever(self, mut wake: tokio::sync::mpsc::Receiver<()>, idle_poll: Duration) {
         loop {
+            record_queue_depth(&self.database).await;
             match self.run_once().await {
                 Ok(true) => {}
                 Ok(false) => {
@@ -134,7 +136,7 @@ impl OutboundSender {
                                 break;
                             }
                         }
-                        () = tokio::time::sleep(Duration::from_secs(1)) => {}
+                        () = tokio::time::sleep(idle_poll) => {}
                     }
                 }
                 Err(error) => {
@@ -143,9 +145,31 @@ impl OutboundSender {
                         class = "claim_failed",
                         "due outbound jobs could not be claimed",
                     );
-                    tokio::time::sleep(Duration::from_secs(1)).await;
+                    tokio::time::sleep(idle_poll).await;
                 }
             }
         }
+    }
+}
+
+/// Sample `telegram_outbound_queue_depth{state}` for every state that currently holds rows.
+///
+/// Called once per sender-loop cycle — after each processed job and on every idle poll — so the
+/// gauge is at most one poll interval stale while the work stays bounded by the loop's own
+/// cadence. States with zero rows are absent from the exposition, which is the honest rendering
+/// of an empty queue.
+pub async fn record_queue_depth(database: &Database) {
+    let Ok(counts) = database.count_outbound_jobs_by_state().await else {
+        // A failed sample is a skipped sample, never a wrong one: the previous gauge values
+        // stay until the next successful read.
+        return;
+    };
+    for (state, count) in counts {
+        let depth = f64::from(u32::try_from(count).unwrap_or(u32::MAX));
+        metrics::gauge!(
+            telegram_telemetry::metrics::TELEGRAM_OUTBOUND_QUEUE_DEPTH,
+            "state" => state,
+        )
+        .set(depth);
     }
 }

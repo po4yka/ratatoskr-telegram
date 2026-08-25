@@ -94,13 +94,34 @@ impl ProjectionConsumer {
             )
             .await?;
 
-        Ok(match outcome {
+        let mapped = match outcome {
             PersistenceOutcome::Recorded { .. } => AcceptOutcome::Recorded,
             PersistenceOutcome::Duplicate => AcceptOutcome::Duplicate,
             PersistenceOutcome::PostTerminal => AcceptOutcome::PostTerminal,
             PersistenceOutcome::Stale => AcceptOutcome::Stale,
             PersistenceOutcome::Unbound => AcceptOutcome::Unbound,
-        })
+        };
+        metrics::counter!(
+            telegram_telemetry::metrics::TELEGRAM_PROJECTION_EVENTS_TOTAL,
+            "outcome" => mapped.as_str(),
+        )
+        .increment(1);
+        Ok(mapped)
+    }
+}
+
+/// The lowercase snake label for logs and the projection-events metric.
+impl AcceptOutcome {
+    /// The closed label value; a delivery can never mint a new one.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Recorded => "recorded",
+            Self::Duplicate => "duplicate",
+            Self::PostTerminal => "post_terminal",
+            Self::Stale => "stale",
+            Self::Unbound => "unbound",
+        }
     }
 }
 

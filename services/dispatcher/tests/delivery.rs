@@ -11,6 +11,7 @@
 )]
 
 use std::collections::VecDeque;
+use std::sync::OnceLock;
 use std::sync::atomic::{AtomicI64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -451,6 +452,109 @@ async fn permanent_failure_settles_once_without_retry() {
         !sender.run_once().await.expect("second run"),
         "nothing is left to claim after the immediate dead-letter"
     );
+}
+
+/// The bounded delivery metric vocabulary appears in the exposition after real outcomes, and no
+/// chat id or message body text ever does: labels are closed classes only.
+#[test]
+fn delivery_outcomes_are_countable_without_content() {
+    static GUARD: OnceLock<telegram_telemetry::TelemetryGuard> = OnceLock::new();
+    let guard = GUARD.get_or_init(|| {
+        telegram_telemetry::init(
+            &telegram_core::config::TelemetryConfig::default(),
+            telegram_core::RuntimeRole::Dispatcher,
+        )
+        .expect("the registry installs once per process")
+    });
+
+    let runtime = tokio::runtime::Runtime::new().expect("metrics runtime");
+    runtime.block_on(async {
+        let db = database().await;
+        let clock = FakeClock::at(T0);
+        let limiter = Arc::new(DeliveryLimiter::new(30, 0));
+
+        // One transient retry that then succeeds.
+        enqueue(
+            &db,
+            918_273_645,
+            OutboundJobKind::SendMessage,
+            "qzx-canary-transient",
+            None,
+            None,
+        )
+        .await;
+        let fake = FakeBotApi::new(VecDeque::from([transport_failure()]));
+        let sender = make_sender(
+            &db,
+            Arc::clone(&fake),
+            Arc::clone(&clock),
+            Arc::clone(&limiter),
+            5,
+        );
+        assert!(sender.run_once().await.expect("transient attempt"));
+        clock.advance_secs(2);
+        assert!(sender.run_once().await.expect("transient recovery"));
+
+        // One permanent failure with its safe class label. A fresh tick refills the
+        // shared single-token burst so this delivery is not deferred instead.
+        clock.advance_secs(1);
+        enqueue(
+            &db,
+            192_837_465,
+            OutboundJobKind::SendMessage,
+            "qzx-canary-permanent",
+            None,
+            None,
+        )
+        .await;
+        let fake = FakeBotApi::new(VecDeque::from([BotApiError::Api {
+            description: "Forbidden: bot was blocked by the user".to_owned(),
+        }]));
+        let sender = make_sender(&db, fake, Arc::clone(&clock), Arc::clone(&limiter), 5);
+        assert!(sender.run_once().await.expect("permanent attempt"));
+
+        // One authoritative rate-limit pause.
+        clock.advance_secs(1);
+        enqueue(
+            &db,
+            555_444_333,
+            OutboundJobKind::SendMessage,
+            "qzx-canary-limited",
+            None,
+            None,
+        )
+        .await;
+        let fake = FakeBotApi::new(VecDeque::from([BotApiError::RateLimited {
+            retry_after: Duration::from_secs(30),
+        }]));
+        let sender = make_sender(&db, fake, Arc::clone(&clock), Arc::clone(&limiter), 5);
+        assert!(sender.run_once().await.expect("limited attempt"));
+
+        // The queue-depth gauge samples whatever is left (the rate-limited job waits).
+        ratatoskr_telegram_dispatcher::outbound::sender::record_queue_depth(&db.database).await;
+
+        db.cleanup().await.expect("cleanup");
+    });
+
+    let exposition = guard.metrics_handle().render();
+    for series in [
+        "telegram_delivery_retries_total{class=\"transient\"}",
+        "telegram_delivery_failures_total{class=\"bot_blocked\"}",
+        "telegram_rate_limit_waits_total",
+        "telegram_delivery_duration_seconds",
+        "telegram_outbound_queue_depth{state=\"retry_wait\"}",
+    ] {
+        assert!(
+            exposition.contains(series),
+            "{series} missing from:\n{exposition}"
+        );
+    }
+    for canary in ["918273645", "192837465", "555444333", "qzx-canary"] {
+        assert!(
+            !exposition.contains(canary),
+            "the exposition leaked content: {canary} appears in:\n{exposition}"
+        );
+    }
 }
 
 /// `message is not modified` settles `sent` and advances the binding's rendered revision even

@@ -2125,10 +2125,14 @@ dependencies = [
 name = "ratatoskr-telegram-dispatcher"
 version = "0.1.0"
 dependencies = [
+ "axum",
+ "metrics",
  "ratatoskr-telegram-bot-api",
  "ratatoskr-telegram-core",
  "ratatoskr-telegram-http",
  "ratatoskr-telegram-persistence",
+ "ratatoskr-telegram-telemetry",
+ "secrecy",
  "serde",
  "serde_json",
  "sha2",
@@ -2136,6 +2140,7 @@ dependencies = [
  "thiserror",
  "tokio",
  "tracing",
+ "url",
  "uuid",
 ]
 

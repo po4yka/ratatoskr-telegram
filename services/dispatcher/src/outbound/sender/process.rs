@@ -113,6 +113,9 @@ impl OutboundSender {
         }
 
         let now = self.clock.now_secs();
+        // The histogram covers the wire call only: claim, guards, and settlement are queue work,
+        // not delivery latency.
+        let started = std::time::Instant::now();
         let result = match action {
             WireAction::Send => self.sink.send_message(job.chat_id, &job.body).await,
             WireAction::Edit { message_id } => {
@@ -121,6 +124,8 @@ impl OutboundSender {
                     .await
             }
         };
+        metrics::histogram!(telegram_telemetry::metrics::TELEGRAM_DELIVERY_DURATION_SECONDS)
+            .record(started.elapsed().as_secs_f64());
 
         match result {
             Ok(sent) => {
@@ -201,6 +206,13 @@ impl OutboundSender {
                     retry_after_secs,
                     "telegram asked the sender for a pause",
                 );
+                metrics::counter!(telegram_telemetry::metrics::TELEGRAM_RATE_LIMIT_WAITS_TOTAL)
+                    .increment(1);
+                metrics::counter!(
+                    telegram_telemetry::metrics::TELEGRAM_DELIVERY_RETRIES_TOTAL,
+                    "class" => "rate_limited",
+                )
+                .increment(1);
                 self.limiter
                     .penalize(job.chat_id, now.saturating_add(retry_after_secs));
                 let pause = u32::try_from(retry_after_secs.max(0)).unwrap_or(u32::MAX);
@@ -211,11 +223,31 @@ impl OutboundSender {
             Classified::Transient | Classified::Sent => {
                 // `Sent` is unreachable from `classify`; a bounded retry beats inventing a
                 // settlement for a variant that should never arrive.
+                let exhausted = i64::from(job.attempts) >= i64::from(self.limits.max_attempts);
+                if exhausted {
+                    // Persistence dead-letters this settlement; the sender knows it first.
+                    metrics::counter!(
+                        telegram_telemetry::metrics::TELEGRAM_DELIVERY_FAILURES_TOTAL,
+                        "class" => "dead_letter",
+                    )
+                    .increment(1);
+                } else {
+                    metrics::counter!(
+                        telegram_telemetry::metrics::TELEGRAM_DELIVERY_RETRIES_TOTAL,
+                        "class" => "transient",
+                    )
+                    .increment(1);
+                }
                 let delay_secs = self.transient_backoff_secs(job.attempts);
                 self.settle(job, DeliveryOutcome::RetryWithBackoff { delay_secs })
                     .await
             }
             Classified::Permanent { class } => {
+                metrics::counter!(
+                    telegram_telemetry::metrics::TELEGRAM_DELIVERY_FAILURES_TOTAL,
+                    "class" => class.as_str(),
+                )
+                .increment(1);
                 self.settle(
                     job,
                     DeliveryOutcome::FailedPermanent {

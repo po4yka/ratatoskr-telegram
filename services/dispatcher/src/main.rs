@@ -1,13 +1,16 @@
 //! The `ratatoskr-telegram-dispatcher` deployable.
 //!
-//! Plan item 1: the process lifecycle only — typed configuration, telemetry, the operator plane,
-//! and the owned `telegram` schema applied to a configured database. Event consumption, per-chat
-//! ordering and Bot API delivery arrive with later plan items; nothing here contacts Telegram.
+//! The process lifecycle only: typed configuration, telemetry, the operator plane, the owned
+//! `telegram` schema applied to a configured database, and — since item 4 — the background
+//! workers (durable-queue sender and projection consumer) that the lifecycle starts through the
+//! background hook once its checks have passed. Nothing here contacts Telegram directly; every
+//! Bot API write goes through the durable queue.
 
 use std::process::ExitCode;
 
+use ratatoskr_telegram_dispatcher::build;
 use telegram_core::RuntimeRole;
-use telegram_http::PublicRoutes;
+use telegram_http::{Background, PublicRoutes};
 
 const ROLE: RuntimeRole = RuntimeRole::Dispatcher;
 
@@ -16,6 +19,12 @@ async fn main() -> ExitCode {
     if std::env::args().nth(1).as_deref() == Some("check-config") {
         return telegram_http::check_config(ROLE);
     }
-    // No public listener: the dispatcher sends, it does not receive.
-    telegram_http::run(ROLE, PublicRoutes::none()).await
+    // No public listener: the dispatcher sends, it does not receive. Its workers start through
+    // the background factory after validation and database preparation succeed.
+    telegram_http::run_with_background(
+        ROLE,
+        PublicRoutes::none(),
+        Background::new(|context| std::future::ready(build::build(context))),
+    )
+    .await
 }

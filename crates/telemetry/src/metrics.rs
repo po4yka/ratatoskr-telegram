@@ -39,6 +39,36 @@ pub const TELEGRAM_UPDATES_DENIED_TOTAL: &str = "telegram_updates_denied_total";
 /// which happens after the response.
 pub const TELEGRAM_WEBHOOK_DURATION_SECONDS: &str = "telegram_webhook_duration_seconds";
 
+/// `telegram_delivery_duration_seconds` — histogram on [`DURATION_BUCKETS`]. The Bot API wire
+/// call only: claim, guards, and settlement are queue work, not delivery latency.
+pub const TELEGRAM_DELIVERY_DURATION_SECONDS: &str = "telegram_delivery_duration_seconds";
+
+/// `telegram_delivery_retries_total{class}` — counter. One increment per job a retryable failure
+/// sends back to the queue, labelled by the closed retry vocabulary: `transient`,
+/// `rate_limited`. Dead-lettered transients are counted under
+/// [`TELEGRAM_DELIVERY_FAILURES_TOTAL`] as `dead_letter`, not here.
+pub const TELEGRAM_DELIVERY_RETRIES_TOTAL: &str = "telegram_delivery_retries_total";
+
+/// `telegram_rate_limit_waits_total` — counter. One increment per authoritative Telegram `429`
+/// pause the sender honours and cools the chat down for.
+pub const TELEGRAM_RATE_LIMIT_WAITS_TOTAL: &str = "telegram_rate_limit_waits_total";
+
+/// `telegram_delivery_failures_total{class}` — counter. One increment per dead-lettered job,
+/// labelled by the closed permanent vocabulary (`bot_blocked`, `chat_not_found`,
+/// `membership_lost`, `message_not_editable`, `edit_target_gone`, `invalid_payload`,
+/// `chat_migrated`) plus `dead_letter` for transients that exhausted their attempt bound.
+pub const TELEGRAM_DELIVERY_FAILURES_TOTAL: &str = "telegram_delivery_failures_total";
+
+/// `telegram_outbound_queue_depth{state}` — gauge, sampled by the sender loop each cycle.
+/// Labels are the schema's own job-state tokens (`ready`, `retry_wait`, `sending`, ...), so the
+/// depth of a stuck queue is visible without any identifier in the label set.
+pub const TELEGRAM_OUTBOUND_QUEUE_DEPTH: &str = "telegram_outbound_queue_depth";
+
+/// `telegram_projection_events_total{outcome}` — counter. One increment per consumed operation
+/// event, labelled by the closed accept vocabulary: `recorded`, `duplicate`, `post_terminal`,
+/// `stale`, `unbound`.
+pub const TELEGRAM_PROJECTION_EVENTS_TOTAL: &str = "telegram_projection_events_total";
+
 /// Latency buckets, in seconds. Shared by every duration histogram this workspace will emit, so
 /// graphs of different subsystems stay comparable.
 pub const DURATION_BUCKETS: [f64; 11] = [

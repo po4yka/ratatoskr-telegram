@@ -20,6 +20,8 @@ ratatoskr-telegram-core.workspace = true
 ratatoskr-telegram-http.workspace = true
 ratatoskr-telegram-bot-api.workspace = true
 ratatoskr-telegram-persistence.workspace = true
+ratatoskr-telegram-telemetry.workspace = true
+metrics.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
@@ -29,7 +31,10 @@ tracing.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]
+secrecy.workspace = true
+url.workspace = true
 ratatoskr-telegram-persistence = { workspace = true, features = ["test-support"] }
+axum.workspace = true
 sqlx.workspace = true
 uuid.workspace = true
 tokio = { workspace = true, features = ["rt", "macros"] }

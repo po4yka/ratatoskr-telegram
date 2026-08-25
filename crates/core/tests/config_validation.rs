@@ -17,11 +17,16 @@ use telegram_core::role::RuntimeRole;
 
 /// Two invalid values produce two violations in ONE report — an operator editing an environment
 /// wants one round trip, not five. Uses the dispatcher role so the intake requirements (V13) stay
-/// out of the count; they are asserted in `webhook_config.rs`.
+/// out of the count; they are asserted in `webhook_config.rs`. The database URL satisfies the
+/// dispatcher's own requirement so the count stays at the two values under test.
 #[test]
 fn two_invalid_values_produce_two_violations_in_one_report() {
     Jail::expect_with(|jail| {
         jail.clear_env();
+        jail.set_env(
+            "RATATOSKR__DATABASE__URL",
+            "postgres://telegram@127.0.0.1:5432/telegram",
+        );
         jail.set_env("RATATOSKR__SHUTDOWN__GRACE_SECONDS", "0");
         jail.set_env(
             "RATATOSKR__TELEMETRY__OTLP__ENDPOINT",
@@ -66,12 +71,16 @@ fn a_violation_report_never_quotes_the_supplied_value() {
     });
 }
 
-/// The defaults are valid for the role that carries no intake requirements; the webhook role's
-/// requirements are asserted in `webhook_config.rs`.
+/// The defaults are valid once each role's own requirement is met: the dispatcher needs only a
+/// database URL since item 4, the webhook's fuller set is asserted in `webhook_config.rs`.
 #[test]
 fn the_defaults_are_valid_for_every_role() {
     Jail::expect_with(|jail| {
         jail.clear_env();
+        jail.set_env(
+            "RATATOSKR__DATABASE__URL",
+            "postgres://telegram@127.0.0.1:5432/telegram",
+        );
         config::load_from(
             RuntimeRole::Dispatcher,
             config::figment(RuntimeRole::Dispatcher),

@@ -37,9 +37,13 @@ pub struct TelegramConfig {
     pub bot_api: BotApiConfig,
 
     /// The `PostgreSQL` connection. Required by the webhook role since it writes through the pool;
-    /// the dispatcher carries no such requirement yet.
+    /// required by the dispatcher role since item 4 for the same reason.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub database: Option<DatabaseConfig>,
+
+    /// Outbound delivery tuning. Present for every role; only the dispatcher reads it.
+    #[serde(default)]
+    pub dispatcher: DispatcherConfig,
 
     /// The public update-intake listener. Webhook-role specific; absent means unconfigured, which
     /// the role requirements refuse.
@@ -51,6 +55,70 @@ pub struct TelegramConfig {
 
     /// Logging, filtering and span export.
     pub telemetry: TelemetryConfig,
+}
+
+/// Outbound delivery tuning for the dispatcher role: the rate gates, the retry policy, and the
+/// render throttle. Every field is validated (V15); the defaults are the small-deployment values.
+#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DispatcherConfig {
+    /// `RATATOSKR__DISPATCHER__GLOBAL_MESSAGES_PER_SECOND`. Sustained global send budget.
+    #[serde(default)]
+    pub global_messages_per_second: u32,
+
+    /// `RATATOSKR__DISPATCHER__PER_CHAT_MIN_INTERVAL_MS`. Minimum gap between sends to one chat.
+    #[serde(default)]
+    pub per_chat_min_interval_ms: u64,
+
+    /// `RATATOSKR__DISPATCHER__RENDER_INTERVAL_SECS`. Minimum spacing between eligible edits of
+    /// one binding.
+    #[serde(default)]
+    pub render_interval_secs: u64,
+
+    /// `RATATOSKR__DISPATCHER__MAX_ATTEMPTS`. Claims before a job dead-letters.
+    #[serde(default)]
+    pub max_attempts: u32,
+
+    /// `RATATOSKR__DISPATCHER__BACKOFF_BASE_SECS`. First transient backoff.
+    #[serde(default)]
+    pub backoff_base_secs: u32,
+
+    /// `RATATOSKR__DISPATCHER__BACKOFF_CAP_SECS`. Transient backoff ceiling.
+    #[serde(default)]
+    pub backoff_cap_secs: u32,
+
+    /// `RATATOSKR__DISPATCHER__JITTER_FRACTION_MILLI`. Jitter share of a computed delay,
+    /// thousandths (`200` = 20%).
+    #[serde(default)]
+    pub jitter_fraction_milli: u32,
+
+    /// `RATATOSKR__DISPATCHER__LEASE_TTL_SECS`. How long a claim's lease runs.
+    #[serde(default)]
+    pub lease_ttl_secs: u32,
+
+    /// `RATATOSKR__DISPATCHER__POLL_IDLE_MS`. Idle poll interval of the sender loop.
+    #[serde(default)]
+    pub poll_idle_ms: u64,
+}
+
+impl Default for DispatcherConfig {
+    fn default() -> Self {
+        // The small-deployment values: 25 msg/s is under Telegram's documented sustained global
+        // ceiling with headroom, 1200 ms per chat keeps progress edits quiet, a 4 s render
+        // interval coalesces bursts, and 5 attempts with 2..=300 s capped backoff dead-letters a
+        // dead target inside minutes, not hours.
+        Self {
+            global_messages_per_second: 25,
+            per_chat_min_interval_ms: 1_200,
+            render_interval_secs: 4,
+            max_attempts: 5,
+            backoff_base_secs: 2,
+            backoff_cap_secs: 300,
+            jitter_fraction_milli: 200,
+            lease_ttl_secs: 60,
+            poll_idle_ms: 1_000,
+        }
+    }
 }
 
 /// The Bot API endpoint this service calls, its call budget, and the credential it calls with.

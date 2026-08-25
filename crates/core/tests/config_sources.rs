@@ -15,29 +15,22 @@ use figment::Jail;
 use telegram_core::config;
 use telegram_core::role::RuntimeRole;
 
-/// An empty environment loads per-role built-in defaults. Since item 2 the webhook role demands its
-/// intake configuration (rule V13), so defaults-only loading is asserted for the dispatcher, whose
-/// requirements are still none.
+/// The per-role built-in defaults: an empty environment contributes nothing, the admin plane is
+/// loopback on the role's own port, and no database exists by default. Since item 4 an empty
+/// environment no longer VALIDATES for the dispatcher (the database is required), so this asserts
+/// the defaults tree itself rather than a validated load.
 #[test]
 fn an_empty_environment_loads_the_role_defaults() {
-    Jail::expect_with(|jail| {
-        jail.clear_env();
-        let config = config::load_from(
-            RuntimeRole::Dispatcher,
-            config::figment(RuntimeRole::Dispatcher),
-        )
-        .expect("defaults load");
-        assert_eq!(
-            config.admin.bind.port(),
-            RuntimeRole::Dispatcher.default_admin_port(),
-        );
-        assert!(config.admin.bind.ip().is_loopback(), "deny by default");
-        assert!(
-            config.database.is_none(),
-            "no database is configured by default"
-        );
-        Ok(())
-    });
+    let config = telegram_core::config::TelegramConfig::defaults(RuntimeRole::Dispatcher);
+    assert_eq!(
+        config.admin.bind.port(),
+        RuntimeRole::Dispatcher.default_admin_port(),
+    );
+    assert!(config.admin.bind.ip().is_loopback(), "deny by default");
+    assert!(
+        config.database.is_none(),
+        "no database is configured by default"
+    );
 }
 
 /// One variable overrides exactly one field — under a configuration that satisfies the role's

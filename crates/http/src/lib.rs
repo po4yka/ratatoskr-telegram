@@ -28,12 +28,13 @@ use std::process::ExitCode;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use telegram_core::TelegramError;
 use tokio::net::TcpListener;
 use tracing::field::Empty;
 
 pub use crate::admin::admin_router;
 pub use crate::lifecycle::{Check, CheckName, CheckReason, CheckState, RuntimeState};
-pub use crate::public::{PublicContext, PublicRoutes};
+pub use crate::public::{Background, PublicContext, PublicRoutes};
 pub use crate::shutdown::{Served, ShutdownOutcome, drain_and_close, serve};
 
 /// How often the database prober asks whether the dependency is still there.
@@ -56,8 +57,8 @@ const DATABASE_PROBE_INTERVAL: Duration = Duration::from_secs(5);
 ///    `telegram_build_info` is set by `telegram_telemetry::init`.
 /// 4. Connect the configured database and apply the embedded schema — all BEFORE any listener
 ///    binds, so a process never reports itself ready with an unverified or unprepared dependency.
-///    A role whose routes write through the pool (the webhook) REFUSES to start when that fails;
-///    a role without such routes yet (the dispatcher) degrades to a failing readiness check.
+///    Both roles write through the pool (the webhook admits updates, the dispatcher delivers), so
+///    both REFUSE to start when that fails.
 /// 5. Build and bind the public listener through `public_routes`, when the role brings one. A failed
 ///    build or bind logs at ERROR, runs the standard cleanup, and exits `1`.
 /// 6. Bind the admin listener. On failure log at ERROR and exit `1`.
@@ -65,6 +66,23 @@ const DATABASE_PROBE_INTERVAL: Duration = Duration::from_secs(5);
 /// 8. Serve until SIGTERM or SIGINT, then [`drain_and_close`].
 /// 9. Stop the prober, close the pool, `TelemetryGuard::shutdown()`; exit `0`.
 pub async fn run(role: telegram_core::RuntimeRole, public_routes: PublicRoutes) -> ExitCode {
+    run_with_background(role, public_routes, Background::none()).await
+}
+
+/// The full lifecycle with one addition over [`run`]: a background factory that spawns this
+/// role's long-lived workers after the configuration is validated and the database is prepared,
+/// and before any listener binds. A failed factory is the standard startup failure — logged once
+/// inside the startup span, everything closed, exit `1`. Roles without background workers pass
+/// [`Background::none`], which makes this byte-identical to [`run`].
+///
+/// # Errors
+///
+/// Never returns an error; failures are the documented exit codes.
+pub async fn run_with_background(
+    role: telegram_core::RuntimeRole,
+    public_routes: PublicRoutes,
+    background: Background,
+) -> ExitCode {
     let config = match telegram_core::config::load(role) {
         Ok(config) => Arc::new(config),
         Err(error) => {
@@ -107,6 +125,21 @@ pub async fn run(role: telegram_core::RuntimeRole, public_routes: PublicRoutes) 
         return ExitCode::FAILURE;
     }
 
+    // The role's background workers start here, on prepared ground: their factory sees the same
+    // context a public-router factory would, and its failure takes the identical cleanup path.
+    if background.is_present() {
+        let context = PublicContext {
+            config: Arc::clone(&config),
+            database: database.clone(),
+        };
+        if let Err(error) = start_background(&background, context, &startup).await {
+            error.log();
+            close_database(database.as_ref()).await;
+            guard.shutdown();
+            return ExitCode::FAILURE;
+        }
+    }
+
     // The public listener comes from the role. Its factory runs inside the startup span so its
     // failures carry the same fields as every other startup record.
     let public = match public_routes.take() {
@@ -116,13 +149,11 @@ pub async fn run(role: telegram_core::RuntimeRole, public_routes: PublicRoutes) 
                 config: Arc::clone(&config),
                 database: database.clone(),
             };
-            match startup.in_scope(|| build(context)).await {
-                Ok(router) => startup.in_scope(|| bind_public(&config, router)).await,
+            match start_public(build, context, &startup, &config).await {
+                Ok(served) => served,
                 Err(error) => {
                     error.log();
-                    if let Some(database) = database.as_ref() {
-                        database.close().await;
-                    }
+                    close_database(database.as_ref()).await;
                     guard.shutdown();
                     return ExitCode::FAILURE;
                 }
@@ -147,35 +178,65 @@ pub async fn run(role: telegram_core::RuntimeRole, public_routes: PublicRoutes) 
 
     runtime.mark_startup_complete();
     startup.record("duration_ms", duration_ms(started.elapsed()));
+    record_startup_complete(&startup, &config, public.as_ref(), database.is_some());
+    drop(startup);
+
+    serve_until_signal(
+        &runtime,
+        &config.shutdown,
+        admin,
+        public,
+        prober,
+        database.as_ref(),
+        guard,
+    )
+    .await
+}
+
+/// The one INFO line that names every listener and dependency the process started with.
+fn record_startup_complete(
+    startup: &tracing::Span,
+    config: &telegram_core::TelegramConfig,
+    public: Option<&Served>,
+    database_present: bool,
+) {
     startup.in_scope(|| {
         tracing::info!(
             admin = %config.admin.bind,
-            public = public.as_ref().map(shutdown::Served::local_addr).map_or(
+            public = public.map(shutdown::Served::local_addr).map_or(
                 "none".to_owned(),
                 |addr| addr.to_string(),
             ),
-            database = database.is_some(),
+            database = database_present,
             "startup complete",
         );
     });
-    drop(startup);
+}
 
+/// Serve until SIGTERM or SIGINT, then run the documented teardown in its documented order:
+/// drain listeners, stop the prober, close the pool after the grace window, shut telemetry down.
+async fn serve_until_signal(
+    runtime: &Arc<RuntimeState>,
+    shutdown_config: &telegram_core::config::ShutdownConfig,
+    admin: Served,
+    public: Option<Served>,
+    prober: Option<tokio::task::JoinHandle<()>>,
+    database: Option<&telegram_persistence::Database>,
+    guard: telegram_telemetry::TelemetryGuard,
+) -> ExitCode {
     shutdown::signal().await;
     let mut servers = vec![admin];
     if let Some(public) = public {
         servers.push(public);
     }
-    drain_and_close(&runtime, &config.shutdown, servers, shutdown::signal()).await;
+    drain_and_close(runtime, shutdown_config, servers, shutdown::signal()).await;
 
     if let Some(prober) = prober {
         prober.abort();
     }
-    if let Some(database) = database.as_ref() {
-        // After the listener stopped accepting and the grace window closed, so an in-flight request
-        // kept its connection for its whole life.
-        database.close().await;
-    }
-
+    // After the listener stopped accepting and the grace window closed, so an in-flight request
+    // kept its connection for its whole life.
+    close_database(database).await;
     guard.shutdown();
     ExitCode::SUCCESS
 }
@@ -206,6 +267,36 @@ pub fn check_config(role: telegram_core::RuntimeRole) -> ExitCode {
 
 /// The single INFO line that says what the process actually believes, and the one non-fatal
 /// warning. Safe by type: `SecretString` has no `Display` and renders as `[REDACTED]`.
+///
+/// Start the role's background workers inside the startup span. The factory's error propagates;
+/// the caller owns the standard cleanup.
+async fn start_background(
+    background: &Background,
+    context: PublicContext,
+    startup: &tracing::Span,
+) -> Result<(), TelegramError> {
+    startup.in_scope(|| background.call(context)).await
+}
+
+/// Build and bind the public listener inside the startup span. The factory's or bind's error
+/// propagates; the caller owns the standard cleanup.
+async fn start_public(
+    build: crate::public::PublicBuild,
+    context: PublicContext,
+    startup: &tracing::Span,
+    config: &telegram_core::TelegramConfig,
+) -> Result<Option<Served>, TelegramError> {
+    let router = startup.in_scope(|| build(context)).await?;
+    Ok(startup.in_scope(|| bind_public(config, router)).await)
+}
+
+/// Close the pool behind an optional database handle, once its work is done or abandoned.
+async fn close_database(database: Option<&telegram_persistence::Database>) {
+    if let Some(database) = database {
+        database.close().await;
+    }
+}
+
 fn announce(config: &telegram_core::TelegramConfig) {
     tracing::info!(
         config = ?config,
@@ -265,11 +356,15 @@ async fn prepare_database(
     Some(database)
 }
 
-/// Whether this role's routes write through the database, so an unreachable one is a startup
-/// refusal rather than a degraded-but-up state. The dispatcher joins here when its first write
-/// lands (plan item 4).
+/// Whether this role's routes or workers write through the database, so an unreachable one is a
+/// startup refusal rather than a degraded-but-up state. Both roles refuse since item 4: the
+/// webhook admits updates through the pool, and the dispatcher claims and settles every Bot API
+/// write through it.
 const fn role_requires_database(role: telegram_core::RuntimeRole) -> bool {
-    matches!(role, telegram_core::RuntimeRole::Webhook)
+    matches!(
+        role,
+        telegram_core::RuntimeRole::Webhook | telegram_core::RuntimeRole::Dispatcher
+    )
 }
 
 /// Probe the database on a fixed interval until the task is aborted.

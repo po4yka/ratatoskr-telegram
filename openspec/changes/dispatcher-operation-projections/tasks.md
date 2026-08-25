@@ -27,28 +27,28 @@
 
 ## 4. Operation projection consumer
 
-- [ ] 4.1 RED: add `services/dispatcher/src/projection/consumer.rs` unit tests with typed snapshot fixtures: `duplicate_envelope_event_id_is_dropped_and_counted`, `post_terminal_events_are_dropped_exactly_once_counted` (two succeeded snapshots → one terminal job), `stale_occurred_at_is_dropped_without_effect`, and `unbound_operation_produces_no_traffic`
-- [ ] 4.2 GREEN: implement the accept step (transactional inbox insert-or-ignore → terminal check-and-set → staleness → revision assignment → enqueue edit with `next_attempt_at = max(now, last_rendered_at + render_interval)`); rerun until 4.1 passes
-- [ ] 4.3 RED: add renderer tests `services/dispatcher/src/projection/render.rs`: `status_branches_drive_display_not_stage_vocabulary` and `hostile_stage_error_and_warning_text_renders_escaped_and_truncated` (stage `<b>x</b> & <script>` plus a 5000-char error message produce escaped entities, status-led text, and ≤ Telegram length bound)
-- [ ] 4.4 GREEN: implement the HTML-escaping status-driven renderer; rerun until 4.3 passes
-- [ ] 4.5 RED: add `progress_burst_yields_at_most_one_eligible_edit_per_interval` in `services/dispatcher/tests/projection.rs`: feed ten ticks within one simulated second through the seam into a real database, advance the injected clock across two interval windows, assert eligible-edit counts per window and that superseded intermediates never reach the recorded seam calls
-- [ ] 4.6 GREEN: adjust throttle arithmetic only if 4.5 exposes a defect; rerun until 4.5 passes
+- [x] 4.1 RED: add `services/dispatcher/src/projection/consumer.rs` unit tests with typed snapshot fixtures: `duplicate_envelope_event_id_is_dropped_and_counted`, `post_terminal_events_are_dropped_exactly_once_counted` (two succeeded snapshots → one terminal job), `stale_occurred_at_is_dropped_without_effect`, and `unbound_operation_produces_no_traffic`
+- [x] 4.2 GREEN: implement the accept step (transactional inbox insert-or-ignore → terminal check-and-set → staleness → revision assignment → enqueue edit with `next_attempt_at = max(now, last_rendered_at + render_interval)`); rerun until 4.1 passes
+- [x] 4.3 RED: add renderer tests `services/dispatcher/src/projection/render.rs`: `status_branches_drive_display_not_stage_vocabulary` and `hostile_stage_error_and_warning_text_renders_escaped_and_truncated` (stage `<b>x</b> & <script>` plus a 5000-char error message produce escaped entities, status-led text, and ≤ Telegram length bound)
+- [x] 4.4 GREEN: implement the HTML-escaping status-driven renderer; rerun until 4.3 passes
+- [x] 4.5 RED: add `progress_burst_yields_at_most_one_eligible_edit_per_interval` in `services/dispatcher/tests/projection.rs`: feed ten ticks within one simulated second through the seam into a real database, advance the injected clock across two interval windows, assert eligible-edit counts per window and that superseded intermediates never reach the recorded seam calls
+- [x] 4.6 GREEN: adjust throttle arithmetic only if 4.5 exposes a defect; rerun until 4.5 passes
 
 ## 5. Configuration, lifecycle, telemetry wiring
 
-- [ ] 5.1 RED: add parse/validation tests in `crates/core/src/config/model.rs` + `validate.rs`: `dispatcher_section_parses_with_defaults_and_unknown_keys_refused`, `dispatcher_limits_refuse_zero_or_negative_values` (V-rule text naming each field), and `webhook_role_ignores_dispatcher_defaults_while_dispatcher_requires_database_url` (dispatcher without DATABASE__URL yields a violation naming it)
-- [ ] 5.2 GREEN: add `DispatcherConfig` with defaults and validation rules; rerun until 5.1 passes
-- [ ] 5.3 RED: update `services/webhook/tests/boot.rs` expectations: rewrite `the_dispatcher_boots_on_its_documented_defaults_and_reports_ready` into `the_dispatcher_requires_a_database_configuration_to_start` (absent DB config exits non-zero with the violation named) and adapt `a_dispatcher_with_an_unreachable_database_keeps_readiness_failing_and_names_the_check` to expect startup refusal; confirm both fail before the lifecycle change
-- [ ] 5.4 GREEN: flip `role_requires_database` to include `Dispatcher`; rerun until 5.3 passes
-- [ ] 5.5 RED: add metric-vocabulary test `delivery_outcomes_are_countable_without_content` in `services/dispatcher/tests/delivery.rs` asserting the exposition contains `telegram_delivery_retries_total{class=...}`, `telegram_rate_limit_waits_total`, `telegram_delivery_failures_total{class=...}` after driving one transient and one permanent outcome, and that no chat id or text appears anywhere in the exposition
-- [ ] 5.6 GREEN: add telemetry constants and instrument limiter/sender/consumer with class-only labels; rerun until 5.5 passes
+- [x] 5.1 RED: add parse/validation tests in `crates/core/src/config/model.rs` + `validate.rs`: `dispatcher_section_parses_with_defaults_and_unknown_keys_refused`, `dispatcher_limits_refuse_zero_or_negative_values` (V-rule text naming each field), and `webhook_role_ignores_dispatcher_defaults_while_dispatcher_requires_database_url` (dispatcher without DATABASE__URL yields a violation naming it)
+- [x] 5.2 GREEN: add `DispatcherConfig` with defaults and validation rules; rerun until 5.1 passes
+- [x] 5.3 RED: update `services/webhook/tests/boot.rs` expectations: rewrite `the_dispatcher_boots_on_its_documented_defaults_and_reports_ready` into `the_dispatcher_requires_a_database_configuration_to_start` (absent DB config exits non-zero with the violation named) and adapt `a_dispatcher_with_an_unreachable_database_keeps_readiness_failing_and_names_the_check` to expect startup refusal; confirm both fail before the lifecycle change
+- [x] 5.4 GREEN: flip `role_requires_database` to include `Dispatcher`; rerun until 5.3 passes
+- [x] 5.5 RED: add metric-vocabulary test `delivery_outcomes_are_countable_without_content` in `services/dispatcher/tests/delivery.rs` asserting the exposition contains `telegram_delivery_retries_total{class=...}`, `telegram_rate_limit_waits_total`, `telegram_delivery_failures_total{class=...}` after driving one transient and one permanent outcome, and that no chat id or text appears anywhere in the exposition
+- [x] 5.6 GREEN: add telemetry constants and instrument limiter/sender/consumer with class-only labels; rerun until 5.5 passes
 
 ## 6. Startup factory and process integration
 
-- [ ] 6.1 Implement `services/dispatcher/src/lib.rs` + `build.rs` mirroring the webhook: connect database, spawn sender and consumer workers on the shared pool, return control to the shared lifecycle; verify via existing operator-plane contract (admin router answers, readiness gates on database probe)
-- [ ] 6.2 RED: add `services/dispatcher/tests/end_to_end.rs` `operation_lifecycle_renders_progress_then_terminal_once_through_fake_bot_api`: seed owner identity/chat + a send-job-created binding against a spawned fake Bot API server (bot-api harness pattern), deliver accepted→running→running→succeeded snapshots with duplicate envelope ids and one stale event through the seam, assert the server saw ordered throttled edits, exactly one terminal render, and final states `sent` with correct binding revision
-- [ ] 6.3 GREEN: close any wiring gaps until 6.2 passes; keep the dispatcher main a role constant plus one harness call
-- [ ] 6.4 Verify restart recovery end to end: kill-and-rerun variant of 6.2 where the process stops after enqueue but before delivery; the restarted run delivers the orphaned job exactly once (asserts spec "survives a restart")
+- [x] 6.1 Implement `services/dispatcher/src/lib.rs` + `build.rs` mirroring the webhook: connect database, spawn sender and consumer workers on the shared pool, return control to the shared lifecycle; verify via existing operator-plane contract (admin router answers, readiness gates on database probe)
+- [x] 6.2 RED: add `services/dispatcher/tests/end_to_end.rs` `operation_lifecycle_renders_progress_then_terminal_once_through_fake_bot_api`: seed owner identity/chat + a send-job-created binding against a spawned fake Bot API server (bot-api harness pattern), deliver accepted→running→running→succeeded snapshots with duplicate envelope ids and one stale event through the seam, assert the server saw ordered throttled edits, exactly one terminal render, and final states `sent` with correct binding revision
+- [x] 6.3 GREEN: close any wiring gaps until 6.2 passes; keep the dispatcher main a role constant plus one harness call
+- [x] 6.4 Verify restart recovery end to end: kill-and-rerun variant of 6.2 where the process stops after enqueue but before delivery; the restarted run delivers the orphaned job exactly once (asserts spec "survives a restart")
 
 ## 7. Change verification
 

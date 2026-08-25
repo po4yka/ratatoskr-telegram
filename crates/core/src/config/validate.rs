@@ -75,6 +75,7 @@ pub(crate) fn validate(role: RuntimeRole, config: &TelegramConfig) -> Vec<Violat
     found.extend(bot_api_violations(config));
     found.extend(access_violations(config));
     found.extend(webhook_violations(role, config));
+    found.extend(dispatcher_violations(role, config));
 
     found
 }
@@ -328,6 +329,113 @@ fn webhook_violations(role: RuntimeRole, config: &TelegramConfig) -> Vec<Violati
     found
 }
 
+/// V15 — the dispatcher delivery limits, plus the role's database requirement. Every duration and
+/// rate must be positive (zero reads as "off" and behaves as "refuse everything"), the backoff cap
+/// must honour the base, jitter above half a delay is noise without information, and the two
+/// ceilings keep one quiet chat and one slow operation from turning into starvation. The section
+/// is ignored by every other role.
+fn dispatcher_violations(role: RuntimeRole, config: &TelegramConfig) -> Vec<Violation> {
+    let mut found = Vec::new();
+
+    // The per-role requirement, checked beside the value rules like the webhook's V13 block:
+    // since item 4 the dispatcher writes every projection through the database.
+    if role == RuntimeRole::Dispatcher && config.database.is_none() {
+        found.push(Violation {
+            key: "database.url",
+            env_var: "RATATOSKR__DATABASE__URL",
+            rule: "is required: the dispatcher enqueues and claims every Bot API write through \
+                   the database",
+        });
+    }
+
+    let limits = &config.dispatcher;
+    let positive = |found: &mut Vec<Violation>,
+                    key: &'static str,
+                    env_var: &'static str,
+                    value: u64,
+                    ceiling: Option<u64>,
+                    rule: &'static str| {
+        let within_ceiling = ceiling.is_none_or(|ceiling| value <= ceiling);
+        if value == 0 || !within_ceiling {
+            found.push(Violation { key, env_var, rule });
+        }
+    };
+
+    positive(
+        &mut found,
+        "dispatcher.global_messages_per_second",
+        "RATATOSKR__DISPATCHER__GLOBAL_MESSAGES_PER_SECOND",
+        u64::from(limits.global_messages_per_second),
+        None,
+        "must be greater than 0; zero refuses every send rather than disabling the budget",
+    );
+    positive(
+        &mut found,
+        "dispatcher.per_chat_min_interval_ms",
+        "RATATOSKR__DISPATCHER__PER_CHAT_MIN_INTERVAL_MS",
+        limits.per_chat_min_interval_ms,
+        Some(60_000),
+        "must be 1..=60000; a gap above a minute starves the chat it protects",
+    );
+    positive(
+        &mut found,
+        "dispatcher.render_interval_secs",
+        "RATATOSKR__DISPATCHER__RENDER_INTERVAL_SECS",
+        limits.render_interval_secs,
+        Some(3_600),
+        "must be 1..=3600; an edit spacing above an hour is not progress reporting",
+    );
+    positive(
+        &mut found,
+        "dispatcher.max_attempts",
+        "RATATOSKR__DISPATCHER__MAX_ATTEMPTS",
+        u64::from(limits.max_attempts),
+        None,
+        "must be greater than 0; zero would dead-letter every job at its first claim",
+    );
+    positive(
+        &mut found,
+        "dispatcher.backoff_base_secs",
+        "RATATOSKR__DISPATCHER__BACKOFF_BASE_SECS",
+        u64::from(limits.backoff_base_secs),
+        None,
+        "must be greater than 0; the exponential backoff grows from it",
+    );
+    if limits.backoff_cap_secs < limits.backoff_base_secs {
+        found.push(Violation {
+            key: "dispatcher.backoff_cap_secs",
+            env_var: "RATATOSKR__DISPATCHER__BACKOFF_CAP_SECS",
+            rule: "must be greater than or equal to backoff_base_secs; a cap below the base can \
+                   never honour it",
+        });
+    }
+    if limits.jitter_fraction_milli > 500 {
+        found.push(Violation {
+            key: "dispatcher.jitter_fraction_milli",
+            env_var: "RATATOSKR__DISPATCHER__JITTER_FRACTION_MILLI",
+            rule: "must be 0..=500; jitter above half the delay is noise without information",
+        });
+    }
+    positive(
+        &mut found,
+        "dispatcher.lease_ttl_secs",
+        "RATATOSKR__DISPATCHER__LEASE_TTL_SECS",
+        u64::from(limits.lease_ttl_secs),
+        None,
+        "must be greater than 0; a zero lease expires before the claim that took it",
+    );
+    positive(
+        &mut found,
+        "dispatcher.poll_idle_ms",
+        "RATATOSKR__DISPATCHER__POLL_IDLE_MS",
+        limits.poll_idle_ms,
+        None,
+        "must be greater than 0; a zero idle poll spins the sender loop",
+    );
+
+    found
+}
+
 /// The operator-facing report for a set of violations. One block per problem, stable order, no
 /// supplied values.
 pub(crate) fn report_invalid(role: RuntimeRole, violations: &[Violation]) -> String {
@@ -467,12 +575,17 @@ mod access_owner_tests {
         });
     }
 
-    /// The dispatcher owns no intake, so it validates cleanly with no access configuration at
-    /// all: the requirement is per role, not global.
+    /// The dispatcher owns no intake, so it validates with no access configuration at all: the
+    /// requirement is per role, not global. Its database requirement is satisfied so this
+    /// assertion stays about access alone.
     #[test]
     fn the_dispatcher_validates_without_any_access_configuration() {
         Jail::expect_with(|jail| {
             jail.clear_env();
+            jail.set_env(
+                "RATATOSKR__DATABASE__URL",
+                "postgres://telegram@127.0.0.1:5432/telegram",
+            );
             let config = load_from(RuntimeRole::Dispatcher, figment(RuntimeRole::Dispatcher))
                 .expect("dispatcher defaults must validate");
             assert_eq!(config.access.owner_telegram_user_id, None);

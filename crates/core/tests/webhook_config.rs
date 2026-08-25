@@ -166,16 +166,26 @@ fn the_webhook_role_names_every_missing_requirement() {
     });
 }
 
-/// V13 — the dispatcher carries no such requirement at this milestone: it loads on defaults.
+/// Since item 4 the dispatcher carries the database requirement beside the webhook's: an
+/// unconfigured dispatcher is refused, naming `database.url` exactly as the webhook's absence is.
 #[test]
-fn the_dispatcher_still_starts_unconfigured() {
+fn the_dispatcher_requires_its_database_once_configured_roles_write_through_it() {
     Jail::expect_with(|jail| {
         jail.clear_env();
-        config::load_from(
+        let error = config::load_from(
             RuntimeRole::Dispatcher,
             config::figment(RuntimeRole::Dispatcher),
         )
-        .expect("dispatcher defaults must validate");
+        .expect_err("an unconfigured dispatcher must be refused");
+        let config::ConfigError::Invalid(violations) = &error else {
+            panic!("expected semantic violations, got {error:?}");
+        };
+        assert!(
+            violations
+                .iter()
+                .any(|violation| violation.key == "database.url"),
+            "the missing database url must be named: {violations:#?}"
+        );
         Ok(())
     });
 }
