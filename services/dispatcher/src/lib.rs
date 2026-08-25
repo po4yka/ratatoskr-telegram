@@ -6,6 +6,7 @@
 //! test-first pairs of the dispatcher change.
 
 pub mod outbound;
+pub mod projection;
 
 /// The dispatcher runtime role this package compiles.
 pub const ROLE: telegram_core::RuntimeRole = telegram_core::RuntimeRole::Dispatcher;

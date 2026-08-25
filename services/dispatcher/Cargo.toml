@@ -20,9 +20,13 @@ ratatoskr-telegram-core.workspace = true
 ratatoskr-telegram-http.workspace = true
 ratatoskr-telegram-bot-api.workspace = true
 ratatoskr-telegram-persistence.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 tracing.workspace = true
+uuid.workspace = true
 
 [dev-dependencies]
 ratatoskr-telegram-persistence = { workspace = true, features = ["test-support"] }

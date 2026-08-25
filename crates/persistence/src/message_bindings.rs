@@ -35,19 +35,34 @@ pub struct MessageBindingRecord {
     pub last_rendered_revision: i64,
     /// When [`Self::last_rendered_revision`] was rendered, whole seconds since the Unix epoch.
     pub last_rendered_at: Option<i64>,
+    /// The `occurred_at` of the newest ACCEPTED event, whole seconds since the Unix epoch — the
+    /// staleness watermark. Advances only on acceptance, never on duplicates or stale drops.
+    pub last_event_at: Option<i64>,
     /// Whether a terminal projection has been accepted for this binding.
     pub terminal: bool,
 }
 
 /// The column tuple a binding read maps from: identity keys, the acknowledgment-gated message
-/// id, the monotonic render state, and the terminal flag. The timestamp crosses as
-/// `extract(epoch ...)` — the crate carries no date-time dependency by design.
-type BindingRow = (Uuid, i64, Uuid, i64, Option<i64>, i64, Option<i64>, bool);
+/// id, the monotonic render state, the accept watermark, and the terminal flag. The timestamps
+/// cross as `extract(epoch ...)` — the crate carries no date-time dependency by design.
+pub(crate) type BindingRow = (
+    Uuid,
+    i64,
+    Uuid,
+    i64,
+    Option<i64>,
+    i64,
+    Option<i64>,
+    Option<i64>,
+    bool,
+);
 
-/// The projection columns of one binding, keyed by its (operation, chat) pair. The timestamp is
-/// read out as epoch seconds to match the caller-supplied form writes take.
-const BINDING_COLUMNS: &str = "id, bot_id, operation_id, chat_id, message_id, \
-     last_rendered_revision, extract(epoch from last_rendered_at)::bigint, terminal";
+/// The projection columns of one binding, keyed by its (operation, chat) pair. The timestamps are
+/// read out as epoch seconds to match the caller-supplied form writes take. Shared with the
+/// projection accept step, which reads bindings inside its own transaction.
+pub(crate) const BINDING_COLUMNS: &str = "id, bot_id, operation_id, chat_id, message_id, \
+     last_rendered_revision, extract(epoch from last_rendered_at)::bigint, \
+     extract(epoch from last_event_at)::bigint, terminal";
 
 impl Database {
     /// Return the binding for `(operation_id, chat_id)`, creating it empty when absent.
@@ -291,7 +306,7 @@ impl Database {
 }
 
 /// Assemble a [`MessageBindingRecord`] from its column tuple.
-fn binding_from_row(row: BindingRow) -> MessageBindingRecord {
+pub(crate) fn binding_from_row(row: BindingRow) -> MessageBindingRecord {
     MessageBindingRecord {
         id: row.0,
         bot_id: row.1,
@@ -300,6 +315,7 @@ fn binding_from_row(row: BindingRow) -> MessageBindingRecord {
         message_id: row.4,
         last_rendered_revision: row.5,
         last_rendered_at: row.6,
-        terminal: row.7,
+        last_event_at: row.7,
+        terminal: row.8,
     }
 }

@@ -16,6 +16,7 @@ pub mod bindings;
 pub mod inbox;
 pub mod message_bindings;
 pub mod outbound_jobs;
+pub mod projection_accept;
 pub mod updates;
 
 pub use bindings::{AccessState, ChatRecord, IdentityProfile, IdentityRecord};
@@ -23,6 +24,7 @@ pub use message_bindings::MessageBindingRecord;
 pub use outbound_jobs::{
     DeliveryOutcome, NewOutboundJob, OutboundJobKind, OutboundJobState, QueuedOutboundJob,
 };
+pub use projection_accept::{AcceptOutcome, AcceptedEvent};
 pub use updates::{AdmittedUpdate, PendingUpdate, RecordOutcome, UpdateState};
 
 use std::time::Duration;

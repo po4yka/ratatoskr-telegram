@@ -123,7 +123,9 @@ comment on table telegram.updates is
 -- edit failure clears it so the next revision sends a fresh message and rebinds); provider
 -- message ids are recorded only after acknowledgment, never from an attempt still in flight.
 -- Revisions are monotonic per binding: `last_rendered_revision` only ever moves forward, and
--- `last_rendered_at` records when the newest accepted revision was rendered.
+-- `last_rendered_at` records when the newest accepted revision was rendered. `last_event_at` is
+-- the accept-side watermark — the occurred_at of the newest ACCEPTED event — so staleness is
+-- judged against what was accepted, not only what was delivered.
 create table telegram.message_bindings (
     id                     uuid        not null primary key,
     bot_id                 bigint      not null,
@@ -132,6 +134,7 @@ create table telegram.message_bindings (
     message_id             bigint,
     last_rendered_revision bigint      not null default 0,
     last_rendered_at       timestamptz,
+    last_event_at          timestamptz,
     terminal               boolean     not null default false,
     created_at             timestamptz not null default now(),
     updated_at             timestamptz not null default now(),
@@ -146,6 +149,10 @@ comment on table telegram.message_bindings is
 comment on column telegram.message_bindings.terminal is
     'Set once when a terminal projection is accepted; every later event for the binding is '
     'dropped, so a terminal render can never be overwritten.';
+
+comment on column telegram.message_bindings.last_event_at is
+    'occurred_at of the newest accepted event; the staleness watermark for the guard sequence. '
+    'Advances only when an event is accepted, never on duplicates or stale drops.';
 
 -- `outbound_jobs` — the durable queue of Bot API writes. Every sendMessage and editMessageText
 -- the service will ever make is a row here before any network call, so a crash between
