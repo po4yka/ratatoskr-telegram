@@ -2129,7 +2129,11 @@ dependencies = [
  "ratatoskr-telegram-core",
  "ratatoskr-telegram-http",
  "ratatoskr-telegram-persistence",
+ "sqlx",
+ "thiserror",
  "tokio",
+ "tracing",
+ "uuid",
 ]
 
 [[package]]

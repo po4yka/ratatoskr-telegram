@@ -8,7 +8,11 @@
 pub mod classify;
 pub mod clock;
 pub mod limiter;
+pub mod sender;
 
 pub use crate::outbound::classify::{Classified, PermanentClass, classify};
 pub use crate::outbound::clock::{Clock, SystemClock};
 pub use crate::outbound::limiter::{DeliveryLimiter, RateDecision};
+pub use crate::outbound::sender::{
+    BotApiSink, ClientSink, OutboundSender, SenderError, SenderLimits, SentMessage,
+};

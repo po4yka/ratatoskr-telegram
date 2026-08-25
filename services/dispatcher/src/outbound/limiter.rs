@@ -57,6 +57,7 @@ struct LimiterState {
     tokens_milli: u64,
     last_refill_secs: Option<i64>,
     last_proceed_by_chat: HashMap<i64, i64>,
+    penalty_until_by_chat: HashMap<i64, i64>,
 }
 
 /// The two-gate rate limiter shared by every sender task.
@@ -98,6 +99,12 @@ impl DeliveryLimiter {
         let now = clock.now_secs();
         Self::refill(&mut state, now, u64::from(self.global_per_second));
 
+        // An authoritative Telegram cooldown outranks every local gate: retrying earlier than
+        // the named deadline is what earned the 429 in the first place.
+        if let Some(denial) = Self::penalty_denial(&state, chat_id, now) {
+            return denial;
+        }
+
         // Chat gate first: when both gates would deny, the chat answer is the more actionable
         // hint, and the minimum-gap contract pins this ordering.
         if let Some(denial) = Self::chat_denial(&state, chat_id, now, self.per_chat_min_interval_ms)
@@ -114,6 +121,21 @@ impl DeliveryLimiter {
         state.tokens_milli -= ONE_TOKEN_MILLI;
         state.last_proceed_by_chat.insert(chat_id, now);
         RateDecision::Proceed
+    }
+
+    /// Cool one chat down until `until_secs` (whole seconds since the Unix epoch).
+    ///
+    /// The sender calls this when Telegram answers `429` with `retry_after`: that delay is
+    /// authoritative for the chat, so it must gate future attempts even though the limiter's own
+    /// budget knows nothing about it. A later penalty with a later deadline wins; one with an
+    /// earlier deadline never shortens a running cooldown.
+    pub fn penalize(&self, chat_id: i64, until_secs: i64) {
+        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        state
+            .penalty_until_by_chat
+            .entry(chat_id)
+            .and_modify(|current| *current = (*current).max(until_secs))
+            .or_insert(until_secs);
     }
 
     /// Accrue budget for every fully elapsed second, capped at the single-token burst.
@@ -134,6 +156,20 @@ impl DeliveryLimiter {
             state.tokens_milli = ONE_TOKEN_MILLI;
         }
         state.last_refill_secs = Some(now);
+    }
+
+    /// The penalty-gate answer, or `None` when no live cooldown names this chat.
+    ///
+    /// Expired entries linger until the same chat is penalized again; the map is bounded by
+    /// distinct chats for the same reason [`LimiterState::last_proceed_by_chat`] is.
+    fn penalty_denial(state: &LimiterState, chat_id: i64, now: i64) -> Option<RateDecision> {
+        let until = state.penalty_until_by_chat.get(&chat_id).copied()?;
+        if now >= until {
+            return None;
+        }
+        Some(RateDecision::ChatWait {
+            after_ms: u64::try_from(until - now).unwrap_or(0).saturating_mul(1000),
+        })
     }
 
     /// The chat-gate answer, or `None` when the chat may compete for global budget.
@@ -294,5 +330,32 @@ mod tests {
                 "a 30/s budget refills one token in ceil(1000/30) ms; no burst beyond one"
             );
         }
+    }
+
+    #[test]
+    fn rate_limit_penalty_cools_the_chat_until_deadline() {
+        let limiter = DeliveryLimiter::new(30, 0);
+        let clock = FakeClock::at(5_000_000);
+
+        limiter.penalize(7, 5_000_030);
+        assert!(
+            matches!(
+                limiter.try_acquire(&clock, 7),
+                RateDecision::ChatWait { after_ms } if after_ms == 30_000
+            ),
+            "a penalized chat waits out the authoritative deadline before anything else"
+        );
+        assert_eq!(
+            limiter.try_acquire(&clock, 8),
+            RateDecision::Proceed,
+            "the penalty is per chat; other chats are unaffected"
+        );
+
+        clock.advance_secs(30);
+        assert_eq!(
+            limiter.try_acquire(&clock, 7),
+            RateDecision::Proceed,
+            "the cooldown lifts exactly at the deadline"
+        );
     }
 }

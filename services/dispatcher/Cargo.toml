@@ -19,10 +19,15 @@ path = "src/main.rs"
 ratatoskr-telegram-core.workspace = true
 ratatoskr-telegram-http.workspace = true
 ratatoskr-telegram-bot-api.workspace = true
+ratatoskr-telegram-persistence.workspace = true
+thiserror.workspace = true
 tokio.workspace = true
+tracing.workspace = true
 
 [dev-dependencies]
 ratatoskr-telegram-persistence = { workspace = true, features = ["test-support"] }
+sqlx.workspace = true
+uuid.workspace = true
 tokio = { workspace = true, features = ["rt", "macros"] }
 
 [lints]
