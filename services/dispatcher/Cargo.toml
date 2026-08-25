@@ -7,6 +7,10 @@ rust-version.workspace = true
 license.workspace      = true
 repository.workspace   = true
 
+[lib]
+name = "ratatoskr_telegram_dispatcher"
+path = "src/lib.rs"
+
 [[bin]]
 name = "ratatoskr-telegram-dispatcher"
 path = "src/main.rs"
@@ -14,6 +18,7 @@ path = "src/main.rs"
 [dependencies]
 ratatoskr-telegram-core.workspace = true
 ratatoskr-telegram-http.workspace = true
+ratatoskr-telegram-bot-api.workspace = true
 tokio.workspace = true
 
 [dev-dependencies]

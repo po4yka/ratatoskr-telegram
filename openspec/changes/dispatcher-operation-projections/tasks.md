@@ -11,10 +11,10 @@
 
 ## 2. Outbound policy logic
 
-- [ ] 2.1 RED: add `services/dispatcher/src/outbound/limiter.rs` unit tests `global_bucket_refuses_calls_beyond_budget_per_window` and `per_chat_interval_enforces_minimum_gap` asserting a fake clock sees excess calls denied and same-chat calls spaced at least the configured gap while different chats proceed
-- [ ] 2.2 GREEN: implement the limiter over the injected `Clock` trait (global token budget + per-chat last-call timestamp); rerun until 2.1 passes
-- [ ] 2.3 RED: add classification tests `services/dispatcher/src/outbound/classify.rs` pinning every table row of design D5: network error → transient; `message is not modified` description → success no-op; `Forbidden: bot was blocked by the user` / `chat not found` / `message can't be edited` / `message to edit not found` / invalid-markup / migrated-to-supergroup descriptions → permanent; 429 → rate-limited carrying retry_after
-- [ ] 2.4 GREEN: implement the pure classifier from `BotApiError` + description matching; rerun until 2.3 passes
+- [x] 2.1 RED: add `services/dispatcher/src/outbound/limiter.rs` unit tests `global_bucket_refuses_calls_beyond_budget_per_window` and `per_chat_interval_enforces_minimum_gap` asserting a fake clock sees excess calls denied and same-chat calls spaced at least the configured gap while different chats proceed
+- [x] 2.2 GREEN: implement the limiter over the injected `Clock` trait (global token budget + per-chat last-call timestamp); rerun until 2.1 passes
+- [x] 2.3 RED: add classification tests `services/dispatcher/src/outbound/classify.rs` pinning every table row of design D5: network error → transient; `message is not modified` description → success no-op; `Forbidden: bot was blocked by the user` / `chat not found` / `message can't be edited` / `message to edit not found` / invalid-markup / migrated-to-supergroup descriptions → permanent; 429 → rate-limited carrying retry_after
+- [x] 2.4 GREEN: implement the pure classifier from `BotApiError` + description matching; rerun until 2.3 passes
 
 ## 3. Outbound sender worker
 

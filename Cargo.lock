@@ -2125,6 +2125,7 @@ dependencies = [
 name = "ratatoskr-telegram-dispatcher"
 version = "0.1.0"
 dependencies = [
+ "ratatoskr-telegram-bot-api",
  "ratatoskr-telegram-core",
  "ratatoskr-telegram-http",
  "ratatoskr-telegram-persistence",
