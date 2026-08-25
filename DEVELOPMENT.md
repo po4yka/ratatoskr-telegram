@@ -34,14 +34,32 @@ indistinguishable across the three refusal classes. Startup seeds exactly one en
 from `RATATOSKR__ACCESS__OWNER_TELEGRAM_USER_ID` (validation rule V14, required for the webhook
 role only); bootstrap is insert-if-absent, so an operator-disabled owner survives restarts.
 
-Not present yet, in plan order: the dispatcher's projections and outbound queue (item 4), plain-URL
-article submission (item 5), and everything after. No test contacts Telegram: the client is
-exercised against a local harness server with recorded fixtures.
+Not present yet, in plan order: plain-URL article submission (item 5), and everything after. No
+test contacts Telegram: the client is exercised against a local harness server with recorded
+fixtures.
 
-The database is REQUIRED for the webhook role since item 2: intake writes update deduplication
-through the pool, so a webhook that cannot reach its database refuses to start. The dispatcher still
-starts without one (and with an unreachable one, reporting that check failing) until its own plan
-item makes it write through the pool.
+The database is REQUIRED for both roles since item 4: intake writes update deduplication through
+the pool, and the dispatcher delivers every send and edit through its durable outbound queue there,
+so either role that cannot reach its database refuses to start.
+
+## The dispatcher's delivery pipeline
+
+The dispatcher owns everything Telegram sends. Every `sendMessage`/`editMessageText` is first a row
+in `telegram.outbound_jobs` (`ready`), claimed strictly FIFO per chat with one job in flight per
+chat; a global token bucket and a per-chat minimum interval gate each wire call; `Retry-After`
+reschedules authoritatively and cools the chat; transient failures retry with capped jittered
+backoff to a bounded attempt count and then dead-letter as `failed_permanent`; permanent Bot API
+answers settle immediately, and a permanent edit failure unbinds so the next revision sends fresh.
+Edits carry revisions: stale ones are superseded before any wire call and identical re-renders are
+no-ops via content hash, with the Bot API's `message is not modified` counted as success.
+`telegram.message_bindings` anchors one live chat message per Platform operation;
+`platform.operation.progressed.v1` snapshots consumed over an event seam render into that message
+through HTML-escaped, status-led text throttled by durable reschedule arithmetic, with terminal
+states applied exactly once per binding. Limits live under `RATATOSKR__DISPATCHER__*` (rule V15):
+`GLOBAL_MESSAGES_PER_SECOND`, `PER_CHAT_MIN_INTERVAL_MS`, `RENDER_INTERVAL_SECS`, `MAX_ATTEMPTS`,
+`BACKOFF_BASE_SECS`, `BACKOFF_CAP_SECS`, `JITTER_FRACTION_MILLI`, `LEASE_TTL_SECS`,
+`POLL_IDLE_MS`. The NATS transport for operation events arrives with workspace integration; today
+the consumer is fed through its in-process seam.
 
 ## Toolchain
 
@@ -114,8 +132,11 @@ proves nothing.
 ```bash
 docker compose up -d          # the local PostgreSQL the integration tests use
 
-# dispatcher role, operator plane on 9468; starts with no configuration at all
-RATATOSKR__TELEMETRY__LOG_FORMAT=pretty cargo run -p ratatoskr-telegram-dispatcher
+# dispatcher role, operator plane on 9468; needs its database and bot token before it will start
+RATATOSKR__TELEMETRY__LOG_FORMAT=pretty \
+RATATOSKR__DATABASE__URL=postgres://telegram:telegram@127.0.0.1:5432/telegram \
+RATATOSKR__BOT_API__TOKEN='123456:your-bot-token' \
+cargo run -p ratatoskr-telegram-dispatcher
 
 # webhook role: needs its intake configuration before it will start (rule V13)
 RATATOSKR__TELEMETRY__LOG_FORMAT=pretty \
@@ -148,11 +169,12 @@ cargo run -p ratatoskr-telegram-webhook -- check-config
 kill -TERM <pid>
 ```
 
-The dispatcher starts with no configuration at all: loopback admin listener on its default port,
-JSON logs, no exporter. The webhook role additionally demands its database URL, bot token and
-webhook secret, and refuses to start when the database cannot be reached. Registering the webhook
-with Telegram (`setWebhook`) remains an explicit operational write done outside this process; the
-client method exists for the tooling that will own it.
+Both roles demand their database URL, and the webhook additionally its bot token and webhook
+secret; either role refuses to start when the database cannot be reached. The dispatcher's outbound
+workers start after database preparation and drain in-flight delivery on shutdown; a job left
+`sending` by a crashed process is reclaimed after `RATATOSKR__DISPATCHER__LEASE_TTL_SECS`.
+Registering the webhook with Telegram (`setWebhook`) remains an explicit operational write done
+outside this process; the client method exists for the tooling that will own it.
 
 ### Schema — real
 

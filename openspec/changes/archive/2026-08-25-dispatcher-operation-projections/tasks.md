@@ -52,6 +52,6 @@
 
 ## 7. Change verification
 
-- [ ] 7.1 Run the full DEVELOPMENT.md gate command list (with `TELEGRAM_TEST_DATABASE_URL` pointing at the local instance) plus `openspec validate --strict`; all come back clean
-- [ ] 7.2 Inspect `git diff` for leaked secrets, tokens, or real chat/user identifiers; confirm fixtures use synthetic values and no message content lands in logs or metric labels
-- [ ] 7.3 Update README status paragraph, DEVELOPMENT.md stage/commands (dispatcher now requires database; new configuration keys), and note the item as implemented in docs/IMPLEMENTATION_PLAN.md order; archive the change only after 7.1 is green and every task above is ticked
+- [x] 7.1 Run the full DEVELOPMENT.md gate command list (with `TELEGRAM_TEST_DATABASE_URL` pointing at the local instance) plus `openspec validate --strict`; all come back clean
+- [x] 7.2 Inspect `git diff` for leaked secrets, tokens, or real chat/user identifiers; confirm fixtures use synthetic values and no message content lands in logs or metric labels
+- [x] 7.3 Update README status paragraph, DEVELOPMENT.md stage/commands (dispatcher now requires database; new configuration keys), and note the item as implemented in docs/IMPLEMENTATION_PLAN.md order; archive the change only after 7.1 is green and every task above is ticked
