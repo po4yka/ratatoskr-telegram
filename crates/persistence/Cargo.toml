@@ -20,17 +20,15 @@ secrecy.workspace   = true
 thiserror.workspace = true
 tracing.workspace   = true
 tokio.workspace     = true
+# App-minted UUIDv7 primary keys for the tables this crate writes (message bindings, outbound
+# jobs): the schema deliberately carries no DEFAULT on id columns, so the database cannot mint.
+uuid.workspace = true
 
 [features]
 # The disposable-database harness. Never enabled by a service binary.
-test-support = ["dep:uuid"]
-
-[dependencies.uuid]
-workspace = true
-optional  = true
+test-support = []
 
 [dev-dependencies]
-uuid.workspace = true
 # The suite drives the disposable-database harness through this crate's own public surface, so a
 # per-package `cargo test -p ratatoskr-telegram-persistence` enables it itself.
 ratatoskr-telegram-persistence = { path = ".", features = ["test-support"] }

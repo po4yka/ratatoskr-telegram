@@ -13,9 +13,16 @@
 pub mod test_support;
 
 pub mod bindings;
+pub mod inbox;
+pub mod message_bindings;
+pub mod outbound_jobs;
 pub mod updates;
 
 pub use bindings::{AccessState, ChatRecord, IdentityProfile, IdentityRecord};
+pub use message_bindings::MessageBindingRecord;
+pub use outbound_jobs::{
+    DeliveryOutcome, NewOutboundJob, OutboundJobKind, OutboundJobState, QueuedOutboundJob,
+};
 pub use updates::{AdmittedUpdate, PendingUpdate, RecordOutcome, UpdateState};
 
 use std::time::Duration;
@@ -68,6 +75,19 @@ pub enum PersistenceError {
     /// does not exist is a bug, and silently succeeding would hide it.
     #[error("the update was never admitted")]
     UnknownUpdate,
+
+    /// A binding mutation named an `(operation_id, chat_id)` pair with no binding row. Same rule
+    /// as [`PersistenceError::UnknownUpdate`]: a transition for a row that does not exist is a
+    /// bug, and reporting it as "already terminal" or "already unbound" would corrupt the
+    /// caller's decision.
+    #[error("the message binding was never created")]
+    UnknownBinding,
+
+    /// A settlement named an outbound job that was never enqueued. Same rule as
+    /// [`PersistenceError::UnknownUpdate`]: settling a job nobody can find would silently drop
+    /// work the queue promised to deliver.
+    #[error("the outbound job was never enqueued")]
+    UnknownOutboundJob,
 }
 
 impl From<PersistenceError> for TelegramError {

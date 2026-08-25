@@ -113,3 +113,109 @@ create table telegram.updates (
 comment on table telegram.updates is
     'Admitted Bot API updates and their processing state. One row per (bot, update id); the '
     'primary key is the deduplication identity. Payload is retained only while processable.';
+
+-- `message_bindings` — one live binding of a Platform operation to one Telegram chat message.
+-- The dispatcher edits that message in place as operation events arrive; the unique constraint on
+-- (operation_id, chat_id) makes "one live binding" a database fact rather than a convention.
+-- `operation_id` is an unenforced reference into Platform's operation domain — no foreign key
+-- crosses a schema boundary — and the application owns the invariant it names. `message_id` is
+-- NULL until a send is acknowledged by the Bot API, and NULL again after an unbind (a permanent
+-- edit failure clears it so the next revision sends a fresh message and rebinds); provider
+-- message ids are recorded only after acknowledgment, never from an attempt still in flight.
+-- Revisions are monotonic per binding: `last_rendered_revision` only ever moves forward, and
+-- `last_rendered_at` records when the newest accepted revision was rendered.
+create table telegram.message_bindings (
+    id                     uuid        not null primary key,
+    bot_id                 bigint      not null,
+    operation_id           uuid        not null,
+    chat_id                bigint      not null,
+    message_id             bigint,
+    last_rendered_revision bigint      not null default 0,
+    last_rendered_at       timestamptz,
+    terminal               boolean     not null default false,
+    created_at             timestamptz not null default now(),
+    updated_at             timestamptz not null default now(),
+    unique (operation_id, chat_id)
+);
+
+comment on table telegram.message_bindings is
+    'One live Telegram message per Platform operation and chat: the anchor the dispatcher edits '
+    'as progress arrives. operation_id is an unenforced reference into Platform''s operation '
+    'domain; message_id is NULL until a send is acknowledged and NULL again after an unbind.';
+
+comment on column telegram.message_bindings.terminal is
+    'Set once when a terminal projection is accepted; every later event for the binding is '
+    'dropped, so a terminal render can never be overwritten.';
+
+-- `outbound_jobs` — the durable queue of Bot API writes. Every sendMessage and editMessageText
+-- the service will ever make is a row here before any network call, so a crash between
+-- acceptance and delivery loses nothing: a restart claims from this table again. `id` is a
+-- UUIDv7 minted at enqueue; UUIDv7 sorts by creation time, so id order within a chat
+-- approximates enqueue order and the per-chat FIFO claim needs no separate sequence column.
+-- `body` holds the rendered message text and is content-bearing: pruning aged rows later is a
+-- stated retention duty, not something this schema performs today. `content_hash` is the sha256
+-- hex of `body`, computed by the caller, so an identical re-render is detectable without diffing
+-- text. `state` uses ARCHITECTURE.md §18.1's exact tokens — these are vocabulary, not synonyms
+-- to be improved locally. `lease_expires_at` is NULL unless the row is claimed for sending; a
+-- stale lease is what makes a crashed sender's job claimable again. `last_error_class` records a
+-- closed safe class label at dead-lettering, never provider error text.
+create table telegram.outbound_jobs (
+    id               uuid        not null primary key,
+    bot_id           bigint      not null,
+    chat_id          bigint      not null,
+    kind             text        not null check (kind in ('send_message', 'edit_message_text')),
+    body             text        not null,
+    content_hash     text        not null,
+    operation_id     uuid,
+    revision         bigint,
+    correlation_id   text,
+    state            text        not null default 'ready'
+                     check (state in ('planned', 'ready', 'sending', 'sent', 'retry_wait',
+                                      'superseded', 'failed_permanent', 'cancelled')),
+    attempts         integer     not null default 0,
+    next_attempt_at  timestamptz not null default now(),
+    lease_expires_at timestamptz,
+    last_error_class text,
+    created_at       timestamptz not null default now(),
+    updated_at       timestamptz not null default now()
+);
+
+-- The due scan behind every claim: ready and waiting jobs ordered by their earliest attempt.
+create index outbound_jobs_due_idx on telegram.outbound_jobs (next_attempt_at)
+    where state in ('ready', 'retry_wait');
+-- The per-chat FIFO head read: lowest id per chat among eligible rows.
+create index outbound_jobs_chat_idx on telegram.outbound_jobs (chat_id, id);
+-- The lease scan: rows in flight whose sender may have died.
+create index outbound_jobs_sending_idx on telegram.outbound_jobs (state)
+    where state = 'sending';
+
+comment on table telegram.outbound_jobs is
+    'The durable Bot API write queue: one row per planned or attempted sendMessage / '
+    'editMessageText, claimed strictly FIFO per chat with at most one job in flight per chat.';
+
+comment on column telegram.outbound_jobs.id is
+    'UUIDv7 minted at enqueue; v7 sorts by time, so id order within a chat approximates enqueue '
+    'order and the FIFO claim reads no separate sequence column.';
+
+comment on column telegram.outbound_jobs.body is
+    'The rendered message text. Content-bearing: pruning aged rows is a stated retention duty '
+    'this schema does not yet perform.';
+
+comment on column telegram.outbound_jobs.state is
+    'ARCHITECTURE.md §18.1 job-state tokens: planned -> ready -> sending -> sent, plus '
+    'retry_wait, superseded, failed_permanent, cancelled.';
+
+comment on column telegram.outbound_jobs.last_error_class is
+    'A closed safe failure-class label recorded at dead-lettering; never provider error text.';
+
+-- `inbox` — event-id deduplication for at-least-once event consumption. One row per consumed
+-- envelope event id; like updates, the primary key IS the decision, insert-or-ignore, so a
+-- redelivered event changes nothing twice without any check-then-insert race.
+create table telegram.inbox (
+    event_id uuid        not null primary key,
+    seen_at  timestamptz not null default now()
+);
+
+comment on table telegram.inbox is
+    'Envelope event ids already consumed from at-least-once transports; the primary key is the '
+    'deduplication decision.';
