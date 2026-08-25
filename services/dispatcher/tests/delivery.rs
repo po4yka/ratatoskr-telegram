@@ -21,7 +21,7 @@ use ratatoskr_telegram_dispatcher::outbound::DeliveryLimiter;
 use ratatoskr_telegram_dispatcher::outbound::sender::{
     BotApiSink, OutboundSender, SendFuture, SenderLimits, SentMessage,
 };
-use telegram_persistence::outbound_jobs::{NewOutboundJob, OutboundJobKind};
+use telegram_persistence::outbound_jobs::{MessagePayload, NewOutboundJob, OutboundJobKind};
 use telegram_persistence::test_support::TestDatabase;
 mod common;
 
@@ -39,7 +39,7 @@ struct CallRecord {
     kind: &'static str,
     chat_id: i64,
     message_id: Option<i64>,
-    text: String,
+    payload: MessagePayload,
 }
 
 /// A mid-flight block: the fake signals `started_tx` when the call begins and waits on
@@ -94,9 +94,9 @@ impl FakeBotApi {
         kind: &'static str,
         chat_id: i64,
         message_id: Option<i64>,
-        text: &str,
+        payload: &MessagePayload,
     ) -> SendFuture<'_> {
-        let text = text.to_owned();
+        let payload = payload.clone();
         Box::pin(async move {
             let current = self.in_flight.fetch_add(1, Ordering::Relaxed) + 1;
             self.max_in_flight.fetch_max(current, Ordering::Relaxed);
@@ -114,7 +114,7 @@ impl FakeBotApi {
                 kind,
                 chat_id,
                 message_id,
-                text,
+                payload,
             });
             drop(records);
 
@@ -131,12 +131,17 @@ impl FakeBotApi {
 }
 
 impl BotApiSink for FakeBotApi {
-    fn send_message(&self, chat_id: i64, text: &str) -> SendFuture<'_> {
-        self.perform("send_message", chat_id, None, text)
+    fn send_message(&self, chat_id: i64, payload: &MessagePayload) -> SendFuture<'_> {
+        self.perform("send_message", chat_id, None, payload)
     }
 
-    fn edit_message_text(&self, chat_id: i64, message_id: i64, text: &str) -> SendFuture<'_> {
-        self.perform("edit_message_text", chat_id, Some(message_id), text)
+    fn edit_message_text(
+        &self,
+        chat_id: i64,
+        message_id: i64,
+        payload: &MessagePayload,
+    ) -> SendFuture<'_> {
+        self.perform("edit_message_text", chat_id, Some(message_id), payload)
     }
 }
 
@@ -182,7 +187,7 @@ async fn enqueue(
                 bot_id: BOT_ID,
                 chat_id,
                 kind,
-                body: body.to_owned(),
+                payload: MessagePayload::text(body),
                 content_hash: format!("hash-{body}"),
                 operation_id,
                 revision,
@@ -275,7 +280,7 @@ async fn sender_delivers_one_chat_fifo_under_concurrency() {
     assert_eq!(
         a_records
             .iter()
-            .map(|record| record.text.as_str())
+            .map(|record| record.payload.text.as_str())
             .collect::<Vec<_>>(),
         ["A1", "A2", "A3"],
         "chat A must reach the wire in enqueue order"
@@ -283,7 +288,7 @@ async fn sender_delivers_one_chat_fifo_under_concurrency() {
 
     let mut delivered: Vec<(i64, &str)> = records
         .iter()
-        .map(|record| (record.chat_id, record.text.as_str()))
+        .map(|record| (record.chat_id, record.payload.text.as_str()))
         .collect();
     delivered.sort_unstable();
     assert_eq!(

@@ -23,9 +23,9 @@ use crate::message_bindings::{
 };
 use crate::{Database, PersistenceError};
 
-/// The event fields the accept step needs, gathered so the method call stays small. `body` and
-/// `content_hash` are computed by the caller (render + sha256) because rendering is dispatcher
-/// policy, not persistence's.
+/// The event fields the accept step needs, gathered so the method call stays small. The payload
+/// serialization and `content_hash` are computed by the caller (compose + sha256) because
+/// rendering is dispatcher policy, not persistence's.
 #[derive(Debug, Clone, Copy)]
 pub struct AcceptedEvent<'a> {
     /// The Platform operation this snapshot belongs to.
@@ -36,9 +36,9 @@ pub struct AcceptedEvent<'a> {
     pub occurred_at_secs: i64,
     /// Whether the snapshot's status is terminal (consumer-side closed enum).
     pub terminal: bool,
-    /// The rendered Telegram HTML body.
-    pub body: &'a str,
-    /// sha256 hex of [`Self::body`].
+    /// The whole rendered message as its canonical jsonb text.
+    pub payload_json: &'a str,
+    /// sha256 hex of [`Self::payload_json`].
     pub content_hash: &'a str,
     /// The contracts `EntityRef` correlation string, carried onto the job for tracing only.
     pub correlation_id: &'a str,
@@ -274,16 +274,16 @@ async fn insert_edit_job(
         .saturating_add(render_interval_secs.max(0));
     sqlx::query(
         "insert into telegram.outbound_jobs
-             (id, bot_id, chat_id, kind, body, content_hash, operation_id, revision,
+             (id, bot_id, chat_id, kind, payload, content_hash, operation_id, revision,
               correlation_id, next_attempt_at)
-         values ($1, $2, $3, 'edit_message_text', $4, $5, $6, $7, $8,
+         values ($1, $2, $3, 'edit_message_text', $4::jsonb, $5, $6, $7, $8,
                  case when $9 then to_timestamp($10)
                       else to_timestamp(greatest($10, $11)) end)",
     )
     .bind(Uuid::now_v7())
     .bind(binding.bot_id)
     .bind(binding.chat_id)
-    .bind(event.body)
+    .bind(event.payload_json)
     .bind(event.content_hash)
     .bind(event.operation_id)
     .bind(revision)

@@ -117,10 +117,10 @@ impl OutboundSender {
         // not delivery latency.
         let started = std::time::Instant::now();
         let result = match action {
-            WireAction::Send => self.sink.send_message(job.chat_id, &job.body).await,
+            WireAction::Send => self.sink.send_message(job.chat_id, &job.payload).await,
             WireAction::Edit { message_id } => {
                 self.sink
-                    .edit_message_text(job.chat_id, message_id, &job.body)
+                    .edit_message_text(job.chat_id, message_id, &job.payload)
                     .await
             }
         };

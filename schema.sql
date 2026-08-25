@@ -159,10 +159,12 @@ comment on column telegram.message_bindings.last_event_at is
 -- acceptance and delivery loses nothing: a restart claims from this table again. `id` is a
 -- UUIDv7 minted at enqueue; UUIDv7 sorts by creation time, so id order within a chat
 -- approximates enqueue order and the per-chat FIFO claim needs no separate sequence column.
--- `body` holds the rendered message text and is content-bearing: pruning aged rows later is a
--- stated retention duty, not something this schema performs today. `content_hash` is the sha256
--- hex of `body`, computed by the caller, so an identical re-render is detectable without diffing
--- text. `state` uses ARCHITECTURE.md §18.1's exact tokens — these are vocabulary, not synonyms
+-- `payload` holds the whole rendered message — text, parse mode, and inline keyboard when the
+-- render carries one — so markup survives queueing, restarts, and retries bit-identically, and
+-- is content-bearing: pruning aged rows later is a stated retention duty, not something this
+-- schema performs today. `content_hash` is the sha256 hex of the canonical payload
+-- serialization, computed by the caller, so an identical re-render is detectable without diffing.
+-- `state` uses ARCHITECTURE.md §18.1's exact tokens — these are vocabulary, not synonyms
 -- to be improved locally. `lease_expires_at` is NULL unless the row is claimed for sending; a
 -- stale lease is what makes a crashed sender's job claimable again. `last_error_class` records a
 -- closed safe class label at dead-lettering, never provider error text.
@@ -171,7 +173,7 @@ create table telegram.outbound_jobs (
     bot_id           bigint      not null,
     chat_id          bigint      not null,
     kind             text        not null check (kind in ('send_message', 'edit_message_text')),
-    body             text        not null,
+    payload          jsonb       not null,
     content_hash     text        not null,
     operation_id     uuid,
     revision         bigint,
@@ -204,9 +206,10 @@ comment on column telegram.outbound_jobs.id is
     'UUIDv7 minted at enqueue; v7 sorts by time, so id order within a chat approximates enqueue '
     'order and the FIFO claim reads no separate sequence column.';
 
-comment on column telegram.outbound_jobs.body is
-    'The rendered message text. Content-bearing: pruning aged rows is a stated retention duty '
-    'this schema does not yet perform.';
+comment on column telegram.outbound_jobs.payload is
+    'The whole rendered message - text, parse mode, inline keyboard when one rides along - as '
+    'jsonb, restored bit-identically across queueing, restarts, and retries. Content-bearing: '
+    'pruning aged rows is a stated retention duty this schema does not yet perform.';
 
 comment on column telegram.outbound_jobs.state is
     'ARCHITECTURE.md §18.1 job-state tokens: planned -> ready -> sending -> sent, plus '
@@ -226,3 +229,35 @@ create table telegram.inbox (
 comment on table telegram.inbox is
     'Envelope event ids already consumed from at-least-once transports; the primary key is the '
     'deduplication decision.';
+
+-- `interaction_intents` — opaque, expiring, owner-bound records behind Mini App deep links. The
+-- identifier IS the opaque token: a UUIDv7 minted here and carried alone in the `startapp`
+-- parameter, so no address, operation id, or policy state ever rides through Telegram. Rows are
+-- written when the webhook accepts a capture and read back by whoever renders or resolves the
+-- link; lookups match only unexpired rows and only for the owning Telegram user, so a forwarded
+-- deep link resolves to nothing for anyone else. `kind` is a closed vocabulary because every
+-- intent kind is a product decision, never an open string. `operation_id` and `source_url` are
+-- unenforced references into Platform's operation domain and the submitted address respectively;
+-- no credential and no content beyond that reference is stored.
+create table telegram.interaction_intents (
+    id               uuid        not null primary key,
+    bot_id           bigint      not null,
+    telegram_user_id bigint      not null,
+    chat_id          bigint      not null,
+    kind             text        not null check (kind in ('operation_status')),
+    operation_id     uuid        not null,
+    source_url       text        not null,
+    created_at       timestamptz not null default now(),
+    expires_at       timestamptz not null
+);
+
+create index interaction_intents_operation_idx
+    on telegram.interaction_intents (operation_id);
+
+comment on table telegram.interaction_intents is
+    'Opaque deep-link intents: one expiring, owner-bound record per Mini App link this service '
+    'renders. The id is the token; everything sensitive stays behind it.';
+
+comment on column telegram.interaction_intents.expires_at is
+    'When the intent stops resolving. Enforced by the lookup, which reports nothing for expired '
+    'rows even to their owner; pruning aged rows is a stated retention duty.';

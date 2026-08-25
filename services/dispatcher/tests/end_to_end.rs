@@ -27,7 +27,7 @@ use ratatoskr_telegram_dispatcher::projection::{
 use secrecy::SecretString;
 use serde_json::{Value, json};
 use sqlx::types::Uuid;
-use telegram_persistence::outbound_jobs::{NewOutboundJob, OutboundJobKind};
+use telegram_persistence::outbound_jobs::{MessagePayload, NewOutboundJob, OutboundJobKind};
 use telegram_persistence::test_support::TestDatabase;
 use url::Url;
 
@@ -383,7 +383,7 @@ async fn a_job_enqueued_but_undelivered_survives_process_restart() {
                 bot_id: BOT_ID,
                 chat_id: 700_500_400,
                 kind: OutboundJobKind::SendMessage,
-                body: "written before the crash".to_owned(),
+                payload: MessagePayload::text("written before the crash"),
                 content_hash: "hash-before-crash".to_owned(),
                 operation_id: None,
                 revision: None,

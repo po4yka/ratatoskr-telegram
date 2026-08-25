@@ -19,7 +19,7 @@ use axum::http::HeaderMap;
 use axum::http::header;
 use axum::response::Json;
 use axum::routing::any;
-use bot_api::{BotApiError, ChatAction, ChatId, Client, MessageId};
+use bot_api::{BotApiError, ChatAction, ChatId, Client, MessageId, MessageOptions};
 use secrecy::{ExposeSecret as _, SecretString};
 use serde_json::{Value, json};
 use url::Url;
@@ -180,7 +180,7 @@ async fn an_api_error_surfaces_as_its_class_without_the_token() {
     })
     .await;
     let failure = client(&harness.base_url)
-        .send_message(ChatId(900_700_601), "synthetic text")
+        .send_message(ChatId(900_700_601), "synthetic text", None)
         .await
         .expect_err("an API error must fail the call");
 
@@ -210,7 +210,7 @@ async fn a_rate_limited_answer_carries_its_retry_delay() {
     })
     .await;
     let failure = client(&harness.base_url)
-        .send_message(ChatId(900_700_601), "synthetic text")
+        .send_message(ChatId(900_700_601), "synthetic text", None)
         .await
         .expect_err("429 must fail the call");
     match failure {
@@ -271,7 +271,7 @@ async fn send_message_posts_its_typed_payload() {
     })
     .await;
     let message = client(&harness.base_url)
-        .send_message(ChatId(900_700_602), "synthetic text")
+        .send_message(ChatId(900_700_602), "synthetic text", None)
         .await
         .expect("send_message must deliver");
     assert_eq!(message.id.0, 55);
@@ -290,7 +290,7 @@ async fn edit_message_text_addresses_one_message() {
         Harness::spawn(|_| ok_result(&fixture(include_str!("fixtures/message.json"))["message"]))
             .await;
     client(&harness.base_url)
-        .edit_message_text(ChatId(900_700_602), MessageId(55), "edited text")
+        .edit_message_text(ChatId(900_700_602), MessageId(55), "edited text", None)
         .await
         .expect("edit_message_text must deliver");
 
@@ -325,6 +325,52 @@ async fn send_chat_action_posts_the_wire_action_name() {
     let body = harness.requests()[0].body.clone().expect("body");
     assert_eq!(body["chat_id"], 900_700_602);
     assert_eq!(body["action"], "typing");
+}
+
+/// `send_message` and `edit_message_text` carry parse mode and reply markup when given, and
+/// neither field when not.
+#[tokio::test]
+async fn send_and_edit_carry_parse_mode_and_reply_markup() {
+    let harness =
+        Harness::spawn(|_| ok_result(&fixture(include_str!("fixtures/message.json"))["message"]))
+            .await;
+    let markup = json!({
+        "inline_keyboard": [[{"text": "Open", "url": "https://t.me/ratatoskr_test_bot"}]]
+    });
+    let options = MessageOptions {
+        parse_mode: Some("HTML".to_owned()),
+        reply_markup: Some(markup.clone()),
+    };
+    client(&harness.base_url)
+        .send_message(ChatId(900_700_602), "<b>done</b>", Some(&options))
+        .await
+        .expect("send with options");
+
+    let body = harness.requests()[0].body.clone().expect("body");
+    assert_eq!(body["parse_mode"], "HTML");
+    assert_eq!(body["reply_markup"], markup);
+
+    client(&harness.base_url)
+        .edit_message_text(
+            ChatId(900_700_602),
+            MessageId(55),
+            "<i>still done</i>",
+            Some(&options),
+        )
+        .await
+        .expect("edit with options");
+    let body = harness.requests()[1].body.clone().expect("body");
+    assert_eq!(body["parse_mode"], "HTML");
+    assert_eq!(body["reply_markup"], markup);
+
+    // Without options neither field may appear on the wire.
+    client(&harness.base_url)
+        .send_message(ChatId(900_700_602), "plain", None)
+        .await
+        .expect("plain send");
+    let body = harness.requests()[2].body.clone().expect("body");
+    assert!(body.get("parse_mode").is_none(), "{body}");
+    assert!(body.get("reply_markup").is_none(), "{body}");
 }
 
 /// `set_webhook` carries the registration URL and the admission secret as multipart form fields —

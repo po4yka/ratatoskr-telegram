@@ -10,6 +10,7 @@ use std::sync::Arc;
 
 use telegram_persistence::Database;
 use telegram_persistence::PersistenceError;
+use telegram_persistence::outbound_jobs::MessagePayload;
 use telegram_persistence::projection_accept::{AcceptOutcome as PersistenceOutcome, AcceptedEvent};
 
 use crate::outbound::clock::Clock;
@@ -73,8 +74,9 @@ impl ProjectionConsumer {
     /// [`PersistenceError`] when the accept transaction fails; a storage failure is never
     /// masqueraded as an outcome.
     pub async fn accept(&self, event: &OperationEvent) -> Result<AcceptOutcome, PersistenceError> {
-        let body = render(event);
-        let content_hash = sha256_hex(&body);
+        let payload = MessagePayload::text(render(event));
+        let payload_json = payload.canonical()?;
+        let content_hash = sha256_hex(&payload_json);
         let now = self.clock.now_secs();
 
         let outcome = self
@@ -85,7 +87,7 @@ impl ProjectionConsumer {
                     event_id: event.event_id,
                     occurred_at_secs: event.occurred_at_secs,
                     terminal: event.status.is_terminal(),
-                    body: &body,
+                    payload_json: &payload_json,
                     content_hash: &content_hash,
                     correlation_id: &event.correlation_id,
                 },

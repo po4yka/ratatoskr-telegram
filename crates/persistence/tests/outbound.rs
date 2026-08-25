@@ -9,7 +9,9 @@
 )]
 
 use sqlx::Row;
-use telegram_persistence::outbound_jobs::{DeliveryOutcome, NewOutboundJob, OutboundJobKind};
+use telegram_persistence::outbound_jobs::{
+    DeliveryOutcome, MessagePayload, NewOutboundJob, OutboundJobKind,
+};
 use telegram_persistence::test_support::TestDatabase;
 
 /// A connected pool over the disposable database, for raw assertions.
@@ -179,7 +181,7 @@ fn message_bindings_outbound_jobs_and_inbox_exist_with_expected_shape() {
         expect_column(&test.database, "outbound_jobs", "bot_id", "bigint", "NO").await;
         expect_column(&test.database, "outbound_jobs", "chat_id", "bigint", "NO").await;
         expect_column(&test.database, "outbound_jobs", "kind", "text", "NO").await;
-        expect_column(&test.database, "outbound_jobs", "body", "text", "NO").await;
+        expect_column(&test.database, "outbound_jobs", "payload", "jsonb", "NO").await;
         expect_column(&test.database, "outbound_jobs", "content_hash", "text", "NO").await;
         expect_column(&test.database, "outbound_jobs", "operation_id", "uuid", "YES").await;
         expect_column(&test.database, "outbound_jobs", "revision", "bigint", "YES").await;
@@ -260,8 +262,8 @@ fn message_bindings_outbound_jobs_and_inbox_exist_with_expected_shape() {
         // A job boots ready with zero attempts, an immediate next attempt, and no lease.
         let job_id = uuid::Uuid::now_v7();
         sqlx::query(
-            "insert into telegram.outbound_jobs (id, bot_id, chat_id, kind, body, content_hash)
-             values ($1, 700100200, 900700600, 'send_message', 'text', 'hash')",
+            "insert into telegram.outbound_jobs (id, bot_id, chat_id, kind, payload, content_hash)
+             values ($1, 700100200, 900700600, 'send_message', '\"text\"', 'hash')",
         )
         .bind(job_id)
         .execute(test.pool())
@@ -284,8 +286,8 @@ fn message_bindings_outbound_jobs_and_inbox_exist_with_expected_shape() {
 
         // Both job vocabularies are closed by CHECK constraints.
         let bogus_kind = sqlx::query(
-            "insert into telegram.outbound_jobs (id, bot_id, chat_id, kind, body, content_hash)
-             values ($1, 700100200, 900700601, 'delete_message', 'text', 'hash')",
+            "insert into telegram.outbound_jobs (id, bot_id, chat_id, kind, payload, content_hash)
+             values ($1, 700100200, 900700601, 'delete_message', '\"text\"', 'hash')",
         )
         .bind(uuid::Uuid::now_v7())
         .execute(test.pool())
@@ -295,8 +297,8 @@ fn message_bindings_outbound_jobs_and_inbox_exist_with_expected_shape() {
             "an unknown job kind must violate the check constraint"
         );
         let bogus_state = sqlx::query(
-            "insert into telegram.outbound_jobs (id, bot_id, chat_id, kind, body, content_hash, state)
-             values ($1, 700100200, 900700601, 'send_message', 'text', 'hash', 'queued')",
+            "insert into telegram.outbound_jobs (id, bot_id, chat_id, kind, payload, content_hash, state)
+             values ($1, 700100200, 900700601, 'send_message', '\"text\"', 'hash', 'queued')",
         )
         .bind(uuid::Uuid::now_v7())
         .execute(test.pool())
@@ -355,8 +357,9 @@ const CHAT_B: i64 = 900_700_620;
 /// Chat C of the FIFO test.
 const CHAT_C: i64 = 900_700_630;
 
-/// The canonical sha256 digest of the body `"abc"`, used as the caller-computed content hash.
-const ABC_SHA256: &str = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
+/// The canonical sha256 digest of the payload whose text is `"abc"` — the caller-computed
+/// content hash for the plain-text fixture below.
+const ABC_SHA256: &str = "45efb3f81766c9ade6f02575b920fcd9ccb6ba65c630421b501f78e686b610eb";
 
 /// A send-job fixture with the given rendered body and its caller-computed hash.
 fn send_job(chat_id: i64, body: &str, content_hash: &str) -> NewOutboundJob {
@@ -364,7 +367,7 @@ fn send_job(chat_id: i64, body: &str, content_hash: &str) -> NewOutboundJob {
         bot_id: BOT,
         chat_id,
         kind: OutboundJobKind::SendMessage,
-        body: body.to_owned(),
+        payload: MessagePayload::text(body),
         content_hash: content_hash.to_owned(),
         operation_id: None,
         revision: None,
@@ -379,7 +382,7 @@ fn edit_job(chat_id: i64, operation: uuid::Uuid, revision: i64) -> NewOutboundJo
         bot_id: BOT,
         chat_id,
         kind: OutboundJobKind::EditMessageText,
-        body: format!("render {revision}"),
+        payload: MessagePayload::text(format!("render {revision}")),
         content_hash: format!("hash-{revision}"),
         operation_id: Some(operation),
         revision: Some(revision),
@@ -425,7 +428,7 @@ fn enqueue_marks_ready_and_persists_payload_hash() {
                     bot_id: BOT,
                     chat_id: CHAT_A,
                     kind: OutboundJobKind::SendMessage,
-                    body: "abc".to_owned(),
+                    payload: MessagePayload::text("abc"),
                     content_hash: ABC_SHA256.to_owned(),
                     operation_id: Some(operation),
                     revision: Some(7),
@@ -463,7 +466,7 @@ fn enqueue_marks_ready_and_persists_payload_hash() {
         assert_eq!(claimed.bot_id, BOT);
         assert_eq!(claimed.chat_id, CHAT_A);
         assert_eq!(claimed.kind, OutboundJobKind::SendMessage);
-        assert_eq!(claimed.body, "abc");
+        assert_eq!(claimed.payload.text, "abc");
         assert_eq!(claimed.content_hash, ABC_SHA256);
         assert_eq!(claimed.operation_id, Some(operation));
         assert_eq!(claimed.revision, Some(7));

@@ -26,6 +26,30 @@ pub use teloxide::types::{
     MessageId, Update, UpdateKind, User,
 };
 
+/// Presentation beyond plain text for one outgoing message.
+///
+/// Deliberately wire-neutral: parse mode is the API's label (`HTML`), the keyboard is the exact
+/// JSON the API expects under `reply_markup`. Keeping this crate free of higher-level rendering
+/// types lets the outbound queue store the payload verbatim and every layer pass it through.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct MessageOptions {
+    /// The parse mode label, e.g. `HTML`.
+    pub parse_mode: Option<String>,
+    /// The inline keyboard layout as the Bot API's `reply_markup` JSON.
+    pub reply_markup: Option<serde_json::Value>,
+}
+
+impl MessageOptions {
+    /// HTML parse mode without a keyboard.
+    #[must_use]
+    pub fn html() -> Self {
+        Self {
+            parse_mode: Some("HTML".to_owned()),
+            reply_markup: None,
+        }
+    }
+}
+
 /// Why one Bot API call failed. Closed, extendable, and safe to render: no variant carries the
 /// token or a full response body.
 #[derive(Debug, ThisError)]
@@ -160,21 +184,37 @@ impl Client {
         request.send().await.map(|_| ()).map_err(BotApiError::map)
     }
 
-    /// Send a text message. Projection options (parse mode, keyboards, links) extend this method's
-    /// payload as the items that need them land.
+    /// Send a message, optionally carrying parse mode and an inline keyboard.
     ///
     /// # Errors
     ///
     /// As the taxonomy above.
-    pub async fn send_message(&self, chat_id: ChatId, text: &str) -> Result<Message, BotApiError> {
-        self.bot
-            .send_message(chat_id, text)
-            .send()
-            .await
-            .map_err(BotApiError::map)
+    pub async fn send_message(
+        &self,
+        chat_id: ChatId,
+        text: &str,
+        options: Option<&MessageOptions>,
+    ) -> Result<Message, BotApiError> {
+        use teloxide::payloads::SendMessageSetters as _;
+
+        let request = self.bot.send_message(chat_id, text);
+        let request = match options {
+            Some(o) => {
+                let request = match o.parse_mode.as_deref() {
+                    Some("HTML") => request.parse_mode(teloxide::types::ParseMode::Html),
+                    _ => request,
+                };
+                match &o.reply_markup {
+                    Some(markup) => request.reply_markup(keyboard_of(markup)?),
+                    None => request,
+                }
+            }
+            None => request,
+        };
+        request.send().await.map_err(BotApiError::map)
     }
 
-    /// Replace one sent message's text in place.
+    /// Replace one sent message's text - and its presentation - in place.
     ///
     /// # Errors
     ///
@@ -184,12 +224,25 @@ impl Client {
         chat_id: ChatId,
         message_id: MessageId,
         text: &str,
+        options: Option<&MessageOptions>,
     ) -> Result<Message, BotApiError> {
-        self.bot
-            .edit_message_text(chat_id, message_id, text)
-            .send()
-            .await
-            .map_err(BotApiError::map)
+        use teloxide::payloads::EditMessageTextSetters as _;
+
+        let request = self.bot.edit_message_text(chat_id, message_id, text);
+        let request = match options {
+            Some(o) => {
+                let request = match o.parse_mode.as_deref() {
+                    Some("HTML") => request.parse_mode(teloxide::types::ParseMode::Html),
+                    _ => request,
+                };
+                match &o.reply_markup {
+                    Some(markup) => request.reply_markup(keyboard_of(markup)?),
+                    None => request,
+                }
+            }
+            None => request,
+        };
+        request.send().await.map_err(BotApiError::map)
     }
 
     /// Acknowledge a callback query so the sender's spinner stops.
@@ -224,4 +277,16 @@ impl Client {
             .map(|_| ())
             .map_err(BotApiError::map)
     }
+}
+
+/// Deserialize a stored keyboard layout into teloxide's typed markup.
+///
+/// # Errors
+///
+/// [`BotApiError::Json`] when the value is not a keyboard layout, which would mean a stored
+/// payload was corrupted rather than bad input here.
+fn keyboard_of(
+    value: &serde_json::Value,
+) -> Result<teloxide::types::InlineKeyboardMarkup, BotApiError> {
+    serde_json::from_value(value.clone()).map_err(|_| BotApiError::Json)
 }

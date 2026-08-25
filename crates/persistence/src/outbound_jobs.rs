@@ -114,9 +114,63 @@ impl OutboundJobState {
     }
 }
 
-/// A job to enqueue. The caller renders the body and computes `content_hash` (sha256 hex of
-/// `body`) — persistence stores what it is given and hashes nothing itself, so the hash always
-/// matches the exact bytes the sender will put on the wire.
+/// The whole rendered message a job delivers: text plus the optional presentation the Bot API
+/// needs to reproduce it exactly - parse mode and inline keyboard when the render carries one.
+/// Serialized as one jsonb column, so markup survives queueing, restarts, and retries
+/// bit-identically; identical re-render detection hashes this canonical serialization.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct MessagePayload {
+    /// The message text, already escaped/composed by the renderer for its parse mode.
+    pub text: String,
+    /// The parse mode label (`HTML`) when the text carries markup.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parse_mode: Option<String>,
+    /// The inline keyboard layout when buttons ride along; the wire shape the Bot API expects
+    /// under `reply_markup`, kept value-typed so persistence stays free of client types.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reply_markup: Option<serde_json::Value>,
+}
+
+impl MessagePayload {
+    /// A plain-text payload with no markup.
+    #[must_use]
+    pub fn text(text: impl Into<String>) -> Self {
+        Self {
+            text: text.into(),
+            parse_mode: None,
+            reply_markup: None,
+        }
+    }
+
+    /// The canonical serialization the content hash covers: field order fixed by the struct,
+    /// absent options omitted.
+    ///
+    /// # Errors
+    ///
+    /// [`PersistenceError::Query`] if serialization fails, which would be a broken build rather
+    /// than bad input.
+    pub fn canonical(&self) -> Result<String, PersistenceError> {
+        serde_json::to_string(self).map_err(|error| {
+            PersistenceError::Query(sqlx::Error::ColumnDecode {
+                index: "payload".to_owned(),
+                source: error.to_string().into(),
+            })
+        })
+    }
+
+    fn from_stored(raw: &str) -> Result<Self, PersistenceError> {
+        serde_json::from_str(raw).map_err(|error| {
+            PersistenceError::Query(sqlx::Error::ColumnDecode {
+                index: "payload".to_owned(),
+                source: error.to_string().into(),
+            })
+        })
+    }
+}
+
+/// A job to enqueue. The caller renders the payload and computes `content_hash` over the
+/// canonical payload serialization — persistence stores what it is given and hashes nothing
+/// itself, so the hash always matches the exact bytes the sender will put on the wire.
 #[derive(Debug, Clone)]
 pub struct NewOutboundJob {
     /// The bot that will perform the write.
@@ -125,9 +179,10 @@ pub struct NewOutboundJob {
     pub chat_id: i64,
     /// Which Bot API method to call.
     pub kind: OutboundJobKind,
-    /// The rendered message text.
-    pub body: String,
-    /// sha256 hex of [`Self::body`], computed by the caller; identical-render no-op detection.
+    /// The whole rendered message.
+    pub payload: MessagePayload,
+    /// sha256 hex of the canonical [`Self::payload`] serialization, computed by the caller;
+    /// identical-render no-op detection.
     pub content_hash: String,
     /// The operation this job belongs to or references, when one exists.
     pub operation_id: Option<Uuid>,
@@ -151,9 +206,9 @@ pub struct QueuedOutboundJob {
     pub chat_id: i64,
     /// Which Bot API method to call.
     pub kind: OutboundJobKind,
-    /// The rendered message text.
-    pub body: String,
-    /// sha256 hex of [`Self::body`].
+    /// The whole rendered message.
+    pub payload: MessagePayload,
+    /// sha256 hex of the canonical [`Self::payload`] serialization.
     pub content_hash: String,
     /// The operation this job belongs to or references, when one exists.
     pub operation_id: Option<Uuid>,
@@ -248,19 +303,20 @@ impl Database {
         }
 
         let id = Uuid::now_v7();
+        let payload = job.payload.canonical()?;
         match job.next_attempt_at {
             Some(at) => {
                 sqlx::query(
                     "insert into telegram.outbound_jobs
-                         (id, bot_id, chat_id, kind, body, content_hash, operation_id, revision,
-                          correlation_id, next_attempt_at)
-                     values ($1, $2, $3, $4, $5, $6, $7, $8, $9, to_timestamp($10))",
+                         (id, bot_id, chat_id, kind, payload, content_hash, operation_id,
+                          revision, correlation_id, next_attempt_at)
+                     values ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9, to_timestamp($10))",
                 )
                 .bind(id)
                 .bind(job.bot_id)
                 .bind(job.chat_id)
                 .bind(job.kind.as_str())
-                .bind(&job.body)
+                .bind(&payload)
                 .bind(&job.content_hash)
                 .bind(job.operation_id)
                 .bind(job.revision)
@@ -278,15 +334,15 @@ impl Database {
                 // instant would race whatever `now()` the server stamped.
                 sqlx::query(
                     "insert into telegram.outbound_jobs
-                         (id, bot_id, chat_id, kind, body, content_hash, operation_id, revision,
-                          correlation_id, next_attempt_at)
-                     values ($1, $2, $3, $4, $5, $6, $7, $8, $9, to_timestamp($10))",
+                         (id, bot_id, chat_id, kind, payload, content_hash, operation_id,
+                          revision, correlation_id, next_attempt_at)
+                     values ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9, to_timestamp($10))",
                 )
                 .bind(id)
                 .bind(job.bot_id)
                 .bind(job.chat_id)
                 .bind(job.kind.as_str())
-                .bind(&job.body)
+                .bind(&payload)
                 .bind(&job.content_hash)
                 .bind(job.operation_id)
                 .bind(job.revision)
@@ -356,8 +412,9 @@ impl Database {
                  updated_at = to_timestamp($1)
              from head
              where job.id = head.id
-             returning job.id, job.bot_id, job.chat_id, job.kind, job.body, job.content_hash,
-                       job.operation_id, job.revision, job.correlation_id, job.attempts",
+              returning job.id, job.bot_id, job.chat_id, job.kind, job.payload::text,
+                        job.content_hash, job.operation_id, job.revision, job.correlation_id,
+                        job.attempts",
         )
         .bind(now)
         .bind(i64::from(lease_ttl_secs))
@@ -371,7 +428,7 @@ impl Database {
                 bot_id: claimed.1,
                 chat_id: claimed.2,
                 kind: OutboundJobKind::parse(&claimed.3)?,
-                body: claimed.4,
+                payload: MessagePayload::from_stored(&claimed.4)?,
                 content_hash: claimed.5,
                 operation_id: claimed.6,
                 revision: claimed.7,

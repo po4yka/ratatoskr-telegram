@@ -14,6 +14,7 @@ pub mod test_support;
 
 pub mod bindings;
 pub mod inbox;
+pub mod intents;
 pub mod message_bindings;
 pub mod outbound_jobs;
 pub mod projection_accept;

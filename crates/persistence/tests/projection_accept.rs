@@ -34,7 +34,7 @@ fn an_event(operation: Uuid, event_id: Uuid, occurred_at: i64) -> AcceptedEvent<
         event_id,
         occurred_at_secs: occurred_at,
         terminal: false,
-        body: "rendered progress",
+        payload_json: r#"{"text":"rendered progress"}"#,
         content_hash: "hash-of-rendered-progress",
         correlation_id: "operation:018f0000-0000-7000-8000-000000000001",
     }
