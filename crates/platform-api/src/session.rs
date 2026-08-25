@@ -76,6 +76,12 @@ impl SessionSource {
         }
     }
 
+    /// The underlying Platform client, for the calls a session authenticates.
+    #[must_use]
+    pub fn client(&self) -> &Client {
+        &self.client
+    }
+
     /// The bearer credential for `subject`, exchanging a fresh session when needed.
     ///
     /// # Errors

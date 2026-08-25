@@ -9,10 +9,13 @@
 mod access;
 mod admit;
 mod build;
+mod capture;
 mod classify;
+mod intent;
 mod worker;
 
 pub use crate::intake::build::build;
+pub use crate::intake::worker::{CaptureContext, process_one, run_worker};
 
 use std::sync::Arc;
 use std::time::Instant;
@@ -28,7 +31,6 @@ use telegram_telemetry::metrics::{
 
 pub use crate::intake::admit::{QueuedUpdate, read_body_capped};
 pub use crate::intake::classify::{kind_label, supported};
-pub use crate::intake::worker::{process_one, run_worker};
 
 /// Queue capacity. Bounded on purpose: a burst larger than this answers 503 and Telegram retries,
 /// instead of the process buying memory it did not budget.

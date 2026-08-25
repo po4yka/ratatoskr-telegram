@@ -45,6 +45,11 @@ pub struct TelegramConfig {
     #[serde(default)]
     pub dispatcher: DispatcherConfig,
 
+    /// The Platform endpoint, audience and assertion signing key. Both runtime roles perform
+    /// Platform work from this item on, so both read it; validation demands the secrets.
+    #[serde(default)]
+    pub platform: PlatformConfig,
+
     /// The public update-intake listener. Webhook-role specific; absent means unconfigured, which
     /// the role requirements refuse.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -155,6 +160,53 @@ impl Default for BotApiConfig {
             token: SecretString::default(),
         }
     }
+}
+
+/// The Platform public-API endpoint, the assertion audience, and this service's signing half.
+///
+/// Defaults are development-harness values; both roles' validation (V17) demands the audience and
+/// a usable signing key so an unconfigured process refuses before binding anything.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PlatformConfig {
+    /// `RATATOSKR__PLATFORM__BASE_URL`. Default `http://127.0.0.1:9463`, the development harness.
+    ///
+    /// Rule V9's loopback-only plain-`http` allowance applies here exactly as to the Bot API.
+    #[serde(default = "default_platform_base_url")]
+    pub base_url: Url,
+
+    /// `RATATOSKR__PLATFORM__TIMEOUT_SECONDS`. 1..=60, default 10. Whole-call budget.
+    #[serde(default = "default_platform_timeout_seconds")]
+    pub timeout_seconds: u64,
+
+    /// `RATATOSKR__PLATFORM__AUDIENCE`. The listener identity assertions may be redeemed at.
+    /// SECRET-free but deployment-specific; empty default is refused where required.
+    #[serde(default)]
+    pub audience: String,
+
+    /// `RATATOSKR__PLATFORM__ASSERTION_SIGNING_KEY`. The Ed25519 seed as 64 hex characters.
+    /// SECRET. Empty default refused where required; never rendered by check-config.
+    #[serde(default, skip_serializing)]
+    pub assertion_signing_key: SecretString,
+}
+
+impl Default for PlatformConfig {
+    fn default() -> Self {
+        Self {
+            base_url: default_platform_base_url(),
+            timeout_seconds: default_platform_timeout_seconds(),
+            audience: String::default(),
+            assertion_signing_key: SecretString::default(),
+        }
+    }
+}
+
+fn default_platform_base_url() -> Url {
+    Url::parse("http://127.0.0.1:9463").expect("the documented default parses")
+}
+
+const fn default_platform_timeout_seconds() -> u64 {
+    10
 }
 
 /// The public update-intake listener and everything admission needs.

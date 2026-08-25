@@ -62,6 +62,8 @@ pub enum Subsystem {
     Persistence,
     /// The Telegram Bot API client boundary.
     BotApi,
+    /// The Platform public-API client boundary and its assertions.
+    Platform,
 }
 
 impl core::fmt::Display for Subsystem {
@@ -72,6 +74,7 @@ impl core::fmt::Display for Subsystem {
             Self::Http => "http",
             Self::Persistence => "persistence",
             Self::BotApi => "bot_api",
+            Self::Platform => "platform",
         })
     }
 }

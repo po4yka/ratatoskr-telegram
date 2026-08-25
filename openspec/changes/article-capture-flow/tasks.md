@@ -19,33 +19,33 @@
 
 ## 3. Intent parsing and deterministic keys
 
-- [ ] 3.1 RED: add `services/webhook/src/intake/intent.rs` unit tests: `bare_https_url_and_summarize_form_parse_to_capture_intents`, `host_and_scheme_case_normalize_to_one_canonical_url`, `non_http_schemes_free_text_and_missing_argument_do_not_parse`, and `urls_over_the_platform_limit_do_not_parse`; confirm each fails for the stated absence, not a typo
-- [ ] 3.2 GREEN: implement the pure parser and normalization; rerun until 3.1 passes
-- [ ] 3.3 RED: add intent-key tests `keys_are_stable_across_repeats_and_normalizations` (same sender + URL twice → identical hex key; host-case variant → identical) and `retry_keys_salt_with_the_failed_operation` (retry derivation differs from the base key and encodes the failed operation); confirm they fail on missing derivations
-- [ ] 3.4 GREEN: implement both derivations as pure functions; rerun until 3.3 passes
+- [x] 3.1 RED: add `services/webhook/src/intake/intent.rs` unit tests: `bare_https_url_and_summarize_form_parse_to_capture_intents`, `host_and_scheme_case_normalize_to_one_canonical_url`, `non_http_schemes_free_text_and_missing_argument_do_not_parse`, and `urls_over_the_platform_limit_do_not_parse`; confirm each fails for the stated absence, not a typo
+- [x] 3.2 GREEN: implement the pure parser and normalization; rerun until 3.1 passes
+- [x] 3.3 RED: add intent-key tests `keys_are_stable_across_repeats_and_normalizations` (same sender + URL twice → identical hex key; host-case variant → identical) and `retry_keys_salt_with_the_failed_operation` (retry derivation differs from the base key and encodes the failed operation); confirm they fail on missing derivations
+- [x] 3.4 GREEN: implement both derivations as pure functions; rerun until 3.3 passes
 
 ## 4. Schema and persistence
 
-- [ ] 4.1 RED: add `crates/persistence/tests/intents.rs::interaction_intents_exist_with_expected_shape` asserting the table's columns, CHECK vocabulary (`operation_status`), app-minted UUID PK without default, and timestamptz expiry; confirm it fails on the missing relation before touching `schema.sql`
-- [ ] 4.2 GREEN: declare `telegram.interaction_intents` in root `schema.sql`; switch `telegram.outbound_jobs.body` to `payload jsonb`; rerun until 4.1 passes
-- [ ] 4.3 RED: add repository tests in `crates/persistence/tests/intents.rs`: `inserted_intent_is_found_by_owner_until_expiry` (live lookup succeeds for owner, returns nothing past expiry or for another user) and `outbound_payload_round_trips_with_markup` (enqueue a job whose payload carries text plus keyboard; claim returns it bit-identical); confirm both fail on missing repositories
-- [ ] 4.4 GREEN: implement `crates/persistence/src/intents.rs` and the outbound payload column read/write through the existing enqueue/claim functions; rerun until 4.3 passes
+- [x] 4.1 RED: add `crates/persistence/tests/intents.rs::interaction_intents_exist_with_expected_shape` asserting the table's columns, CHECK vocabulary (`operation_status`), app-minted UUID PK without default, and timestamptz expiry; confirm it fails on the missing relation before touching `schema.sql`
+- [x] 4.2 GREEN: declare `telegram.interaction_intents` in root `schema.sql`; switch `telegram.outbound_jobs.body` to `payload jsonb`; rerun until 4.1 passes
+- [x] 4.3 RED: add repository tests in `crates/persistence/tests/intents.rs`: `inserted_intent_is_found_by_owner_until_expiry` (live lookup succeeds for owner, returns nothing past expiry or for another user) and `outbound_payload_round_trips_with_markup` (enqueue a job whose payload carries text plus keyboard; claim returns it bit-identical); confirm both fail on missing repositories
+- [x] 4.4 GREEN: implement `crates/persistence/src/intents.rs` and the outbound payload column read/write through the existing enqueue/claim functions; rerun until 4.3 passes
 
 ## 5. Bot API markup and structured payloads
 
-- [ ] 5.1 RED: extend `crates/bot-api/tests/client.rs` with `send_and_edit_carry_parse_mode_and_reply_markup` (harness asserts `parse_mode` HTML and the exact keyboard JSON when given, and neither field when absent); confirm it fails against current signatures
-- [ ] 5.2 GREEN: widen `send_message`/`edit_message_text` with optional parse mode and inline keyboard; update existing call sites; rerun until 5.1 passes
-- [ ] 5.3 RED: extend `services/dispatcher/src/outbound/sender/sink.rs` tests (in `tests/delivery.rs`) with `structured_payloads_reach_the_sink_verbatim` asserting the recording fake sees text, parse mode, and buttons unchanged through claim→deliver, and `payload_hash_distinguishes_markup_only_changes` (same text, added keyboard → real edit, not suppression); confirm both fail before the sink changes
-- [ ] 5.4 GREEN: thread structured payloads through job claim, hash, supersede, and sink; rerun until 5.3 passes
+- [x] 5.1 RED: extend `crates/bot-api/tests/client.rs` with `send_and_edit_carry_parse_mode_and_reply_markup` (harness asserts `parse_mode` HTML and the exact keyboard JSON when given, and neither field when absent); confirm it fails against current signatures
+- [x] 5.2 GREEN: widen `send_message`/`edit_message_text` with optional parse mode and inline keyboard; update existing call sites; rerun until 5.1 passes
+- [x] 5.3 RED: extend `services/dispatcher/src/outbound/sender/sink.rs` tests (in `tests/delivery.rs`) with `structured_payloads_reach_the_sink_verbatim` asserting the recording fake sees text, parse mode, and buttons unchanged through claim→deliver, and `payload_hash_distinguishes_markup_only_changes` (same text, added keyboard → real edit, not suppression); confirm both fail before the sink changes
+- [x] 5.4 GREEN: thread structured payloads through job claim, hash, supersede, and sink; rerun until 5.3 passes
 
 ## 6. Webhook worker domain action
 
-- [ ] 6.1 RED: add `services/webhook/tests/capture.rs` with a Fixture combining the intake fixture, a fake Bot API server, and a fake Platform harness (exchange + captures routes): `authorized_url_message_submits_capture_and_enqueues_ack` seeds an enabled owner, delivers a bare-URL message, asserts the exchange was called once, `POST /v1/captures` carried the derived key and bearer, the update settled processed, one binding row pre-exists for the returned operation, and exactly one send job referencing it was enqueued; confirm it fails before the worker arm exists
-- [ ] 6.2 GREEN: implement the capture arm (intent → session → submit → binding + intent row + ack job → settle processed) behind the platform client seam; rerun until 6.1 passes
-- [ ] 6.3 RED: extend `services/webhook/tests/capture.rs`: `resending_the_same_url_reuses_the_operation_without_a_second_ack` (second delivery replays the original operation id; still exactly one live binding and one send job for it), `unsupported_text_settles_unsupported_without_platform_calls` (`/summarize` bare, free text), and `summarize_command_parses_like_a_bare_url`; confirm they fail
-- [ ] 6.4 GREEN: close the gaps those tests expose; rerun until 6.3 passes
-- [ ] 6.5 RED: add `platform_outage_fails_boundedly_without_ack` (fake Platform refuses connections; assert exactly the bounded attempt count, update settles failed, zero outbound jobs, class metric incremented) and `permanent_refusal_settles_immediately` (401 answer → single attempt, failed settlement); confirm they fail
-- [ ] 6.6 GREEN: implement retry classification and settlement; rerun until 6.5 passes
+- [x] 6.1 RED: add `services/webhook/tests/capture.rs` with a Fixture combining the intake fixture, a fake Bot API server, and a fake Platform harness (exchange + captures routes): `authorized_url_message_submits_capture_and_enqueues_ack` seeds an enabled owner, delivers a bare-URL message, asserts the exchange was called once, `POST /v1/captures` carried the derived key and bearer, the update settled processed, one binding row pre-exists for the returned operation, and exactly one send job referencing it was enqueued; confirm it fails before the worker arm exists
+- [x] 6.2 GREEN: implement the capture arm (intent → session → submit → binding + intent row + ack job → settle processed) behind the platform client seam; rerun until 6.1 passes
+- [x] 6.3 RED: extend `services/webhook/tests/capture.rs`: `resending_the_same_url_reuses_the_operation_without_a_second_ack` (second delivery replays the original operation id; still exactly one live binding and one send job for it), `unsupported_text_settles_unsupported_without_platform_calls` (`/summarize` bare, free text), and `summarize_command_parses_like_a_bare_url`; confirm they fail
+- [x] 6.4 GREEN: close the gaps those tests expose; rerun until 6.3 passes
+- [x] 6.5 RED: add `platform_outage_fails_boundedly_without_ack` (fake Platform refuses connections; assert exactly the bounded attempt count, update settles failed, zero outbound jobs, class metric incremented) and `permanent_refusal_settles_immediately` (401 answer → single attempt, failed settlement); confirm they fail
+- [x] 6.6 GREEN: implement retry classification and settlement; rerun until 6.5 passes
 
 ## 7. Dispatcher follower
 

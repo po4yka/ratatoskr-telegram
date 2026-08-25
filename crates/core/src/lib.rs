@@ -14,6 +14,6 @@ pub mod config;
 pub mod error;
 pub mod role;
 
-pub use crate::config::{ConfigError, DatabaseConfig, TelegramConfig, Violation};
+pub use crate::config::{ConfigError, DatabaseConfig, PlatformConfig, TelegramConfig, Violation};
 pub use crate::error::{Subsystem, TelegramError};
 pub use crate::role::RuntimeRole;

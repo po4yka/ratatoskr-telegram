@@ -351,7 +351,7 @@ async fn a_valid_update_is_accepted_once_and_queued_once() {
     );
 
     // The worker settles it processed.
-    intake::process_one(&fixture.database.database, &item).await;
+    intake::process_one(&fixture.database.database, &item, None).await;
     assert_eq!(fixture.states_of(4001).await, ["processed"]);
     fixture.cleanup().await;
 }
@@ -372,7 +372,7 @@ async fn an_admitted_update_is_processed_after_worker_restart() {
 
     let (restart_sender, restart_receiver) = tokio::sync::mpsc::channel(1);
     drop(restart_sender);
-    intake::run_worker(database.database.clone(), restart_receiver).await;
+    intake::run_worker(database.database.clone(), restart_receiver, None).await;
 
     let state: String = sqlx::query("select state from telegram.updates where update_id = 4002")
         .fetch_one(database.pool())
@@ -432,7 +432,7 @@ async fn acknowledgments_complete_while_processing_is_stalled() {
     // Resume "processing": every accepted update settles.
     let database = fixture.database.database.clone();
     for item in &items {
-        intake::process_one(&database, item).await;
+        intake::process_one(&database, item, None).await;
     }
     for update_id in 6000..6006 {
         assert_eq!(fixture.states_of(update_id).await, ["processed"]);
@@ -504,7 +504,7 @@ async fn the_worker_settles_every_kind_it_classifies() {
 
     let database = fixture.database.database.clone();
     let receiver = std::mem::replace(&mut fixture.receiver, tokio::sync::mpsc::channel(1).1);
-    let worker = tokio::spawn(intake::run_worker(database, receiver));
+    let worker = tokio::spawn(intake::run_worker(database, receiver, None));
     let deadline = Instant::now() + Duration::from_secs(10);
     while Instant::now() < deadline {
         let pending: i64 = sqlx::query(
@@ -544,7 +544,7 @@ async fn unauthorized_sender_settles_denied_without_outbound_calls() {
         StatusCode::OK
     );
     let item = fixture.receiver.try_recv().expect("queued");
-    intake::process_one(&fixture.database.database, &item).await;
+    intake::process_one(&fixture.database.database, &item, None).await;
 
     assert_eq!(fixture.states_of(12_001).await, ["denied"]);
     let minimized: bool = sqlx::query(
@@ -612,7 +612,7 @@ async fn a_disabled_identity_and_a_group_chat_deny_like_an_unknown_sender() {
         assert_eq!(fixture.deliver(update).await, StatusCode::OK);
         let item = fixture.receiver.try_recv().expect("queued");
         assert_eq!(item.update.id.0, u32::try_from(update_id).expect("fits"));
-        intake::process_one(&fixture.database.database, &item).await;
+        intake::process_one(&fixture.database.database, &item, None).await;
         assert_eq!(fixture.states_of(update_id).await, ["denied"]);
         let minimized: bool = sqlx::query(
             "select payload is null as minimized from telegram.updates where update_id = $1",

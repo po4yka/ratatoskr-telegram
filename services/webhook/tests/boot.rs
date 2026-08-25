@@ -152,6 +152,12 @@ fn the_webhook_boots_with_full_intake_configuration_and_reports_ready() {
             ("RATATOSKR__BOT_API__TOKEN", BOT_TOKEN),
             ("RATATOSKR__WEBHOOK__SECRET_TOKEN", SECRET_TOKEN),
             ("RATATOSKR__ACCESS__OWNER_TELEGRAM_USER_ID", "700100200"),
+            ("RATATOSKR__PLATFORM__BASE_URL", "http://127.0.0.1:9463"),
+            ("RATATOSKR__PLATFORM__AUDIENCE", "ratatoskr-edge-test"),
+            (
+                "RATATOSKR__PLATFORM__ASSERTION_SIGNING_KEY",
+                "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20",
+            ),
         ],
         ADMIN_PORT,
     );
@@ -205,6 +211,12 @@ fn startup_provisions_owner_once_without_resurrection() {
         ("RATATOSKR__BOT_API__TOKEN", BOT_TOKEN),
         ("RATATOSKR__WEBHOOK__SECRET_TOKEN", SECRET_TOKEN),
         ("RATATOSKR__ACCESS__OWNER_TELEGRAM_USER_ID", "700100200"),
+        ("RATATOSKR__PLATFORM__BASE_URL", "http://127.0.0.1:9463"),
+        ("RATATOSKR__PLATFORM__AUDIENCE", "ratatoskr-edge-test"),
+        (
+            "RATATOSKR__PLATFORM__ASSERTION_SIGNING_KEY",
+            "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20",
+        ),
     ];
 
     boots("ratatoskr-telegram-webhook", &env, ADMIN_PORT);
@@ -266,6 +278,12 @@ fn a_webhook_whose_database_is_unreachable_refuses_to_start() {
             "postgres://nobody:nope@127.0.0.1:5/nowhere",
         )
         .env("RATATOSKR__BOT_API__TOKEN", BOT_TOKEN)
+        .env("RATATOSKR__PLATFORM__BASE_URL", "http://127.0.0.1:9463")
+        .env("RATATOSKR__PLATFORM__AUDIENCE", "ratatoskr-edge-test")
+        .env(
+            "RATATOSKR__PLATFORM__ASSERTION_SIGNING_KEY",
+            "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20",
+        )
         .env("RATATOSKR__WEBHOOK__SECRET_TOKEN", SECRET_TOKEN)
         .env("RATATOSKR__ACCESS__OWNER_TELEGRAM_USER_ID", "700100200")
         .output()
@@ -349,6 +367,12 @@ fn check_config_exits_zero_when_valid_and_78_when_invalid() {
             "postgres://telegram@127.0.0.1:5432/telegram",
         )
         .env("RATATOSKR__BOT_API__TOKEN", BOT_TOKEN)
+        .env("RATATOSKR__PLATFORM__BASE_URL", "http://127.0.0.1:9463")
+        .env("RATATOSKR__PLATFORM__AUDIENCE", "ratatoskr-edge-test")
+        .env(
+            "RATATOSKR__PLATFORM__ASSERTION_SIGNING_KEY",
+            "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20",
+        )
         .env("RATATOSKR__WEBHOOK__SECRET_TOKEN", SECRET_TOKEN)
         .env("RATATOSKR__ACCESS__OWNER_TELEGRAM_USER_ID", "700100200")
         .output()

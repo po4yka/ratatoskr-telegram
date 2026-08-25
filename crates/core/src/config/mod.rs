@@ -27,7 +27,7 @@ use figment::providers::{Env, Serialized};
 
 pub use crate::config::model::{
     AccessConfig, AdminConfig, BotApiConfig, DatabaseConfig, DispatcherConfig, LogFormat,
-    OtlpConfig, ShutdownConfig, TelegramConfig, TelemetryConfig, WebhookConfig,
+    OtlpConfig, PlatformConfig, ShutdownConfig, TelegramConfig, TelemetryConfig, WebhookConfig,
 };
 pub use crate::config::validate::{SHUTDOWN_CEILING_SECONDS, Violation};
 use crate::role::RuntimeRole;
@@ -105,6 +105,7 @@ impl TelegramConfig {
             database: None,
             bot_api: BotApiConfig::default(),
             dispatcher: model::DispatcherConfig::default(),
+            platform: crate::config::model::PlatformConfig::default(),
             // The intake listener is webhook-role configuration; its requirements are enforced by
             // rule V13 per role, not by a default that would silently satisfy them.
             webhook: None,

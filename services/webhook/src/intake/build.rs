@@ -85,8 +85,81 @@ pub async fn build(context: PublicContext) -> Result<Router, TelegramError> {
         bot_id,
         queue_capacity: intake::QUEUE_CAPACITY,
     };
+    let capture = build_capture_context(&context.config.platform)?;
     let (intake, receiver) = Intake::new(settings, database);
-    tokio::spawn(intake::run_worker(intake.database.clone(), receiver));
+    tokio::spawn(intake::run_worker(
+        intake.database.clone(),
+        receiver,
+        Some(capture),
+    ));
 
     Ok(intake.router())
+}
+
+/// Build the Platform half of the domain action from validated configuration.
+///
+/// # Errors
+///
+/// A [`TelegramError::Internal`] labelled `platform` when the client stack cannot be built or
+/// the configured signing key does not decode — both unreachable behind validation V16/V17.
+fn build_capture_context(
+    platform: &telegram_core::PlatformConfig,
+) -> Result<intake::worker::CaptureContext, TelegramError> {
+    use secrecy::ExposeSecret as _;
+
+    let seed = decode_seed(platform.assertion_signing_key.expose_secret())?;
+    let issuer = platform_api::assertion::AssertionIssuer::from_seed(&seed, &platform.audience)
+        .map_err(|error| TelegramError::internal(Subsystem::Platform, error))?;
+    let client = platform_api::Client::new(
+        &platform.base_url,
+        Duration::from_secs(platform.timeout_seconds),
+    )
+    .map_err(|error| TelegramError::internal(Subsystem::Platform, error))?;
+    let sessions = platform_api::session::SessionSource::new(
+        client,
+        issuer,
+        Box::new(platform_api::session::SystemClock),
+    );
+    Ok(intake::worker::CaptureContext::new(std::sync::Arc::new(
+        sessions,
+    )))
+}
+
+/// Decode the configured 64-hex-character Ed25519 seed into its 32 bytes.
+fn decode_seed(hex_key: &str) -> Result<[u8; 32], TelegramError> {
+    fn digit(character: u8) -> Option<u8> {
+        match character {
+            b'0'..=b'9' => Some(character - b'0'),
+            b'a'..=b'f' => Some(character - b'a' + 10),
+            b'A'..=b'F' => Some(character - b'A' + 10),
+            _ => None,
+        }
+    }
+    let bytes = hex_key.as_bytes();
+    if bytes.len() != 64 {
+        return Err(TelegramError::internal(
+            Subsystem::Platform,
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "the assertion signing key must be 64 hex characters",
+            ),
+        ));
+    }
+    let mut seed = [0u8; 32];
+    for (index, pair) in bytes.chunks_exact(2).enumerate() {
+        let high = digit(pair[0]).ok_or_else(|| {
+            TelegramError::internal(
+                Subsystem::Platform,
+                std::io::Error::new(std::io::ErrorKind::InvalidData, "bad signing-key hex"),
+            )
+        })?;
+        let low = digit(pair[1]).ok_or_else(|| {
+            TelegramError::internal(
+                Subsystem::Platform,
+                std::io::Error::new(std::io::ErrorKind::InvalidData, "bad signing-key hex"),
+            )
+        })?;
+        seed[index] = (high << 4) | low;
+    }
+    Ok(seed)
 }
