@@ -6,6 +6,7 @@ members = [
     "crates/http",
     "crates/persistence",
     "crates/bot-api",
+    "crates/platform-api",
     "services/webhook",
     "services/dispatcher",
 ]
@@ -24,6 +25,7 @@ ratatoskr-telegram-telemetry   = { version = "0.1.0", path = "crates/telemetry" 
 ratatoskr-telegram-http        = { version = "0.1.0", path = "crates/http" }
 ratatoskr-telegram-persistence = { version = "0.1.0", path = "crates/persistence" }
 ratatoskr-telegram-bot-api     = { version = "0.1.0", path = "crates/bot-api" }
+ratatoskr-telegram-platform-api = { version = "0.1.0", path = "crates/platform-api" }
 
 # ---- Telegram Bot API ----
 # The sanctioned client for every Telegram API call this service makes (plan item 2 onward:
@@ -76,9 +78,21 @@ thiserror  = "2.0.20"
 # ecosystem-standard implementation, added for the dispatcher's projection accept step.
 sha2 = "0.10.9"
 
+# ---- platform assertions ----
+# Ed25519 signing for the short-lived identity assertions this service issues to Platform
+# (plan item 5 onward). `ed25519-dalek` is the maintained pure-Rust implementation; the
+# verification side lives in Platform under `ring`. `base64` provides the URL_SAFE_NO_PAD
+# alphabet the compact token form uses; Platform's verifier shares the engine choice.
+# `jiff` matches Platform's timestamp type so claim instants serialize identically.
+ed25519-dalek = { version = "2.2.0", default-features = false, features = ["fast", "zeroize"] }
+base64        = "0.22.1"
+jiff          = { version = "0.2.15", default-features = false, features = ["std", "serde"] }
+
 # ---- identifiers ----
 # `uuid` v7 because ratatoskr-contracts mints v7 and the database stores the same bytes.
-uuid = { version = "1.18.1", features = ["v7"] }
+# `serde` because Platform wire shapes carry identifiers as JSON values the platform-api
+# boundary deserializes directly.
+uuid = { version = "1.18.1", features = ["v7", "serde"] }
 
 # ---- dev only ----
 tower         = "0.5.3"

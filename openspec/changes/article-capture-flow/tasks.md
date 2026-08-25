@@ -1,21 +1,21 @@
 ## 1. Platform API client crate
 
-- [ ] 1.1 Scaffold `crates/platform-api` with `Client::new`, the closed error taxonomy (`network`, `timeout`, `unauthenticated`, `client_error{status}`, `conflict`, `rate_limited`), and the typed wire values (`OperationAccepted`, `OperationSnapshotView`, `ProgressFrame`). Cannot start from a failing test: this task creates types and dependency wiring only, no behavior to assert.
-- [ ] 1.2 RED: add `crates/platform-api/tests/client.rs` with the axum harness pattern from `crates/bot-api/tests/client.rs` and test `submit_capture_posts_key_bearer_and_url_and_parses_operation`: calling `submit_capture` with session `sess-1`, key `key-1`, url `https://example.test/a` records `POST /v1/captures` carrying header `idempotency-key: key-1`, `authorization: Bearer sess-1`, body `{"url":"https://example.test/a"}`, and resolves to operation id parsed from the served 202 body; confirm it fails because the method reports unimplemented, not because of typing
-- [ ] 1.3 GREEN: implement the capture submission request/response path; rerun until 1.2 passes
-- [ ] 1.4 RED: extend `crates/platform-api/tests/client.rs` with `platform_error_classes_map_from_status_envelopes` pinning the taxonomy: 401/403 → `unauthenticated`; 409 → `conflict`; 429 → `rate_limited`; other 4xx → `client_error`; 5xx and closed port → transient classes; confirm it fails on the unimplemented classifier
-- [ ] 1.5 GREEN: implement status/envelope classification; rerun until 1.4 passes
-- [ ] 1.6 RED: add `read_operation_parses_snapshot_fields` asserting the snapshot view surfaces status, stage, errors' safe lines, warnings, and result references from a recorded `GET /v1/operations/{id}` body while ignoring unknown additive fields; confirm it fails on the unimplemented reader
-- [ ] 1.7 GREEN: implement the operations read; rerun until 1.6 passes
-- [ ] 1.8 RED: add `stream_events_delivers_frames_resumes_and_stops_at_terminal` against a harness serving `text/event-stream`: frames arrive typed with their progress uuid and observed timestamp, a reconnect carries `Last-Event-ID`, and the stream ends after the terminal frame without extra reads; confirm it fails on the unimplemented stream
-- [ ] 1.9 GREEN: implement the SSE consumer over reqwest's byte stream; rerun until 1.8 passes
+- [x] 1.1 Scaffold `crates/platform-api` with `Client::new`, the closed error taxonomy (`network`, `timeout`, `unauthenticated`, `client_error{status}`, `conflict`, `rate_limited`), and the typed wire values (`OperationAccepted`, `OperationSnapshotView`, `ProgressFrame`). Cannot start from a failing test: this task creates types and dependency wiring only, no behavior to assert.
+- [x] 1.2 RED: add `crates/platform-api/tests/client.rs` with the axum harness pattern from `crates/bot-api/tests/client.rs` and test `submit_capture_posts_key_bearer_and_url_and_parses_operation`: calling `submit_capture` with session `sess-1`, key `key-1`, url `https://example.test/a` records `POST /v1/captures` carrying header `idempotency-key: key-1`, `authorization: Bearer sess-1`, body `{"url":"https://example.test/a"}`, and resolves to operation id parsed from the served 202 body; confirm it fails because the method reports unimplemented, not because of typing
+- [x] 1.3 GREEN: implement the capture submission request/response path; rerun until 1.2 passes
+- [x] 1.4 RED: extend `crates/platform-api/tests/client.rs` with `platform_error_classes_map_from_status_envelopes` pinning the taxonomy: 401/403 → `unauthenticated`; 409 → `conflict`; 429 → `rate_limited`; other 4xx → `client_error`; 5xx and closed port → transient classes; confirm it fails on the unimplemented classifier
+- [x] 1.5 GREEN: implement status/envelope classification; rerun until 1.4 passes
+- [x] 1.6 RED: add `read_operation_parses_snapshot_fields` asserting the snapshot view surfaces status, stage, errors' safe lines, warnings, and result references from a recorded `GET /v1/operations/{id}` body while ignoring unknown additive fields; confirm it fails on the unimplemented reader
+- [x] 1.7 GREEN: implement the operations read; rerun until 1.6 passes
+- [x] 1.8 RED: add `stream_events_delivers_frames_resumes_and_stops_at_terminal` against a harness serving `text/event-stream`: frames arrive typed with their progress uuid and observed timestamp, a reconnect carries `Last-Event-ID`, and the stream ends after the terminal frame without extra reads; confirm it fails on the unimplemented stream
+- [x] 1.9 GREEN: implement the SSE consumer over reqwest's byte stream; rerun until 1.8 passes
 
 ## 2. Assertion issuance and session cache
 
-- [ ] 2.1 RED: add `crates/platform-api/tests/assertion.rs::assertion_matches_the_verifier_shape`: signing claims for subject `900700601`, audience `ratatoskr-edge`, nonce and expiry produce the compact `base64url(payload).base64url(signature)` form whose payload JSON carries exactly the six documented member names and whose signature verifies under the paired public key using the same Ed25519 construction Platform documents; confirm it fails because issuance does not exist
-- [ ] 2.2 GREEN: implement Ed25519 issuance over the configured secret key; rerun until 2.1 passes
-- [ ] 2.3 RED: add `crates/platform-api/tests/session.rs::sessions_are_exchanged_once_and_refreshed_before_expiry` with a FakeClock: two captures within lifetime hit `/v1/sessions/telegram` once; advancing past the refresh margin exchanges again; concurrent callers share one exchange (single-flight); confirm it fails on the missing cache
-- [ ] 2.4 GREEN: implement the per-sender cache with margin and single-flight; rerun until 2.3 passes
+- [x] 2.1 RED: add `crates/platform-api/tests/assertion.rs::assertion_matches_the_verifier_shape`: signing claims for subject `900700601`, audience `ratatoskr-edge`, nonce and expiry produce the compact `base64url(payload).base64url(signature)` form whose payload JSON carries exactly the six documented member names and whose signature verifies under the paired public key using the same Ed25519 construction Platform documents; confirm it fails because issuance does not exist
+- [x] 2.2 GREEN: implement Ed25519 issuance over the configured secret key; rerun until 2.1 passes
+- [x] 2.3 RED: add `crates/platform-api/tests/session.rs::sessions_are_exchanged_once_and_refreshed_before_expiry` with a FakeClock: two captures within lifetime hit `/v1/sessions/telegram` once; advancing past the refresh margin exchanges again; concurrent callers share one exchange (single-flight); confirm it fails on the missing cache
+- [x] 2.4 GREEN: implement the per-sender cache with margin and single-flight; rerun until 2.3 passes
 
 ## 3. Intent parsing and deterministic keys
 
