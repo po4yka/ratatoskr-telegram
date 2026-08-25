@@ -20,3 +20,6 @@ target/
 .vscode/
 *.swp
 .omo/
+
+# Agent worktrees (isolated checkouts, never tracked)
+.worktrees/
