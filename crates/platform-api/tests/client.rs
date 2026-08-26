@@ -20,7 +20,7 @@ use axum::extract::Path;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::Json;
 use axum::routing::any;
-use platform_api::{Client, PlatformError};
+use platform_api::{CaptureSource, CaptureSubmission, Client, PlatformError};
 use serde_json::{Value, json};
 use url::Url;
 
@@ -158,7 +158,14 @@ async fn submit_capture_posts_key_bearer_and_url_and_parses_operation() {
     })
     .await;
     let accepted = client(&harness.base_url)
-        .submit_capture(SESSION, "idem-key-1", "https://example.test/article")
+        .submit_capture(
+            SESSION,
+            &CaptureSubmission {
+                idempotency_key: "idem-key-1".to_owned(),
+                source: CaptureSource::Url("https://example.test/article".to_owned()),
+                origin: None,
+            },
+        )
         .await
         .expect("submission must resolve");
 
@@ -175,6 +182,110 @@ async fn submit_capture_posts_key_bearer_and_url_and_parses_operation() {
         captured.body.as_ref(),
         Some(&json!({"url": "https://example.test/article"})),
         "the body carries exactly the submitted address"
+    );
+}
+
+/// A blob-source capture submits the stored-bytes reference — the BlobRef wire shape with the
+/// algorithm fixed at sha256 — and never a fabricated URL member.
+#[tokio::test]
+async fn submit_capture_posts_blob_sources_without_a_url_member() {
+    let operation_id = "018f0000-0000-7000-8000-00000000cafe";
+    let harness = Harness::spawn(move |_| {
+        (
+            StatusCode::OK,
+            json!({"operation_id": operation_id, "status": "accepted"}),
+        )
+    })
+    .await;
+    client(&harness.base_url)
+        .submit_capture(
+            SESSION,
+            &CaptureSubmission {
+                idempotency_key: "blob-key-1".to_owned(),
+                source: CaptureSource::Blob {
+                    owner_service: "ratatoskr-telegram".to_owned(),
+                    digest_hex: "ab".repeat(32),
+                    media_type: "application/pdf".to_owned(),
+                    length_bytes: 1024,
+                },
+                origin: None,
+            },
+        )
+        .await
+        .expect("a blob submission must resolve");
+
+    let captured = &harness.requests()[0];
+    let body = captured
+        .body
+        .clone()
+        .expect("the submission carries a body");
+    assert_eq!(
+        body["blob"],
+        json!({
+            "owner_service": "ratatoskr-telegram",
+            "digest": {"algorithm": "sha256", "hex": "ab".repeat(32)},
+            "media_type": "application/pdf",
+            "length_bytes": 1024
+        }),
+        "{body}"
+    );
+    assert!(
+        body.get("url").is_none(),
+        "a blob capture must not fabricate an address: {body}"
+    );
+}
+
+/// Provenance rides additively on URL captures, which stay byte-compatible when absent.
+#[tokio::test]
+async fn url_captures_carry_origin_additively_and_stay_byte_compatible() {
+    let harness = Harness::spawn(move |_| {
+        (
+            StatusCode::OK,
+            json!({"operation_id": "018f0000-0000-7000-8000-00000000cafe", "status": "accepted"}),
+        )
+    })
+    .await;
+    let origin = json!({
+        "forward": {"kind": "channel", "chat_id": -100_200_300, "message_id": 77,
+                     "sent_at_secs": 1_700_000_000}
+    });
+    client(&harness.base_url)
+        .submit_capture(
+            SESSION,
+            &CaptureSubmission {
+                idempotency_key: "origin-key-1".to_owned(),
+                source: CaptureSource::Url("https://example.test/story".to_owned()),
+                origin: Some(origin.clone()),
+            },
+        )
+        .await
+        .expect("the provenance-carrying submission must resolve");
+    client(&harness.base_url)
+        .submit_capture(
+            SESSION,
+            &CaptureSubmission {
+                idempotency_key: "plain-key-2".to_owned(),
+                source: CaptureSource::Url("https://example.test/plain".to_owned()),
+                origin: None,
+            },
+        )
+        .await
+        .expect("the plain submission must resolve");
+
+    let with_origin = harness.requests()[0].body.clone().expect("body");
+    assert_eq!(
+        with_origin,
+        json!({
+            "url": "https://example.test/story",
+            "origin": origin
+        }),
+        "provenance is additive"
+    );
+    let without_origin = harness.requests()[1].body.clone().expect("body");
+    assert_eq!(
+        without_origin.get("origin").is_none(),
+        true,
+        "no provenance means no origin member: {without_origin}"
     );
 }
 

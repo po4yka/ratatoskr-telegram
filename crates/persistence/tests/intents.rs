@@ -123,7 +123,6 @@ fn interaction_intents_exist_with_expected_shape() {
             ("chat_id", "bigint"),
             ("kind", "text"),
             ("operation_id", "uuid"),
-            ("source_url", "text"),
             ("created_at", "timestamp with time zone"),
             ("expires_at", "timestamp with time zone"),
         ] {
@@ -136,6 +135,24 @@ fn interaction_intents_exist_with_expected_shape() {
             )
             .await;
         }
+        // The address is nullable since item 6: attachment captures present a blob instead.
+        expect_column(
+            &test.database,
+            "interaction_intents",
+            "source_url",
+            "text",
+            "YES",
+        )
+        .await;
+        // Provenance facts ride in an optional object-typed jsonb column.
+        expect_column(
+            &test.database,
+            "interaction_intents",
+            "metadata",
+            "jsonb",
+            "YES",
+        )
+        .await;
 
         // The kind vocabulary is closed at this flow's single intent kind.
         let checks: i64 = sqlx::query_scalar(
@@ -174,7 +191,8 @@ async fn inserted_intent_is_found_by_owner_until_expiry() {
         telegram_user_id: 900_700_601,
         chat_id: 900_700_601,
         operation_id: uuid::Uuid::now_v7(),
-        source_url: "https://example.test/article".to_owned(),
+        source_url: Some("https://example.test/article".to_owned()),
+        metadata: None,
         expires_at_secs: T0 + 3_600,
     };
     test.database
@@ -189,7 +207,10 @@ async fn inserted_intent_is_found_by_owner_until_expiry() {
         .expect("the lookup succeeds")
         .expect("a live intent resolves for its owner");
     assert_eq!(owner_view.id, intent_id);
-    assert_eq!(owner_view.source_url, "https://example.test/article");
+    assert_eq!(
+        owner_view.source_url.as_deref(),
+        Some("https://example.test/article")
+    );
 
     let expired = test
         .database
@@ -247,4 +268,159 @@ async fn outbound_payload_round_trips_with_markup() {
         .expect("claim")
         .expect("one job due");
     assert_eq!(claimed.payload, payload, "bit-identical restore");
+}
+
+/// The intents table carries optional bounded metadata next to an optional source address:
+/// attachment captures present a blob instead of a URL, and the table itself refuses rows that
+/// present neither.
+#[tokio::test]
+async fn intents_carry_bounded_metadata_and_optional_source_address() {
+    use telegram_persistence::intents::{BlobCapture, CaptureOrigin, IntentMetadata, NewIntent};
+
+    let test = database().await;
+
+    // Shape: nullable address, object-typed optional metadata.
+    let (url_type, url_nullable) =
+        column_shape(&test.database, "interaction_intents", "source_url").await;
+    assert_eq!(url_type, "text");
+    assert_eq!(url_nullable, "YES");
+    let (meta_type, meta_nullable) =
+        column_shape(&test.database, "interaction_intents", "metadata").await;
+    assert_eq!(meta_type, "jsonb");
+    assert_eq!(meta_nullable, "YES");
+
+    // Attachment capture: no address, blob facts in metadata.
+    let attachment = NewIntent {
+        id: uuid::Uuid::now_v7(),
+        bot_id: 42,
+        telegram_user_id: 900_700_601,
+        chat_id: 900_700_601,
+        operation_id: uuid::Uuid::now_v7(),
+        source_url: None,
+        metadata: Some(IntentMetadata {
+            forward: None,
+            blob: Some(BlobCapture {
+                owner_service: "ratatoskr-telegram".to_owned(),
+                algorithm: "sha256".to_owned(),
+                digest_hex: "ab".repeat(32),
+                media_type: "application/pdf".to_owned(),
+                length_bytes: 1024,
+            }),
+        }),
+        expires_at_secs: T0 + 3_600,
+    };
+    test.database
+        .insert_intent(&attachment, T0)
+        .await
+        .expect("an attachment intent inserts");
+
+    // URL capture unchanged: address present, provenance optional.
+    let url_capture = NewIntent {
+        id: uuid::Uuid::now_v7(),
+        bot_id: 42,
+        telegram_user_id: 900_700_601,
+        chat_id: 900_700_601,
+        operation_id: uuid::Uuid::now_v7(),
+        source_url: Some("https://example.test/a".to_owned()),
+        metadata: None,
+        expires_at_secs: T0 + 3_600,
+    };
+    test.database
+        .insert_intent(&url_capture, T0)
+        .await
+        .expect("a URL intent still inserts");
+
+    // Neither presentation: the table refuses it outright.
+    let neither = NewIntent {
+        id: uuid::Uuid::now_v7(),
+        bot_id: 42,
+        telegram_user_id: 900_700_601,
+        chat_id: 900_700_601,
+        operation_id: uuid::Uuid::now_v7(),
+        source_url: None,
+        metadata: None,
+        expires_at_secs: T0 + 3_600,
+    };
+    test.database
+        .insert_intent(&neither, T0)
+        .await
+        .expect_err("an intent that presents nothing is refused");
+
+    // Round trips: both shapes come back with their metadata intact.
+    let stored_attachment = test
+        .database
+        .find_live_intent(attachment.id, 900_700_601, T0)
+        .await
+        .expect("lookup succeeds")
+        .expect("attachment intent resolves");
+    assert_eq!(stored_attachment.source_url, None);
+    assert_eq!(
+        stored_attachment
+            .metadata
+            .as_ref()
+            .and_then(|m| m.blob.as_ref()),
+        attachment.metadata.as_ref().and_then(|m| m.blob.as_ref())
+    );
+    let stored_url = test
+        .database
+        .find_live_intent(url_capture.id, 900_700_601, T0)
+        .await
+        .expect("lookup succeeds")
+        .expect("url intent resolves");
+    assert_eq!(
+        stored_url.source_url.as_deref(),
+        Some("https://example.test/a")
+    );
+    assert!(stored_url.metadata.is_none());
+}
+
+/// Forward-origin facts survive the persistence boundary unchanged and reject unknown members -
+/// the minimized provenance record has a closed shape.
+#[tokio::test]
+async fn forward_origin_metadata_round_trips_through_the_persistence_boundary() {
+    use telegram_persistence::intents::{CaptureOrigin, IntentMetadata, NewIntent};
+
+    let test = database().await;
+    let origin = IntentMetadata {
+        forward: Some(CaptureOrigin::Channel {
+            chat_id: -100_200_300,
+            message_id: 77,
+            sent_at_secs: 1_700_000_000,
+        }),
+        blob: None,
+    };
+    let intent = NewIntent {
+        id: uuid::Uuid::now_v7(),
+        bot_id: 42,
+        telegram_user_id: 900_700_601,
+        chat_id: 900_700_601,
+        operation_id: uuid::Uuid::now_v7(),
+        source_url: Some("https://example.test/story".to_owned()),
+        metadata: Some(origin.clone()),
+        expires_at_secs: T0 + 3_600,
+    };
+    test.database
+        .insert_intent(&intent, T0)
+        .await
+        .expect("a forwarded-link intent inserts");
+
+    let stored = test
+        .database
+        .find_live_intent(intent.id, 900_700_601, T0)
+        .await
+        .expect("lookup succeeds")
+        .expect("intent resolves");
+    assert_eq!(stored.metadata, Some(origin));
+
+    // Unknown members are refused: the shape is closed, not a free-form bag.
+    let open: Result<IntentMetadata, _> = serde_json::from_value(serde_json::json!({
+        "forward": {
+            "kind": "channel",
+            "chat_id": -100_200_300,
+            "message_id": 77,
+            "sent_at_secs": 1_700_000_000,
+            "author_signature": "unexpected"
+        }
+    }));
+    assert!(open.is_err(), "unknown members are refused");
 }

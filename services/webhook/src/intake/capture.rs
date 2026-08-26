@@ -65,8 +65,16 @@ pub(crate) async fn submit(
     // Platform replays the original operation, and an existing live binding means the chat
     // already holds the acknowledgment for it.
     let key = intent::capture_key(telegram_user_id, url);
-    let accepted: platform_api::OperationAccepted =
-        submit_with_retries(client, &session, &key, url).await?;
+    let accepted: platform_api::OperationAccepted = submit_with_retries(
+        client,
+        &session,
+        &platform_api::CaptureSubmission {
+            idempotency_key: key,
+            source: platform_api::CaptureSource::Url(url.to_owned()),
+            origin: None,
+        },
+    )
+    .await?;
     let operation_id = accepted.operation_id;
 
     let existing = database
@@ -87,7 +95,8 @@ pub(crate) async fn submit(
                     telegram_user_id,
                     chat_id,
                     operation_id,
-                    source_url: url.to_owned(),
+                    source_url: Some(url.to_owned()),
+                    metadata: None,
                     expires_at_secs: now_secs() + INTENT_TTL_SECS,
                 },
                 now_secs(),
@@ -128,15 +137,14 @@ pub(crate) async fn submit(
 async fn submit_with_retries(
     client: &platform_api::Client,
     session: &str,
-    key: &str,
-    url: &str,
+    submission: &platform_api::CaptureSubmission,
 ) -> Result<platform_api::OperationAccepted, SubmitClass> {
     let mut last = SubmitClass::TransientExhausted;
     for attempt in 0..SUBMIT_ATTEMPTS {
         if attempt > 0 {
             tokio::time::sleep(std::time::Duration::from_millis(250)).await;
         }
-        match client.submit_capture(session, key, url).await {
+        match client.submit_capture(session, submission).await {
             Ok(accepted) => return Ok(accepted),
             Err(error) if is_transient(&error) => last = SubmitClass::TransientExhausted,
             Err(_) => return Err(SubmitClass::PermanentRefusal),

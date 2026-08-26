@@ -412,7 +412,7 @@ impl Client {
         classify(response)
     }
 
-    /// Submit one capture. `idempotency_key` is mandatory upstream; replaying the same key with
+    /// Submit one capture. The idempotency key is mandatory upstream; replaying the same key with
     /// the same body returns the original operation.
     ///
     /// # Errors
@@ -421,18 +421,37 @@ impl Client {
     pub async fn submit_capture(
         &self,
         session: &str,
-        idempotency_key: &str,
-        url: &str,
+        submission: &CaptureSubmission,
     ) -> Result<OperationAccepted, PlatformError> {
+        // URL captures keep their exact historical body; blob captures reference stored bytes
+        // instead; provenance is additive so tolerant servers ignore what they do not know.
+        let mut body = match &submission.source {
+            CaptureSource::Url(url) => serde_json::json!({ "url": url }),
+            CaptureSource::Blob {
+                owner_service,
+                digest_hex,
+                media_type,
+                length_bytes,
+            } => serde_json::json!({
+                "blob": {
+                    "owner_service": owner_service,
+                    "digest": { "algorithm": "sha256", "hex": digest_hex },
+                    "media_type": media_type,
+                    "length_bytes": length_bytes,
+                }
+            }),
+        };
+        if let (Some(map), Some(origin)) = (body.as_object_mut(), submission.origin.as_ref()) {
+            map.insert("origin".to_owned(), origin.clone());
+        }
+
         let response = self
             .send(
                 self.http
                     .post(self.url("/v1/captures"))
                     .bearer_auth(session)
-                    .header("idempotency-key", idempotency_key)
-                    .json(&CaptureSubmissionWire {
-                        url: url.to_owned(),
-                    }),
+                    .header("idempotency-key", &submission.idempotency_key)
+                    .json(&body),
             )
             .await?;
         let body = response.bytes().await.map_err(PlatformError::Network)?;
@@ -442,6 +461,37 @@ impl Client {
             operation_id: parsed.operation_id,
         })
     }
+}
+
+/// What one capture presents: an address, or this deployment's own stored bytes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CaptureSource {
+    /// A submitted address.
+    Url(String),
+    /// Stored bytes in this deployment's own blob store. Field-for-field the fleet BlobRef wire
+    /// shape with the digest algorithm fixed at `sha256`.
+    Blob {
+        /// The owner service whose store holds the bytes.
+        owner_service: String,
+        /// Lowercase hex of the SHA-256 over the exact stored bytes.
+        digest_hex: String,
+        /// The parameterless media type of the stored artifact.
+        media_type: String,
+        /// The stored byte length.
+        length_bytes: u64,
+    },
+}
+
+/// One capture submission: the mandatory idempotency key, what to capture, and optional
+/// provenance facts carried additively (servers tolerant of unknown members ignore them today).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CaptureSubmission {
+    /// The deterministic per-sender key Platform deduplicates on.
+    pub idempotency_key: String,
+    /// What to capture.
+    pub source: CaptureSource,
+    /// Bounded provenance facts (e.g. forward origin), pre-serialized by the caller.
+    pub origin: Option<serde_json::Value>,
 }
 
 fn classify(response: reqwest::Response) -> Result<reqwest::Response, PlatformError> {
@@ -488,17 +538,12 @@ pub struct OperationSnapshotView {
 }
 
 /// Wire shapes, private: they exist only to be serialized and deserialized.
-#[derive(serde::Serialize)]
-struct CaptureSubmissionWire {
-    url: String,
-}
-
-#[derive(Deserialize)]
+#[derive(serde::Deserialize)]
 struct CaptureAcceptedWire {
     operation_id: Uuid,
 }
 
-#[derive(Serialize)]
+#[derive(serde::Serialize)]
 struct ExchangeAssertionWire<'a> {
     assertion: &'a str,
 }

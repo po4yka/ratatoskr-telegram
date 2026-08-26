@@ -238,7 +238,10 @@ comment on table telegram.inbox is
 -- deep link resolves to nothing for anyone else. `kind` is a closed vocabulary because every
 -- intent kind is a product decision, never an open string. `operation_id` and `source_url` are
 -- unenforced references into Platform's operation domain and the submitted address respectively;
--- no credential and no content beyond that reference is stored.
+-- no credential and no content beyond that reference is stored. `metadata` carries bounded
+-- capture-provenance facts - where a forward came from, or which stored blob an attachment
+-- capture presents; its shape is closed at the persistence boundary and it is an object or
+-- absent. An intent presents exactly one thing: an address, or stored blob facts.
 create table telegram.interaction_intents (
     id               uuid        not null primary key,
     bot_id           bigint      not null,
@@ -246,9 +249,16 @@ create table telegram.interaction_intents (
     chat_id          bigint      not null,
     kind             text        not null check (kind in ('operation_status')),
     operation_id     uuid        not null,
-    source_url       text        not null,
+    source_url       text        null,
+    metadata         jsonb       null check (metadata is null or jsonb_typeof(metadata) = 'object'),
     created_at       timestamptz not null default now(),
-    expires_at       timestamptz not null
+    expires_at       timestamptz not null,
+    -- Strictly boolean: a plain `or` over nullable operands evaluates to NULL - which a CHECK
+    -- accepts - when both sides are unknown, letting an intent that presents nothing slip in.
+    check (
+        source_url is not null
+        or coalesce(jsonb_exists(metadata, 'blob'), false)
+    )
 );
 
 create index interaction_intents_operation_idx
@@ -257,6 +267,10 @@ create index interaction_intents_operation_idx
 comment on table telegram.interaction_intents is
     'Opaque deep-link intents: one expiring, owner-bound record per Mini App link this service '
     'renders. The id is the token; everything sensitive stays behind it.';
+
+comment on column telegram.interaction_intents.metadata is
+    'Bounded provenance facts (forward origin, or stored blob facts). Object-typed, closed shape '
+    'at the boundary; no message content.';
 
 comment on column telegram.interaction_intents.expires_at is
     'When the intent stops resolving. Enforced by the lookup, which reports nothing for expired '

@@ -6,29 +6,29 @@
 
 ## 2. Bot API file retrieval and bounded streaming download
 
-- [ ] 2.1 RED: extend `crates/bot-api/tests/client.rs` harness with raw-byte responses plus a `get_me.json`-style `get_file.json` fixture, then add `get_file_resolves_the_harness_file_metadata`: calling `get_file` for a synthetic `file_id` records `POST /bot{token}/getFile` carrying that id and resolves the served `file_path`; confirm it fails on the missing method
-- [ ] 2.2 GREEN: implement `get_file`; rerun until 2.1 passes
-- [ ] 2.3 RED: add `download_streams_exactly_the_served_bytes_and_reports_progress`: consuming the bounded download against a harness route serving known bytes yields those exact bytes through the stream without buffering the whole response first; confirm it fails on the missing method
-- [ ] 2.4 GREEN: implement the streaming download over reqwest inside the client boundary; rerun until 2.3 passes
-- [ ] 2.5 RED: add `download_aborts_when_the_stream_passes_the_byte_budget`: a harness serving more bytes than the budget makes the read fail with the budget-exceeded class once the budget is crossed; confirm it fails while no budget check exists
-- [ ] 2.6 GREEN: enforce the cumulative byte counter in the streaming reader; rerun until 2.5 passes
+- [x] 2.1 RED: extend `crates/bot-api/tests/client.rs` harness with raw-byte responses plus a `get_me.json`-style `get_file.json` fixture, then add `get_file_resolves_the_harness_file_metadata`: calling `get_file` for a synthetic `file_id` records `POST /bot{token}/getFile` carrying that id and resolves the served `file_path`; confirm it fails on the missing method — confirmed: `Api { "get_file is not implemented yet" }`
+- [x] 2.2 GREEN: implement `get_file`; rerun until 2.1 passes — package green 18/18
+- [x] 2.3 RED: add `download_streams_exactly_the_served_bytes_and_reports_progress`: consuming the bounded download against a harness route serving known bytes yields those exact bytes through the stream without buffering the whole response first; confirm it fails on the missing method — confirmed: `Api { "download_file is not implemented yet" }`
+- [x] 2.4 GREEN: implement the streaming download over reqwest inside the client boundary; rerun until 2.3 passes
+- [x] 2.5 RED: add `download_aborts_when_the_stream_passes_the_byte_budget`: a harness serving more bytes than the budget makes the read fail with the budget-exceeded class once the budget is crossed; confirm it fails while no budget check exists — rehomed per design: the authoritative counter lives in the blob store (it already counts and hashes every byte), so this pair runs as blob-store unit tests `a_stream_overrunning_the_budget_aborts_without_publishing` / `bytes_exactly_within_the_budget_store_normally`; RED confirmed with the signature-only stub: the overrun store succeeded and published, failing the abort assertion
+- [x] 2.6 GREEN: enforce the cumulative byte counter in the streaming reader; rerun until 2.5 passes — blob-store package green 5/5 with enforcement live
 
 ## 3. Configuration
 
-- [ ] 3.1 RED: add `crates/core/tests/ingestion_config.rs::ingestion_budget_parses_defaults_and_named_bounds`: absent key loads the documented default; an in-range value loads exactly; zero or above-ceiling values are refused naming key, env var, and bound without quoting the value; unknown ingestion fields are refused; confirm it fails on the missing section
-- [ ] 3.2 GREEN: add the `RATATOSKR__INGESTION__MAX_ATTACHMENT_BYTES` section (default 18 MiB, ceiling 20 MiB, validation rule V18) with `.env.example` documentation; rerun until 3.1 passes
+- [x] 3.1 RED: add `crates/core/tests/ingestion_config.rs::ingestion_budget_parses_defaults_and_named_bounds`: absent key loads the documented default; an in-range value loads exactly; zero or above-ceiling values are refused naming key, env var, and bound without quoting the value; unknown ingestion fields are refused; confirm it fails on the missing section — confirmed: the refusal test failed with no V18 wired (load succeeded); the defaults/parse and unknown-field cases passed as contract guards from their first run
+- [x] 3.2 GREEN: add the `RATATOSKR__INGESTION__MAX_ATTACHMENT_BYTES` section (default 18 MiB, ceiling 20 MiB, validation rule V18) with `.env.example` documentation; rerun until 3.1 passes — core package green 38/38
 
 ## 4. Schema and persistence
 
-- [ ] 4.1 RED: add `crates/persistence/tests/intents.rs::intents_carry_bounded_metadata_and_optional_source_address`: fresh schema exposes nullable `source_url` plus object-typed `metadata jsonb`; inserting an attachment intent (null address + blob metadata) succeeds, a URL intent still inserts, and a row with neither is refused by the table constraint; round-trip reads return both shapes; confirm it fails against the current schema
-- [ ] 4.2 GREEN: edit `schema.sql` in place (`source_url` nullable, `metadata jsonb`, CHECK pairing them) and widen `NewIntent`/`IntentRecord` with the typed metadata shape; rerun until 4.1 passes
-- [ ] 4.3 RED: add `forward_origin_metadata_round_trips_through_the_persistence_boundary` pinning the minimized origin facts (kind vocabulary user/hidden_user/chat/channel, identifiers, original date) survive insert/read unchanged and reject unknown members; confirm it fails before the serde shape exists
-- [ ] 4.4 GREEN: implement the typed metadata value shared by webhook and dispatcher crates; rerun until 4.3 passes
+- [x] 4.1 RED: add `crates/persistence/tests/intents.rs::intents_carry_bounded_metadata_and_optional_source_address`: fresh schema exposes nullable `source_url` plus object-typed `metadata jsonb`; inserting an attachment intent (null address + blob metadata) succeeds, a URL intent still inserts, and a row with neither is refused by the table constraint; round-trip reads return both shapes; confirm it fails against the current schema
+- [x] 4.2 GREEN: edit `schema.sql` in place (`source_url` nullable, `metadata jsonb`, CHECK pairing them) and widen `NewIntent`/`IntentRecord` with the typed metadata shape; rerun until 4.1 passes — package green 38/38. Note: the pairing constraint is written strictly boolean (`coalesce(jsonb_exists(metadata,'blob'), false)`); a plain nullable `or` evaluates NULL when both sides are unknown and PostgreSQL accepts NULL checks, which the test caught
+- [x] 4.3 RED: add `forward_origin_metadata_round_trips_through_the_persistence_boundary` pinning the minimized origin facts (kind vocabulary user/hidden_user/chat/channel, identifiers, original date) survive insert/read unchanged and reject unknown members; confirm it fails before the serde shape exists
+- [x] 4.4 GREEN: implement the typed metadata value shared by webhook and dispatcher crates; rerun until 4.3 passes
 
 ## 5. Platform capture source and origin wire values
 
-- [ ] 5.1 RED: extend `crates/platform-api/tests/client.rs` with `submit_capture_posts_blob_sources_and_additive_origin`: a blob-source submission records body `{"blob":{...},"media_type":...}` (no `url` member) and a URL submission with provenance records `{"url":...,"origin":{...}}`; confirm it fails because only `{url}` exists
-- [ ] 5.2 GREEN: model the typed source enum and optional origin on the submission path keeping URL-only bodies byte-compatible when provenance is absent; rerun until 5.1 passes
+- [x] 5.1 RED: extend `crates/platform-api/tests/client.rs` with `submit_capture_posts_blob_sources_and_additive_origin`: a blob-source submission records body `{"blob":{...},"media_type":...}` (no `url` member) and a URL submission with provenance records `{"url":...,"origin":{...}}`; confirm it fails because only `{url}` exists — confirmed as two focused tests, both failing against the URL-only stub (`{"url":""}`; missing origin member)
+- [x] 5.2 GREEN: model the typed source enum and optional origin on the submission path keeping URL-only bodies byte-compatible when provenance is absent; rerun until 5.1 passes — package green 8/8. Note: origin travels as pre-serialized JSON from the caller for now; it tightens to a typed Platform contract with the cross-repo changeset named in the proposal
 
 ## 6. Forward provenance propagation
 
