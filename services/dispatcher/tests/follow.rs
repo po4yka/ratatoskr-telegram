@@ -34,6 +34,21 @@ async fn database() -> TestDatabase {
         .expect("a disposable database must be creatable")
 }
 
+/// Wait until the harness has served `expected` event-stream opens. `scan_and_follow_once` gives
+/// its spawned tasks a fixed beat, which is not a completion signal; under load the streams open
+/// later than any fixed delay, so the tests await the observable fact instead.
+async fn wait_for_opens(state: &HarnessState, expected: u64) {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    while state.opens.load(Ordering::SeqCst) < expected {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "{} stream(s) did not open within ten seconds",
+            expected
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}
+
 fn sessions(base_url: &str) -> Arc<platform_api::session::SessionSource> {
     let client = platform_api::Client::new(
         &url::Url::parse(base_url).expect("harness url"),
@@ -98,17 +113,28 @@ async fn platform_harness() -> (String, Arc<HarnessState>) {
             }),
         )
         .with_state(Arc::clone(&shared));
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-        .await
-        .expect("bind");
-    let bound = listener.local_addr().expect("addr");
+    // Bind inside the serving runtime: a `tokio::net::TcpListener` belongs to the runtime whose
+    // driver registered it, so binding here and serving on another thread's runtime hands the
+    // accept loop IO it cannot poll ("A Tokio 1.x context ... is being shutdown"). One thread owns
+    // bind, serve, and shutdown together; the test only learns the address.
+    let (bound_tx, bound_rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .enable_all()
             .build()
             .expect("rt");
-        let _ = runtime.block_on(axum::serve(listener, app).into_future());
+        runtime.block_on(async move {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+                .await
+                .expect("bind");
+            let bound = listener.local_addr().expect("addr");
+            bound_tx
+                .send(bound)
+                .expect("the test receives the bound address");
+            let _ = axum::serve(listener, app).into_future().await;
+        });
     });
+    let bound = bound_rx.recv().expect("the harness binds before returning");
     (format!("http://{bound}"), state)
 }
 
@@ -172,6 +198,7 @@ async fn non_terminal_bindings_are_followed_once_each_after_restart() {
 
     let follower = follower(&base_url, &db);
     follower.scan_and_follow_once().await;
+    wait_for_opens(&state, 3).await;
 
     assert_eq!(
         state.opens.load(Ordering::SeqCst),
@@ -217,22 +244,29 @@ async fn frames_map_dedupe_and_stop_at_terminal() {
         None,
     );
 
-    // A real feed whose receiving end drives the production consumer.
+    // A real feed drained deterministically: the harness streams exactly one accepted frame and
+    // one terminal frame per open, so the test awaits each event through the channel instead of
+    // sleeping and hoping the pipeline has finished. No fixed delay survives load.
     let (feed_tx, mut feed_rx) = tokio::sync::mpsc::channel::<
         ratatoskr_telegram_dispatcher::projection::event::OperationEvent,
     >(64);
 
-    tokio::spawn(async move {
-        while let Some(event) = feed_rx.recv().await {
-            let _ = consumer.accept(&event).await;
-        }
-    });
-
     let sessions = sessions(&base_url);
     let follower = OperationFollower::new(db.database.clone(), feed_tx, sessions);
     follower.scan_and_follow_once().await;
-    tokio::time::sleep(Duration::from_millis(150)).await;
 
+    for _ in 0..2 {
+        let event = feed_rx
+            .recv()
+            .await
+            .expect("the harness streams two frames per open");
+        consumer
+            .accept(&event)
+            .await
+            .expect("both frames render without a storage failure");
+    }
+
+    // Both frames were consumed, so the stream was opened exactly once.
     assert_eq!(state.opens.load(Ordering::SeqCst), 1);
 
     // Both distinct frames rendered as edits; the terminal flag is set exactly once.

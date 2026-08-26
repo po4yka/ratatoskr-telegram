@@ -94,17 +94,28 @@ impl Harness {
                 }
             }),
         );
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-            .await
-            .expect("the harness binds port 0");
-        let bound = listener.local_addr().expect("local addr");
+        // Bind inside the serving runtime: a `tokio::net::TcpListener` belongs to the runtime
+        // whose driver registered it, so binding on the test's runtime and serving on another
+        // thread's runtime hands the accept loop IO it cannot poll. One thread owns bind, serve,
+        // and shutdown together; `spawn` returns only after the port is bound.
+        let (bound_tx, bound_rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
             let runtime = tokio::runtime::Builder::new_multi_thread()
                 .enable_all()
                 .build()
                 .expect("harness runtime");
-            let _ = runtime.block_on(axum::serve(listener, app).into_future());
+            runtime.block_on(async move {
+                let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+                    .await
+                    .expect("the harness binds port 0");
+                let bound = listener.local_addr().expect("local addr");
+                bound_tx
+                    .send(bound)
+                    .expect("the test receives the bound address");
+                let _ = axum::serve(listener, app).into_future().await;
+            });
         });
+        let bound = bound_rx.recv().expect("the harness binds before returning");
         Self {
             base_url: url::Url::parse(&format!("http://{bound}")).expect("base url"),
             captured,
