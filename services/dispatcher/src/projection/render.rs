@@ -39,6 +39,10 @@ pub fn render(event: &OperationEvent) -> String {
     }
     append_lines(&mut out, &event.errors);
     append_lines(&mut out, &event.warnings);
+    if let Some(message) = &event.message {
+        out.push('\n');
+        out.push_str(&escape_html(message));
+    }
     truncate_chars(&out, BODY_CAP_CHARS)
 }
 
@@ -117,6 +121,7 @@ mod tests {
             progress_percent: None,
             errors: Vec::new(),
             warnings: Vec::new(),
+            message: None,
         }
     }
 

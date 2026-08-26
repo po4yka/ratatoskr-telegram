@@ -2181,11 +2181,13 @@ name = "ratatoskr-telegram-dispatcher"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "jiff",
  "metrics",
  "ratatoskr-telegram-bot-api",
  "ratatoskr-telegram-core",
  "ratatoskr-telegram-http",
  "ratatoskr-telegram-persistence",
+ "ratatoskr-telegram-platform-api",
  "ratatoskr-telegram-telemetry",
  "secrecy",
  "serde",

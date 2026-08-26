@@ -48,6 +48,10 @@ pub const TELEGRAM_DELIVERY_DURATION_SECONDS: &str = "telegram_delivery_duration
 /// `rate_limited`. Dead-lettered transients are counted under
 /// [`TELEGRAM_DELIVERY_FAILURES_TOTAL`] as `dead_letter`, not here.
 pub const TELEGRAM_DELIVERY_RETRIES_TOTAL: &str = "telegram_delivery_retries_total";
+/// Capture submission outcomes, by closed safe class.
+pub const TELEGRAM_CAPTURE_SUBMISSIONS_TOTAL: &str = "telegram_capture_submissions_total";
+/// Follower lifecycle events, by closed safe class (started/resumed/ended/dropped).
+pub const TELEGRAM_OPERATION_FOLLOWS_TOTAL: &str = "telegram_operation_follows_total";
 
 /// `telegram_rate_limit_waits_total` — counter. One increment per authoritative Telegram `429`
 /// pause the sender honours and cools the chat down for.

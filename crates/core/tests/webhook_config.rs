@@ -59,6 +59,12 @@ fn the_bot_api_endpoint_is_https_unless_loopback() {
         assert!(keys.contains(&"bot_api.base_url".to_owned()), "{keys:#?}");
 
         jail.set_env("RATATOSKR__BOT_API__BASE_URL", "http://127.0.0.1:8080");
+        jail.set_env("RATATOSKR__PLATFORM__BASE_URL", "http://127.0.0.1:9463");
+        jail.set_env("RATATOSKR__PLATFORM__AUDIENCE", "ratatoskr-edge-test");
+        jail.set_env(
+            "RATATOSKR__PLATFORM__ASSERTION_SIGNING_KEY",
+            "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20",
+        );
         config::load_from(RuntimeRole::Webhook, config::figment(RuntimeRole::Webhook))
             .expect("a loopback http endpoint must validate for the harness");
         Ok(())
@@ -96,6 +102,12 @@ fn the_webhook_secret_has_a_floor_and_telegrams_charset() {
             keys.contains(&"webhook.secret_token".to_owned()),
             "{keys:#?}"
         );
+        jail.set_env("RATATOSKR__PLATFORM__BASE_URL", "http://127.0.0.1:9463");
+        jail.set_env("RATATOSKR__PLATFORM__AUDIENCE", "ratatoskr-edge-test");
+        jail.set_env(
+            "RATATOSKR__PLATFORM__ASSERTION_SIGNING_KEY",
+            "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20",
+        );
         let report = config::load_from(RuntimeRole::Webhook, config::figment(RuntimeRole::Webhook))
             .expect_err("the secret rule must fail")
             .report(RuntimeRole::Webhook);
@@ -123,6 +135,12 @@ fn the_body_cap_is_bounded() {
             );
         }
         jail.set_env("RATATOSKR__WEBHOOK__MAX_BODY_BYTES", "1024");
+        jail.set_env("RATATOSKR__PLATFORM__BASE_URL", "http://127.0.0.1:9463");
+        jail.set_env("RATATOSKR__PLATFORM__AUDIENCE", "ratatoskr-edge-test");
+        jail.set_env(
+            "RATATOSKR__PLATFORM__ASSERTION_SIGNING_KEY",
+            "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20",
+        );
         config::load_from(RuntimeRole::Webhook, config::figment(RuntimeRole::Webhook))
             .expect("the floor value itself must validate");
         Ok(())
@@ -172,6 +190,12 @@ fn the_webhook_role_names_every_missing_requirement() {
 fn the_dispatcher_requires_its_database_once_configured_roles_write_through_it() {
     Jail::expect_with(|jail| {
         jail.clear_env();
+        jail.set_env("RATATOSKR__PLATFORM__BASE_URL", "http://127.0.0.1:9463");
+        jail.set_env("RATATOSKR__PLATFORM__AUDIENCE", "ratatoskr-edge-test");
+        jail.set_env(
+            "RATATOSKR__PLATFORM__ASSERTION_SIGNING_KEY",
+            "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20",
+        );
         let error = config::load_from(
             RuntimeRole::Dispatcher,
             config::figment(RuntimeRole::Dispatcher),
@@ -196,10 +220,15 @@ fn the_dispatcher_requires_its_database_once_configured_roles_write_through_it()
 fn a_configured_webhook_role_validates_with_secrets_redacted() {
     Jail::expect_with(|jail| {
         webhook_env(jail);
-        let config_v =
-            config::load_from(RuntimeRole::Webhook, config::figment(RuntimeRole::Webhook))
-                .expect("the full webhook environment must validate");
-        let rendered = format!("{config_v:#?}");
+        jail.set_env("RATATOSKR__PLATFORM__BASE_URL", "http://127.0.0.1:9463");
+        jail.set_env("RATATOSKR__PLATFORM__AUDIENCE", "ratatoskr-edge-test");
+        jail.set_env(
+            "RATATOSKR__PLATFORM__ASSERTION_SIGNING_KEY",
+            "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20",
+        );
+        let config = config::load_from(RuntimeRole::Webhook, config::figment(RuntimeRole::Webhook))
+            .expect("the full webhook environment must validate");
+        let rendered = format!("{config:#?}");
         assert!(
             !rendered.contains("webhook-secret-0123456789abcdef"),
             "{rendered}"

@@ -5,6 +5,7 @@
 //! needs, [`render`] turns an event into deterministic escaped Telegram HTML, and [`consumer`]
 //! drives the transactional accept that deduplicates, orders, throttles, and enqueues.
 
+pub mod compose;
 pub mod consumer;
 pub mod event;
 pub mod render;

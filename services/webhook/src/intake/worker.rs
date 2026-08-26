@@ -231,7 +231,7 @@ async fn self_domain_action(
         }
         Err(class) => {
             metrics::counter!(
-                "telegram_capture_submissions_total",
+                telegram_telemetry::metrics::TELEGRAM_CAPTURE_SUBMISSIONS_TOTAL,
                 "class" => class.as_str(),
             )
             .increment(1);
@@ -249,11 +249,10 @@ struct MessageParts<'a> {
 }
 
 fn message_parts(kind: &bot_api::UpdateKind) -> Option<MessageParts<'_>> {
-    let message = match kind {
-        bot_api::UpdateKind::Message(message) | bot_api::UpdateKind::EditedMessage(message) => {
-            message
-        }
-        _ => return None,
+    let (bot_api::UpdateKind::Message(message) | bot_api::UpdateKind::EditedMessage(message)) =
+        kind
+    else {
+        return None;
     };
     let sender = message.from.as_ref()?;
     Some(MessageParts {

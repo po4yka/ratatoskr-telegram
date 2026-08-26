@@ -42,6 +42,7 @@ fn an_event(operation: Uuid, event_id: Uuid, occurred_at: i64) -> OperationEvent
             code: "w.tick".to_owned(),
             message: "tick".to_owned(),
         }],
+        message: None,
     }
 }
 
@@ -51,6 +52,7 @@ fn consumer(db: &TestDatabase) -> ProjectionConsumer {
         db.database.clone(),
         FakeClock::at(T0),
         u64::try_from(INTERVAL).unwrap_or(0),
+        None,
     )
 }
 

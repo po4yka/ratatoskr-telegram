@@ -17,6 +17,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use secrecy::ExposeSecret as _;
 use telegram_core::Subsystem;
 use telegram_core::TelegramError;
 use telegram_core::config::DispatcherConfig;
@@ -37,9 +38,9 @@ use crate::projection::event::OperationEvent;
 pub const PROJECTION_FEED_CAPACITY: usize = 1024;
 
 /// The handles one running dispatcher keeps: everything a publisher needs to reach the workers.
-#[derive(Debug, Clone)]
 pub struct DispatcherRuntime {
     projection_feed: tokio::sync::mpsc::Sender<OperationEvent>,
+    follower: Option<crate::follow::OperationFollower>,
 }
 
 impl DispatcherRuntime {
@@ -48,6 +49,13 @@ impl DispatcherRuntime {
     #[must_use]
     pub fn projection_feed(&self) -> tokio::sync::mpsc::Sender<OperationEvent> {
         self.projection_feed.clone()
+    }
+
+    /// The operation follower, when this runtime owns one. Production runtimes always do;
+    /// test compositions may construct without.
+    #[must_use]
+    pub const fn follower(&self) -> Option<&crate::follow::OperationFollower> {
+        self.follower.as_ref()
     }
 }
 
@@ -79,14 +87,75 @@ pub fn build(context: PublicContext) -> Result<(), TelegramError> {
     )
     .map_err(|error| TelegramError::internal(Subsystem::BotApi, error))?;
 
-    // The workers are detached by design; no publisher exists yet (design D6), so the runtime
-    // handle ends its life here and the consumer parks on its closed feed until process exit.
-    drop(spawn_runtime(context.config.dispatcher, &database, client));
+    // The Platform half: sessions for the follower, built once. Startup performs no network call
+    // here - the session exchange happens lazily on the first follow.
+    let platform = &context.config.platform;
+    let platform_client = platform_api::Client::new(
+        &platform.base_url,
+        Duration::from_secs(platform.timeout_seconds),
+    )
+    .map_err(|error| TelegramError::internal(Subsystem::Platform, error))?;
+    let issuer = platform_api::assertion::AssertionIssuer::from_seed(
+        &decode_seed(platform.assertion_signing_key.expose_secret())?,
+        &platform.audience,
+    )
+    .map_err(|error| TelegramError::internal(Subsystem::Platform, error))?;
+    let sessions = Arc::new(platform_api::session::SessionSource::new(
+        platform_client,
+        issuer,
+        Box::new(PlatformClock),
+    ));
+
+    let username = bot_api.username.clone();
+    let runtime = spawn_runtime_with(
+        context.config.dispatcher,
+        &database,
+        client,
+        Some(Arc::clone(&sessions)),
+        username,
+    );
+
+    // The follower is the feed's first real producer (design D6 of this change): NATS replaces
+    // only this loop's ingress at workspace integration.
+    if let Some(follower) = runtime.follower() {
+        tokio::spawn(follower.clone().run());
+    }
+    drop(runtime);
+
     tracing::info!(
         feed_capacity = PROJECTION_FEED_CAPACITY,
         "dispatcher workers started",
     );
     Ok(())
+}
+
+fn decode_seed(hex_key: &str) -> Result<[u8; 32], TelegramError> {
+    let digit = |character: u8| match character {
+        b'0'..=b'9' => Some(character - b'0'),
+        b'a'..=b'f' => Some(character - b'a' + 10),
+        _ => None,
+    };
+    let bytes = hex_key.as_bytes();
+    let byte_len_ok = bytes.len() == 64;
+    let hex_ok = bytes.iter().all(|b| digit(*b).is_some());
+    if !byte_len_ok || !hex_ok {
+        return Err(TelegramError::internal(
+            Subsystem::Platform,
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "the assertion signing key must be 64 hex characters",
+            ),
+        ));
+    }
+    let mut seed = [0u8; 32];
+    for (slot, pair) in seed.iter_mut().zip(bytes.chunks_exact(2)) {
+        if let [high, low] = pair {
+            let high = digit(*high).unwrap_or(0);
+            let low = digit(*low).unwrap_or(0);
+            *slot = (high << 4) | low;
+        }
+    }
+    Ok(seed)
 }
 
 /// Assemble the workers over prepared components and spawn them. Exposed so tests can drive the
@@ -96,6 +165,19 @@ pub fn spawn_runtime(
     config: DispatcherConfig,
     database: &Database,
     client: bot_api::Client,
+) -> DispatcherRuntime {
+    spawn_runtime_with(config, database, client, None, None)
+}
+
+/// The full composition: as [`spawn_runtime`], plus the Platform half production wires - the
+/// follower's session source and the bot username the terminal composer uses.
+#[must_use]
+pub fn spawn_runtime_with(
+    config: DispatcherConfig,
+    database: &Database,
+    client: bot_api::Client,
+    sessions: Option<Arc<platform_api::session::SessionSource>>,
+    bot_username: Option<String>,
 ) -> DispatcherRuntime {
     let clock: Arc<dyn Clock> = Arc::new(SystemClock);
     let limiter = Arc::new(DeliveryLimiter::new(
@@ -116,13 +198,22 @@ pub fn spawn_runtime(
             lease_ttl_secs: config.lease_ttl_secs,
         },
     );
-    let consumer = ProjectionConsumer::new(database.clone(), clock, config.render_interval_secs);
+    let consumer = ProjectionConsumer::new(
+        database.clone(),
+        clock,
+        config.render_interval_secs,
+        bot_username,
+    );
 
     let (feed, receiver) = tokio::sync::mpsc::channel(PROJECTION_FEED_CAPACITY);
     tokio::spawn(sender_forever(sender, config.poll_idle_ms));
     tokio::spawn(consume_forever(consumer, receiver));
+    let follower = sessions.map(|sessions| {
+        crate::follow::OperationFollower::new(database.clone(), feed.clone(), sessions)
+    });
     DispatcherRuntime {
         projection_feed: feed,
+        follower,
     }
 }
 
@@ -158,5 +249,25 @@ async fn consume_forever(
             },
             None => std::future::pending::<()>().await,
         }
+    }
+}
+
+/// Bridge the dispatcher's clock trait onto the platform crate's, so both share one injected
+/// source in tests and the process clock in production.
+#[derive(Debug, Default, Clone, Copy)]
+struct PlatformClock;
+
+impl platform_api::session::Clock for PlatformClock {
+    fn now(&self) -> jiff::Timestamp {
+        jiff::Timestamp::now()
+    }
+}
+
+impl std::fmt::Debug for DispatcherRuntime {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("DispatcherRuntime")
+            .field("feed_capacity", &PROJECTION_FEED_CAPACITY)
+            .finish_non_exhaustive()
     }
 }

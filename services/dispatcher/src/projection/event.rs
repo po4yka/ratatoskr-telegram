@@ -54,6 +54,9 @@ pub struct OperationEvent {
     pub errors: Vec<SafeLine>,
     /// Non-terminal problems. Messages UNTRUSTED.
     pub warnings: Vec<SafeLine>,
+    /// A user-safe line the transport carried, when any (SSE progress entries carry one;
+    /// envelope snapshots do not). UNTRUSTED; escaped by the renderer.
+    pub message: Option<String>,
 }
 
 /// The closed lifecycle vocabulary of the published contract. An unknown value refuses to parse.
@@ -148,6 +151,7 @@ pub fn from_envelope_json(json: &str) -> Result<OperationEvent, ParseError> {
         progress_percent: wire.payload.operation.progress_percent,
         errors: wire.payload.operation.errors,
         warnings: wire.payload.operation.warnings,
+        message: None,
     })
 }
 

@@ -53,6 +53,12 @@ fn one_variable_overrides_exactly_one_field() {
             "postgres://telegram@127.0.0.1:5432/telegram",
         );
         jail.set_env("RATATOSKR__ACCESS__OWNER_TELEGRAM_USER_ID", "700100200");
+        jail.set_env("RATATOSKR__PLATFORM__BASE_URL", "http://127.0.0.1:9463");
+        jail.set_env("RATATOSKR__PLATFORM__AUDIENCE", "ratatoskr-edge-test");
+        jail.set_env(
+            "RATATOSKR__PLATFORM__ASSERTION_SIGNING_KEY",
+            "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20",
+        );
         let config = config::load_from(RuntimeRole::Webhook, config::figment(RuntimeRole::Webhook))
             .expect("the override parses");
         assert_eq!(config.admin.bind.port(), 9998);
@@ -81,6 +87,12 @@ fn nested_tables_parse_from_joined_variables() {
             "webhook-secret-0123456789abcdef",
         );
         jail.set_env("RATATOSKR__ACCESS__OWNER_TELEGRAM_USER_ID", "700100200");
+        jail.set_env("RATATOSKR__PLATFORM__BASE_URL", "http://127.0.0.1:9463");
+        jail.set_env("RATATOSKR__PLATFORM__AUDIENCE", "ratatoskr-edge-test");
+        jail.set_env(
+            "RATATOSKR__PLATFORM__ASSERTION_SIGNING_KEY",
+            "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20",
+        );
         let config = config::load_from(RuntimeRole::Webhook, config::figment(RuntimeRole::Webhook))
             .expect("the nested table parses");
         let database = config.database.expect("the database table is present");

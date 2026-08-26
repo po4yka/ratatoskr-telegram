@@ -204,6 +204,12 @@ mod access_owner_tests {
         Jail::expect_with(|jail| {
             jail.clear_env();
             admit_webhook_basics(jail);
+            jail.set_env("RATATOSKR__PLATFORM__BASE_URL", "http://127.0.0.1:9463");
+            jail.set_env("RATATOSKR__PLATFORM__AUDIENCE", "ratatoskr-edge-test");
+            jail.set_env(
+                "RATATOSKR__PLATFORM__ASSERTION_SIGNING_KEY",
+                "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20",
+            );
             jail.set_env("RATATOSKR__ACCESS__OWNER_TELEGRAM_USER_ID", "700100200");
             let config = load_from(RuntimeRole::Webhook, figment(RuntimeRole::Webhook))
                 .expect("a positive id parses");

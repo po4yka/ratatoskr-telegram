@@ -136,7 +136,7 @@ fn decode_seed(hex_key: &str) -> Result<[u8; 32], TelegramError> {
         }
     }
     let bytes = hex_key.as_bytes();
-    if bytes.len() != 64 {
+    if bytes.len() != 64 || !bytes.iter().all(u8::is_ascii_hexdigit) {
         return Err(TelegramError::internal(
             Subsystem::Platform,
             std::io::Error::new(
@@ -146,20 +146,16 @@ fn decode_seed(hex_key: &str) -> Result<[u8; 32], TelegramError> {
         ));
     }
     let mut seed = [0u8; 32];
-    for (index, pair) in bytes.chunks_exact(2).enumerate() {
-        let high = digit(pair[0]).ok_or_else(|| {
-            TelegramError::internal(
-                Subsystem::Platform,
-                std::io::Error::new(std::io::ErrorKind::InvalidData, "bad signing-key hex"),
-            )
-        })?;
-        let low = digit(pair[1]).ok_or_else(|| {
-            TelegramError::internal(
-                Subsystem::Platform,
-                std::io::Error::new(std::io::ErrorKind::InvalidData, "bad signing-key hex"),
-            )
-        })?;
-        seed[index] = (high << 4) | low;
+    for (slot, pair) in seed.iter_mut().zip(bytes.chunks_exact(2)) {
+        if let [high, low] = pair {
+            let Some(high) = digit(*high) else {
+                continue;
+            };
+            let Some(low) = digit(*low) else {
+                continue;
+            };
+            *slot = (high << 4) | low;
+        }
     }
     Ok(seed)
 }

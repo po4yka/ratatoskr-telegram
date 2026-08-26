@@ -1,7 +1,7 @@
 # Developing Ratatoskr Telegram
 
-> Status: Implemented for plan items 1 through 3; items 4 through 10 are Proposed.  
-> Last reviewed: 2026-08-24
+> Status: Implemented for plan items 1 through 5; items 6 through 10 are Proposed.  
+> Last reviewed: 2026-08-26
 
 ## Current stage
 
@@ -34,9 +34,21 @@ indistinguishable across the three refusal classes. Startup seeds exactly one en
 from `RATATOSKR__ACCESS__OWNER_TELEGRAM_USER_ID` (validation rule V14, required for the webhook
 role only); bootstrap is insert-if-absent, so an operator-disabled owner survives restarts.
 
-Not present yet, in plan order: plain-URL article submission (item 5), and everything after. No
-test contacts Telegram: the client is exercised against a local harness server with recorded
-fixtures.
+Plan item 5 added the first product slice. The webhook worker parses authorized private-message
+text into bare-URL or `/summarize` capture intents, authenticates to Platform by exchanging
+short-lived Ed25519-signed assertions (cached per sender until near expiry), and submits captures
+under deterministic idempotency keys - resending one link converges on Platform's original
+operation, and acceptance pre-creates the message binding, writes an opaque deep-link intent, and
+enqueues exactly one HTML acknowledgment. A dispatcher follower consumes Platform's per-operation
+SSE stream into the existing projection seam (dedupe by frame id, `Last-Event-ID` resume, stop at
+terminal), and terminal renders add the fallback hyperlink plus a Mini App button backed by the
+intent record. Platform outages settle updates as failed after bounded retries; nothing is sent
+for an unaccepted capture.
+
+Not present yet, in plan order: file/forward ingestion (item 6), GitHub flows (item 7),
+callback tokens and dialogue state including retry buttons (item 8), Mini App initData validation
+(item 9), notifications and workspace integration (item 10). No test contacts Telegram or a live
+Platform: both clients run against local harness servers with synthetic bodies.
 
 The database is REQUIRED for both roles since item 4: intake writes update deduplication through
 the pool, and the dispatcher delivers every send and edit through its durable outbound queue there,
@@ -169,8 +181,10 @@ cargo run -p ratatoskr-telegram-webhook -- check-config
 kill -TERM <pid>
 ```
 
-Both roles demand their database URL, and the webhook additionally its bot token and webhook
-secret; either role refuses to start when the database cannot be reached. The dispatcher's outbound
+Both roles demand their database URL **and** the `RATATOSKR__PLATFORM__` section since item 5:
+`BASE_URL` (default `http://127.0.0.1:9463`, https off loopback only), `TIMEOUT_SECONDS`,
+`AUDIENCE`, and `ASSERTION_SIGNING_KEY` (64 hex chars = one Ed25519 seed; SECRET). Either role
+refuses to start when any of these is missing, beside every other requirement the report names. The dispatcher's outbound
 workers start after database preparation and drain in-flight delivery on shutdown; a job left
 `sending` by a crashed process is reclaimed after `RATATOSKR__DISPATCHER__LEASE_TTL_SECS`.
 Registering the webhook with Telegram (`setWebhook`) remains an explicit operational write done

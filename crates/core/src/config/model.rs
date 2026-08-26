@@ -150,6 +150,12 @@ pub struct BotApiConfig {
     /// and the role requirements refuse an empty token where one is needed (V13).
     #[serde(default, skip_serializing)]
     pub token: SecretString,
+
+    /// `RATATOSKR__BOT_API__USERNAME`. The serving bot's `t.me` handle, without the @. Optional:
+    /// the deep-link composer needs it, and a deployment that omits it simply gets text-only
+    /// terminal renders rather than broken links.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub username: Option<String>,
 }
 
 impl Default for BotApiConfig {
@@ -158,6 +164,7 @@ impl Default for BotApiConfig {
             base_url: default_bot_api_base_url(),
             timeout_seconds: default_bot_api_timeout_seconds(),
             token: SecretString::default(),
+            username: None,
         }
     }
 }
@@ -202,6 +209,11 @@ impl Default for PlatformConfig {
 }
 
 fn default_platform_base_url() -> Url {
+    // The site exception is the honest spelling for parsing a compile-time literal.
+    #[expect(
+        clippy::expect_used,
+        reason = "a compile-time constant URL cannot fail to parse"
+    )]
     Url::parse("http://127.0.0.1:9463").expect("the documented default parses")
 }
 

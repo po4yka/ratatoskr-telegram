@@ -42,16 +42,16 @@ pub struct ProjectionConsumer {
     pub(crate) clock: Arc<dyn Clock>,
     /// Minimum seconds between eligible edits of one binding (design D4).
     pub(crate) render_interval_secs: u64,
+    /// The serving bot's username, when known; deep-link buttons need it.
+    pub(crate) bot_username: Option<String>,
 }
 
 impl std::fmt::Debug for ProjectionConsumer {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
             .debug_struct("ProjectionConsumer")
-            .field("database", &self.database)
-            .field("clock", &"dyn Clock")
             .field("render_interval_secs", &self.render_interval_secs)
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 
@@ -59,11 +59,17 @@ impl ProjectionConsumer {
     /// Assemble a consumer. Configuration arrives typed from `DispatcherConfig` in a later phase;
     /// the raw interval is taken now so the seam does not move.
     #[must_use]
-    pub fn new(database: Database, clock: Arc<dyn Clock>, render_interval_secs: u64) -> Self {
+    pub fn new(
+        database: Database,
+        clock: Arc<dyn Clock>,
+        render_interval_secs: u64,
+        bot_username: Option<String>,
+    ) -> Self {
         Self {
             database,
             clock,
             render_interval_secs,
+            bot_username,
         }
     }
 
@@ -74,7 +80,23 @@ impl ProjectionConsumer {
     /// [`PersistenceError`] when the accept transaction fails; a storage failure is never
     /// masqueraded as an outcome.
     pub async fn accept(&self, event: &OperationEvent) -> Result<AcceptOutcome, PersistenceError> {
-        let payload = MessagePayload::text(render(event));
+        let body = render(event);
+        let payload = if event.status.is_terminal() {
+            let intent = self
+                .database
+                .find_live_intent_by_operation(event.operation_id, self.clock.now_secs())
+                .await
+                .ok()
+                .flatten();
+            super::compose::compose_terminal(
+                body,
+                event,
+                intent.as_ref(),
+                self.bot_username.as_deref(),
+            )
+        } else {
+            MessagePayload::text(body)
+        };
         let payload_json = payload.canonical()?;
         let content_hash = sha256_hex(&payload_json);
         let now = self.clock.now_secs();

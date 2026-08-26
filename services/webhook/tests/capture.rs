@@ -24,7 +24,7 @@ use http::{Request, StatusCode as HttpStatus};
 use http_body_util::BodyExt as _;
 use ratatoskr_telegram_webhook::intake;
 use ratatoskr_telegram_webhook::intake::{CaptureContext, Intake, IntakeSettings};
-use secrecy::{ExposeSecret as _, SecretString};
+use secrecy::SecretString;
 use serde_json::{Value, json};
 use sqlx::Row;
 use telegram_persistence::IdentityProfile;
@@ -125,7 +125,6 @@ fn dead_platform_url() -> String {
 struct Fixture {
     database: TestDatabase,
     app: axum::Router,
-    platform: Arc<PlatformState>,
 }
 
 impl Fixture {
@@ -164,10 +163,10 @@ impl Fixture {
             receiver,
             Some(context),
         ));
+        let _ = platform_state; // the harness state is asserted through the returned Arc
         Self {
             database,
             app: intake.router(),
-            platform: platform_state,
         }
     }
 
@@ -248,7 +247,7 @@ async fn binding_count(fixture: &Fixture, operation_id: uuid::Uuid) -> i64 {
 #[tokio::test]
 async fn authorized_url_message_submits_capture_and_enqueues_ack() {
     let (base_url, state) = platform_harness(CaptureAnswer::Accept).await;
-    let mut fixture = Fixture::create(&base_url, CaptureAnswer::Accept, Arc::clone(&state)).await;
+    let fixture = Fixture::create(&base_url, CaptureAnswer::Accept, Arc::clone(&state)).await;
     fixture
         .deliver(message_update(9_001, "https://example.test/article"))
         .await;
@@ -286,7 +285,7 @@ async fn authorized_url_message_submits_capture_and_enqueues_ack() {
 #[tokio::test]
 async fn resending_the_same_url_reuses_the_operation_without_a_second_ack() {
     let (base_url, state) = platform_harness(CaptureAnswer::Accept).await;
-    let mut fixture = Fixture::create(&base_url, CaptureAnswer::Accept, Arc::clone(&state)).await;
+    let fixture = Fixture::create(&base_url, CaptureAnswer::Accept, Arc::clone(&state)).await;
     fixture
         .deliver(message_update(9_101, "https://example.test/article"))
         .await;
@@ -323,7 +322,7 @@ async fn resending_the_same_url_reuses_the_operation_without_a_second_ack() {
 #[tokio::test]
 async fn summarize_command_parses_like_a_bare_url() {
     let (base_url, state) = platform_harness(CaptureAnswer::Accept).await;
-    let mut fixture = Fixture::create(&base_url, CaptureAnswer::Accept, Arc::clone(&state)).await;
+    let fixture = Fixture::create(&base_url, CaptureAnswer::Accept, Arc::clone(&state)).await;
     fixture
         .deliver(message_update(
             9_201,
@@ -347,7 +346,7 @@ async fn summarize_command_parses_like_a_bare_url() {
 #[tokio::test]
 async fn unsupported_text_settles_unsupported_without_platform_calls() {
     let (base_url, state) = platform_harness(CaptureAnswer::Accept).await;
-    let mut fixture = Fixture::create(&base_url, CaptureAnswer::Accept, Arc::clone(&state)).await;
+    let fixture = Fixture::create(&base_url, CaptureAnswer::Accept, Arc::clone(&state)).await;
     fixture.deliver(message_update(9_301, "hello world")).await;
     assert_eq!(fixture.settled_state(9_301).await, "unsupported");
     fixture.deliver(message_update(9_302, "/summarize")).await;
@@ -360,7 +359,7 @@ async fn unsupported_text_settles_unsupported_without_platform_calls() {
 #[tokio::test]
 async fn platform_outage_fails_boundedly_without_ack() {
     let dead = dead_platform_url();
-    let mut fixture = Fixture::create(&dead, CaptureAnswer::Accept, Arc::default()).await;
+    let fixture = Fixture::create(&dead, CaptureAnswer::Accept, Arc::default()).await;
     fixture
         .deliver(message_update(9_401, "https://example.test/article"))
         .await;
@@ -372,8 +371,7 @@ async fn platform_outage_fails_boundedly_without_ack() {
 #[tokio::test]
 async fn permanent_refusal_settles_immediately() {
     let (base_url, state) = platform_harness(CaptureAnswer::RefuseAuth).await;
-    let mut fixture =
-        Fixture::create(&base_url, CaptureAnswer::RefuseAuth, Arc::clone(&state)).await;
+    let fixture = Fixture::create(&base_url, CaptureAnswer::RefuseAuth, Arc::clone(&state)).await;
     fixture
         .deliver(message_update(9_501, "https://example.test/article"))
         .await;

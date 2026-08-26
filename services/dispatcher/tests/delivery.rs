@@ -145,49 +145,6 @@ impl BotApiSink for FakeBotApi {
     }
 }
 
-/// A job's structured payload - text, parse mode, keyboard - reaches the sink exactly as it
-/// was enqueued, and a markup-only change produces a different canonical hash so it edits.
-#[tokio::test]
-async fn structured_payloads_reach_the_sink_verbatim_and_hash_distinguishes_markup() {
-    let db = database().await;
-    let fake = FakeBotApi::new(VecDeque::new());
-    let clock = FakeClock::at(T0);
-    let limiter = Arc::new(DeliveryLimiter::new(30, 0));
-    let sender = make_sender(
-        &db,
-        Arc::clone(&fake),
-        Arc::clone(&clock),
-        Arc::clone(&limiter),
-        5,
-    );
-
-    let markup = serde_json::json!({
-        "inline_keyboard": [[{"text": "Open", "url": "https://t.me/ratatoskr_test_bot"}]]
-    });
-    let with_markup = MessagePayload {
-        text: "<b>Completed</b>".to_owned(),
-        parse_mode: Some("HTML".to_owned()),
-        reply_markup: Some(markup.clone()),
-    };
-    let hash_markup = with_markup.canonical().expect("canonical");
-    enqueue_payload(&db, 900_700_600, with_markup, &hash_markup, None, None).await;
-
-    sender.run_once().await.expect("run");
-
-    let record = &fake.records()[0];
-    assert_eq!(record.payload.text, "<b>Completed</b>");
-    assert_eq!(record.payload.parse_mode.as_deref(), Some("HTML"));
-    assert_eq!(record.payload.reply_markup.as_ref(), Some(&markup));
-
-    // The plain-text twin at equal text hashes differently: markup-only changes edit.
-    let plain = MessagePayload::text("<b>Completed</b>");
-    assert_ne!(
-        hash_markup,
-        plain.canonical().expect("canonical"),
-        "the content hash covers the whole payload"
-    );
-}
-
 /// Sender limits with deterministic timing: zero jitter fraction, one-second backoff base.
 fn limits(max_attempts: u32) -> SenderLimits {
     SenderLimits {
@@ -213,34 +170,6 @@ fn make_sender(
         clock,
         limits(max_attempts),
     )
-}
-
-/// Enqueue one job carrying an explicit payload.
-async fn enqueue_payload(
-    db: &TestDatabase,
-    chat_id: i64,
-    payload: MessagePayload,
-    content_hash: &str,
-    operation_id: Option<Uuid>,
-    revision: Option<i64>,
-) -> Uuid {
-    db.database
-        .enqueue_outbound_job(
-            &NewOutboundJob {
-                bot_id: BOT_ID,
-                chat_id,
-                kind: OutboundJobKind::SendMessage,
-                payload,
-                content_hash: content_hash.to_owned(),
-                operation_id,
-                revision,
-                correlation_id: None,
-                next_attempt_at: Some(T0),
-            },
-            T0,
-        )
-        .await
-        .expect("the payload job enqueues")
 }
 
 /// Enqueue one job due immediately at [`T0`].

@@ -115,4 +115,62 @@ impl Database {
             },
         ))
     }
+
+    /// The live intent recorded for one operation, whichever owner it was created for. Render
+    /// composition reads this; authorization stays with owner-scoped resolution.
+    ///
+    /// # Errors
+    ///
+    /// [`PersistenceError::Query`] if the statement fails.
+    pub async fn find_live_intent_by_operation(
+        &self,
+        operation_id: Uuid,
+        now: i64,
+    ) -> Result<Option<IntentRecord>, PersistenceError> {
+        let row: Option<(Uuid, i64, i64, Uuid, String)> = sqlx::query_as(
+            "select id, bot_id, chat_id, operation_id, source_url
+             from telegram.interaction_intents
+             where operation_id = $1
+               and kind = $2
+               and expires_at > to_timestamp($3)",
+        )
+        .bind(operation_id)
+        .bind(OPERATION_STATUS_KIND)
+        .bind(now)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(PersistenceError::Query)?;
+        Ok(row.map(
+            |(id, bot_id, chat_id, operation_id, source_url)| IntentRecord {
+                id,
+                bot_id,
+                chat_id,
+                operation_id,
+                source_url,
+            },
+        ))
+    }
+
+    /// The Telegram user an operation's intent was created for - the identity a follower
+    /// authenticates as to stream that operation. Unfiltered by expiry: following outlives the
+    /// link's presentation life.
+    ///
+    /// # Errors
+    ///
+    /// [`PersistenceError::Query`] if the statement fails.
+    pub async fn find_intent_owner_by_operation(
+        &self,
+        operation_id: Uuid,
+    ) -> Result<Option<i64>, PersistenceError> {
+        let row: Option<(i64,)> = sqlx::query_as(
+            "select telegram_user_id from telegram.interaction_intents
+             where operation_id = $1 and kind = $2",
+        )
+        .bind(operation_id)
+        .bind(OPERATION_STATUS_KIND)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(PersistenceError::Query)?;
+        Ok(row.map(|(owner,)| owner))
+    }
 }

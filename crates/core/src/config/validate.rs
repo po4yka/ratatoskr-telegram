@@ -76,6 +76,8 @@ pub(crate) fn validate(role: RuntimeRole, config: &TelegramConfig) -> Vec<Violat
     found.extend(access_violations(config));
     found.extend(webhook_violations(role, config));
     found.extend(dispatcher_violations(role, config));
+    found.extend(platform_value_violations(config));
+    found.extend(platform_role_violations(role, config));
 
     found
 }
@@ -516,6 +518,76 @@ const fn reason_of(error: &figment::Error) -> &'static str {
     }
 }
 
+/// V16 — value rules for the Platform section: the base URL obeys the loopback-or-https rule,
+/// the timeout is bounded, the audience is present and short, and the signing key decodes to
+/// exactly 32 bytes of hex. No violation ever echoes a supplied value.
+fn platform_value_violations(config: &TelegramConfig) -> Vec<Violation> {
+    let platform = &config.platform;
+    let mut found = Vec::new();
+
+    if loopback_or_https(&platform.base_url) {
+        found.push(Violation {
+            key: "platform.base_url",
+            env_var: "RATATOSKR__PLATFORM__BASE_URL",
+            rule: "must be https, or http on a loopback host for the development harness",
+        });
+    }
+    if !(1..=60).contains(&platform.timeout_seconds) {
+        found.push(Violation {
+            key: "platform.timeout_seconds",
+            env_var: "RATATOSKR__PLATFORM__TIMEOUT_SECONDS",
+            rule: "must be 1..=60 seconds; the whole call must outlive nothing it waits on",
+        });
+    }
+    if platform.audience.is_empty() || platform.audience.len() > 128 {
+        found.push(Violation {
+            key: "platform.audience",
+            env_var: "RATATOSKR__PLATFORM__AUDIENCE",
+            rule: "must be 1..=128 characters naming the redemption listener",
+        });
+    }
+    let key_ok = hex_bytes_32(platform.assertion_signing_key.expose_secret());
+    if !key_ok {
+        found.push(Violation {
+            key: "platform.assertion_signing_key",
+            env_var: "RATATOSKR__PLATFORM__ASSERTION_SIGNING_KEY",
+            rule: "must be 64 hex characters encoding a 32-byte Ed25519 seed",
+        });
+    }
+
+    found
+}
+
+fn hex_bytes_32(text: &str) -> bool {
+    if text.len() != 64 || !text.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return false;
+    }
+    true
+}
+
+/// V17 — role requirements. Both runtime roles perform Platform work from item 5 on, so both
+/// demand the section's secrets beside every other requirement.
+fn platform_role_violations(role: RuntimeRole, config: &TelegramConfig) -> Vec<Violation> {
+    let _ = role;
+    let platform = &config.platform;
+    let mut found = Vec::new();
+    if platform.audience.is_empty() {
+        found.push(Violation {
+            key: "platform.audience",
+            env_var: "RATATOSKR__PLATFORM__AUDIENCE",
+            rule: "the audience assertions are redeemed at is required by this role",
+        });
+    }
+    if platform.assertion_signing_key.expose_secret().is_empty() {
+        found.push(Violation {
+            key: "platform.assertion_signing_key",
+            env_var: "RATATOSKR__PLATFORM__ASSERTION_SIGNING_KEY",
+            rule: "the Ed25519 seed this service signs identity assertions with is required",
+        });
+    }
+    found
+}
+
 #[cfg(test)]
 mod access_owner_tests {
     #![allow(
@@ -585,6 +657,12 @@ mod access_owner_tests {
             jail.set_env(
                 "RATATOSKR__DATABASE__URL",
                 "postgres://telegram@127.0.0.1:5432/telegram",
+            );
+            jail.set_env("RATATOSKR__PLATFORM__BASE_URL", "http://127.0.0.1:9463");
+            jail.set_env("RATATOSKR__PLATFORM__AUDIENCE", "ratatoskr-edge-test");
+            jail.set_env(
+                "RATATOSKR__PLATFORM__ASSERTION_SIGNING_KEY",
+                "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20",
             );
             let config = load_from(RuntimeRole::Dispatcher, figment(RuntimeRole::Dispatcher))
                 .expect("dispatcher defaults must validate");

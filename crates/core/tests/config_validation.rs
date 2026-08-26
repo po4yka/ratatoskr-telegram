@@ -32,6 +32,12 @@ fn two_invalid_values_produce_two_violations_in_one_report() {
             "RATATOSKR__TELEMETRY__OTLP__ENDPOINT",
             "ftp://collector.example:4317",
         );
+        jail.set_env("RATATOSKR__PLATFORM__BASE_URL", "http://127.0.0.1:9463");
+        jail.set_env("RATATOSKR__PLATFORM__AUDIENCE", "ratatoskr-edge-test");
+        jail.set_env(
+            "RATATOSKR__PLATFORM__ASSERTION_SIGNING_KEY",
+            "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20",
+        );
         let error = config::load_from(
             RuntimeRole::Dispatcher,
             config::figment(RuntimeRole::Dispatcher),
@@ -80,6 +86,12 @@ fn the_defaults_are_valid_for_every_role() {
         jail.set_env(
             "RATATOSKR__DATABASE__URL",
             "postgres://telegram@127.0.0.1:5432/telegram",
+        );
+        jail.set_env("RATATOSKR__PLATFORM__BASE_URL", "http://127.0.0.1:9463");
+        jail.set_env("RATATOSKR__PLATFORM__AUDIENCE", "ratatoskr-edge-test");
+        jail.set_env(
+            "RATATOSKR__PLATFORM__ASSERTION_SIGNING_KEY",
+            "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20",
         );
         config::load_from(
             RuntimeRole::Dispatcher,

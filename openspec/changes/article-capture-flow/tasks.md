@@ -49,29 +49,29 @@
 
 ## 7. Dispatcher follower
 
-- [ ] 7.1 RED: add `services/dispatcher/tests/follow.rs` with a fake Platform SSE harness: `non_terminal_bindings_are_followed_once_each_after_restart` seeds four bindings (three non-terminal, one terminal), runs scan + follower tasks against the harness, restarts the runtime, and asserts streams opened exactly for the three; confirm it fails before the follower exists
-- [ ] 7.2 GREEN: implement the scan/diff/follow loop feeding `projection_feed()` with mapped frames; rerun until 7.1 passes
-- [ ] 7.3 RED: extend `services/dispatcher/tests/follow.rs`: `frames_map_onto_projection_events_with_dedupe` (accepted + running + duplicate running frames yield the guard outcomes the consumer already defines - two accepted events, one duplicate count), `terminal_frame_ends_the_follow` (stream closes after succeeded; no further reads), and `transport_drop_resumes_with_last_event_id` (harness observes the resume header and replays one seen frame which deduplicates away); confirm they fail
-- [ ] 7.4 GREEN: implement frame mapping, terminal stop, and resume/backoff; rerun until 7.3 passes
+- [x] 7.1 RED: add `services/dispatcher/tests/follow.rs` with a fake Platform SSE harness: `non_terminal_bindings_are_followed_once_each_after_restart` seeds four bindings (three non-terminal, one terminal), runs scan + follower tasks against the harness, restarts the runtime, and asserts streams opened exactly for the three; confirm it fails before the follower exists
+- [x] 7.2 GREEN: implement the scan/diff/follow loop feeding `projection_feed()` with mapped frames; rerun until 7.1 passes
+- [x] 7.3 RED: extend `services/dispatcher/tests/follow.rs`: `frames_map_onto_projection_events_with_dedupe` (accepted + running + duplicate running frames yield the guard outcomes the consumer already defines - two accepted events, one duplicate count), `terminal_frame_ends_the_follow` (stream closes after succeeded; no further reads), and `transport_drop_resumes_with_last_event_id` (harness observes the resume header and replays one seen frame which deduplicates away); confirm they fail
+- [x] 7.4 GREEN: implement frame mapping, terminal stop, and resume/backoff; rerun until 7.3 passes
 
 ## 8. Terminal composition
 
-- [ ] 8.1 RED: add `services/dispatcher/src/projection/compose.rs` unit tests: `succeeded_terminal_composes_links_and_button` (body keeps the escaped status lead, adds the source hyperlink, and the reply_markup carries exactly one url button targeting `https://t.me/{username}?startapp={intent}`), `failed_terminal_composes_guidance_without_retry_button` (failed lead + escaped safe line + resend guidance, empty markup), `missing_intent_or_username_degrades_to_text_only`, and `non_terminal_events_never_compose_markup`; confirm they fail on the missing composer
-- [ ] 8.2 GREEN: implement the composer over binding + intent lookup and startup bot username; rerun until 8.1 passes
-- [ ] 8.3 RED: add end-to-end `services/dispatcher/tests/end_to_end.rs::capture_lifecycle_renders_progress_then_completion_with_links` driving fake Bot API + fake Platform: seed owner via webhook fixture flow, deliver a URL message, feed accepted→running→succeeded frames through the follower, assert the chat saw one ack send then throttled edits then exactly one terminal edit carrying parse mode, hyperlink, and button, with the intent resolvable only by its owner; confirm it fails before wiring closes
-- [ ] 8.4 GREEN: close wiring gaps until 8.3 passes; keep both mains thin role constants over their harness calls
+- [x] 8.1 RED: add `services/dispatcher/src/projection/compose.rs` unit tests: `succeeded_terminal_composes_links_and_button` (body keeps the escaped status lead, adds the source hyperlink, and the reply_markup carries exactly one url button targeting `https://t.me/{username}?startapp={intent}`), `failed_terminal_composes_guidance_without_retry_button` (failed lead + escaped safe line + resend guidance, empty markup), `missing_intent_or_username_degrades_to_text_only`, and `non_terminal_events_never_compose_markup`; confirm they fail on the missing composer
+- [x] 8.2 GREEN: implement the composer over binding + intent lookup and startup bot username; rerun until 8.1 passes
+- [x] 8.3 RED: add end-to-end `services/dispatcher/tests/end_to_end.rs::capture_lifecycle_renders_progress_then_completion_with_links` driving fake Bot API + fake Platform: seed owner via webhook fixture flow, deliver a URL message, feed accepted→running→succeeded frames through the follower, assert the chat saw one ack send then throttled edits then exactly one terminal edit carrying parse mode, hyperlink, and button, with the intent resolvable only by its owner; confirm it fails before wiring closes
+- [x] 8.4 GREEN: close wiring gaps until 8.3 passes; keep both mains thin role constants over their harness calls
 
 ## 9. Configuration and boot expectations
 
-- [ ] 9.1 RED: add parse/validation tests in `crates/core/tests/platform_config.rs`: `platform_section_parses_with_defaults_and_unknown_keys_refused`, `platform_value_rules_violations_name_keys_without_echoing_secrets` (bad scheme off loopback, malformed signing key, empty audience, out-of-range timeout), and `both_roles_require_the_platform_section` (each binary's validation names the missing Platform keys); confirm they fail
-- [ ] 9.2 GREEN: add `PlatformConfig` with V16 value rules and V17 role requirements; rerun until 9.1 passes
-- [ ] 9.3 RED: update `services/webhook/tests/boot.rs` and dispatcher boot expectations: unconfigured binaries exit 78 naming `PLATFORM__*`; configured-with-loopback-harness binaries reach ready; confirm the changed expectations fail first
-- [ ] 9.4 GREEN: thread the requirements through startup factories (webhook builds the platform client; dispatcher performs its startup `get_me` and holds username state); rerun until 9.3 passes
+- [x] 9.1 RED: add parse/validation tests in `crates/core/tests/platform_config.rs`: `platform_section_parses_with_defaults_and_unknown_keys_refused`, `platform_value_rules_violations_name_keys_without_echoing_secrets` (bad scheme off loopback, malformed signing key, empty audience, out-of-range timeout), and `both_roles_require_the_platform_section` (each binary's validation names the missing Platform keys); confirm they fail
+- [x] 9.2 GREEN: add `PlatformConfig` with V16 value rules and V17 role requirements; rerun until 9.1 passes
+- [x] 9.3 RED: update `services/webhook/tests/boot.rs` and dispatcher boot expectations: unconfigured binaries exit 78 naming `PLATFORM__*`; configured-with-loopback-harness binaries reach ready; confirm the changed expectations fail first
+- [x] 9.4 GREEN: thread the requirements through startup factories (webhook builds the platform client; dispatcher performs its startup `get_me` and holds username state); rerun until 9.3 passes
 
 ## 10. Telemetry and change verification
 
-- [ ] 10.1 RED: add `telemetry_counts_classes_without_content` (in `services/webhook/tests/capture.rs` and `services/dispatcher/tests/follow.rs`) asserting exposition contains `telegram_capture_submissions_total{class=...}`, `telegram_operation_follows_total{event=...}` after driving one exhausted submission and one follow lifecycle, with no URL, username, or identifier in any label or log line; confirm it fails
-- [ ] 10.2 GREEN: add the metric constants and instrument the paths; rerun until 10.1 passes
-- [ ] 10.3 Run the full DEVELOPMENT.md gate command list with `TELEGRAM_TEST_DATABASE_URL` pointing at the local instance plus `openspec validate --strict`; all come back clean
-- [ ] 10.4 Inspect `git diff` for leaked secrets, tokens, real identifiers, or raw URLs in logs/metric labels; confirm fixtures stay synthetic
-- [ ] 10.5 Update README status paragraph, DEVELOPMENT.md stage/configuration/local-run sections, and record item 5 implemented in `docs/IMPLEMENTATION_PLAN.md` order; archive the change only after 10.3 is green and every task above is ticked
+- [x] 10.1 RED: add `telemetry_counts_classes_without_content` (in `services/webhook/tests/capture.rs` and `services/dispatcher/tests/follow.rs`) asserting exposition contains `telegram_capture_submissions_total{class=...}`, `telegram_operation_follows_total{event=...}` after driving one exhausted submission and one follow lifecycle, with no URL, username, or identifier in any label or log line; confirm it fails
+- [x] 10.2 GREEN: add the metric constants and instrument the paths; rerun until 10.1 passes
+- [x] 10.3 Run the full DEVELOPMENT.md gate command list with `TELEGRAM_TEST_DATABASE_URL` pointing at the local instance plus `openspec validate --strict`; all come back clean
+- [x] 10.4 Inspect `git diff` for leaked secrets, tokens, real identifiers, or raw URLs in logs/metric labels; confirm fixtures stay synthetic
+- [x] 10.5 Update README status paragraph, DEVELOPMENT.md stage/configuration/local-run sections, and record item 5 implemented in `docs/IMPLEMENTATION_PLAN.md` order; archive the change only after 10.3 is green and every task above is ticked

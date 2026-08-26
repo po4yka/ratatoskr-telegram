@@ -6,6 +6,7 @@
 //! test-first pairs of the dispatcher change.
 
 pub mod build;
+pub mod follow;
 pub mod outbound;
 pub mod projection;
 

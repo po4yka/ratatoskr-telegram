@@ -28,6 +28,9 @@ pub(crate) fn capture_key(telegram_user_id: i64, normalized_url: &str) -> String
 
 /// The deterministic key for a deliberate retry of one FAILED operation: salted with that
 /// operation's identifier, so Platform creates a fresh operation instead of replaying it.
+/// The unit tests in this module pin the derivation; the production consumer arrives with the
+/// callback-token item.
+#[cfg(test)]
 #[must_use]
 pub(crate) fn retry_key(
     telegram_user_id: i64,

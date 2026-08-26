@@ -24,6 +24,16 @@ fn admit_dispatcher_basics(jail: &mut Jail) {
         "RATATOSKR__DATABASE__URL",
         "postgres://telegram@127.0.0.1:5432/telegram",
     );
+    for (key, value) in [
+        ("RATATOSKR__PLATFORM__BASE_URL", "http://127.0.0.1:9463"),
+        ("RATATOSKR__PLATFORM__AUDIENCE", "ratatoskr-edge-test"),
+    ] {
+        jail.set_env(key, value);
+    }
+    jail.set_env(
+        "RATATOSKR__PLATFORM__ASSERTION_SIGNING_KEY",
+        "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20",
+    );
 }
 
 /// The dispatcher section parses with every default filled, and an unknown key inside it is an
@@ -61,30 +71,39 @@ fn dispatcher_section_parses_with_defaults_and_unknown_keys_refused() {
     });
 }
 
+/// Every dispatcher limit field with its violation key.
+const LIMIT_FIELDS: &[(&str, &str)] = &[
+    (
+        "GLOBAL_MESSAGES_PER_SECOND",
+        "dispatcher.global_messages_per_second",
+    ),
+    (
+        "PER_CHAT_MIN_INTERVAL_MS",
+        "dispatcher.per_chat_min_interval_ms",
+    ),
+    ("RENDER_INTERVAL_SECS", "dispatcher.render_interval_secs"),
+    ("MAX_ATTEMPTS", "dispatcher.max_attempts"),
+    ("BACKOFF_BASE_SECS", "dispatcher.backoff_base_secs"),
+    ("BACKOFF_CAP_SECS", "dispatcher.backoff_cap_secs"),
+    ("LEASE_TTL_SECS", "dispatcher.lease_ttl_secs"),
+    ("POLL_IDLE_MS", "dispatcher.poll_idle_ms"),
+];
+
 /// Every limit field refuses zero, the inverted backoff bound refuses base above cap, and the
 /// jitter fraction refuses above half; each violation names its field exactly.
 #[test]
 fn dispatcher_limits_refuse_zero_negative_and_inverted_bounds() {
     Jail::expect_with(|jail| {
-        for (env_suffix, key) in [
-            (
-                "GLOBAL_MESSAGES_PER_SECOND",
-                "dispatcher.global_messages_per_second",
-            ),
-            (
-                "PER_CHAT_MIN_INTERVAL_MS",
-                "dispatcher.per_chat_min_interval_ms",
-            ),
-            ("RENDER_INTERVAL_SECS", "dispatcher.render_interval_secs"),
-            ("MAX_ATTEMPTS", "dispatcher.max_attempts"),
-            ("BACKOFF_BASE_SECS", "dispatcher.backoff_base_secs"),
-            ("BACKOFF_CAP_SECS", "dispatcher.backoff_cap_secs"),
-            ("LEASE_TTL_SECS", "dispatcher.lease_ttl_secs"),
-            ("POLL_IDLE_MS", "dispatcher.poll_idle_ms"),
-        ] {
+        for (env_suffix, key) in LIMIT_FIELDS {
             jail.clear_env();
             admit_dispatcher_basics(jail);
             jail.set_env(format!("RATATOSKR__DISPATCHER__{env_suffix}"), "0");
+            jail.set_env("RATATOSKR__PLATFORM__BASE_URL", "http://127.0.0.1:9463");
+            jail.set_env("RATATOSKR__PLATFORM__AUDIENCE", "ratatoskr-edge-test");
+            jail.set_env(
+                "RATATOSKR__PLATFORM__ASSERTION_SIGNING_KEY",
+                "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20",
+            );
             let error = config::load_from(
                 RuntimeRole::Dispatcher,
                 config::figment(RuntimeRole::Dispatcher),
@@ -95,7 +114,7 @@ fn dispatcher_limits_refuse_zero_negative_and_inverted_bounds() {
             };
             let violation = violations
                 .iter()
-                .find(|violation| violation.key == key)
+                .find(|violation| violation.key == *key)
                 .unwrap_or_else(|| panic!("{key} must be named in {violations:?}"));
             assert_eq!(
                 violation.env_var,
@@ -148,6 +167,12 @@ fn dispatcher_limits_refuse_zero_negative_and_inverted_bounds() {
             jail.set_env(
                 format!("RATATOSKR__DISPATCHER__{env_suffix}"),
                 u64::MAX.to_string(),
+            );
+            jail.set_env("RATATOSKR__PLATFORM__BASE_URL", "http://127.0.0.1:9463");
+            jail.set_env("RATATOSKR__PLATFORM__AUDIENCE", "ratatoskr-edge-test");
+            jail.set_env(
+                "RATATOSKR__PLATFORM__ASSERTION_SIGNING_KEY",
+                "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20",
             );
             let error = config::load_from(
                 RuntimeRole::Dispatcher,
@@ -209,6 +234,12 @@ fn the_webhook_role_validates_without_any_dispatcher_section() {
             "postgres://telegram@127.0.0.1:5432/telegram",
         );
         jail.set_env("RATATOSKR__ACCESS__OWNER_TELEGRAM_USER_ID", "700100200");
+        jail.set_env("RATATOSKR__PLATFORM__BASE_URL", "http://127.0.0.1:9463");
+        jail.set_env("RATATOSKR__PLATFORM__AUDIENCE", "ratatoskr-edge-test");
+        jail.set_env(
+            "RATATOSKR__PLATFORM__ASSERTION_SIGNING_KEY",
+            "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20",
+        );
         let config = config::load_from(RuntimeRole::Webhook, config::figment(RuntimeRole::Webhook))
             .expect("a webhook without dispatcher tuning validates");
         assert_eq!(config.dispatcher.global_messages_per_second, 25);

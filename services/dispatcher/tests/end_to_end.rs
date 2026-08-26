@@ -145,6 +145,7 @@ fn running_event(operation: Uuid, event_id: Uuid, occurred_at: i64, stage: &str)
             code: "w.tick".to_owned(),
             message: "tick".to_owned(),
         }],
+        message: None,
     }
 }
 
@@ -175,7 +176,7 @@ fn composed(
             lease_ttl_secs: 30,
         },
     );
-    let consumer = ProjectionConsumer::new(db.database.clone(), clock.clone(), 4);
+    let consumer = ProjectionConsumer::new(db.database.clone(), clock.clone(), 4, None);
     (consumer, sender)
 }
 

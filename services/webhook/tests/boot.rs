@@ -94,6 +94,12 @@ fn a_dispatcher_with_an_unreachable_database_refuses_to_start() {
             "RATATOSKR__DATABASE__URL",
             "postgres://nobody:nope@127.0.0.1:5/nowhere",
         )
+        .env("RATATOSKR__PLATFORM__BASE_URL", "http://127.0.0.1:9463")
+        .env("RATATOSKR__PLATFORM__AUDIENCE", "ratatoskr-edge-test")
+        .env(
+            "RATATOSKR__PLATFORM__ASSERTION_SIGNING_KEY",
+            "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20",
+        )
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
@@ -326,12 +332,18 @@ fn check_config_exits_zero_when_valid_and_78_when_invalid() {
         "the missing database url must be named:\n{dispatcher_report}"
     );
 
-    // And with one present, it validates on defaults alone.
+    // And with the database plus the Platform section present, it validates.
     let configured_dispatcher = Command::new(built_binary("ratatoskr-telegram-dispatcher"))
         .arg("check-config")
         .env(
             "RATATOSKR__DATABASE__URL",
             "postgres://telegram@127.0.0.1:5432/telegram",
+        )
+        .env("RATATOSKR__PLATFORM__BASE_URL", "http://127.0.0.1:9463")
+        .env("RATATOSKR__PLATFORM__AUDIENCE", "ratatoskr-edge-test")
+        .env(
+            "RATATOSKR__PLATFORM__ASSERTION_SIGNING_KEY",
+            "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20",
         )
         .output()
         .expect("check-config must run");
@@ -355,6 +367,8 @@ fn check_config_exits_zero_when_valid_and_78_when_invalid() {
         "webhook.secret_token",
         "database.url",
         "access.owner_telegram_user_id",
+        "platform.audience",
+        "platform.assertion_signing_key",
     ] {
         assert!(report.contains(required), "{required} not named:\n{report}");
     }
@@ -395,6 +409,12 @@ fn check_config_exits_zero_when_valid_and_78_when_invalid() {
             "RATATOSKR__DATABASE__URL",
             "mysql://user:secret@db.example:3306/x",
         )
+        .env("RATATOSKR__PLATFORM__BASE_URL", "http://127.0.0.1:9463")
+        .env("RATATOSKR__PLATFORM__AUDIENCE", "ratatoskr-edge-test")
+        .env(
+            "RATATOSKR__PLATFORM__ASSERTION_SIGNING_KEY",
+            "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20",
+        )
         .output()
         .expect("check-config must run");
     let report = String::from_utf8_lossy(&invalid.stderr);
@@ -421,6 +441,12 @@ fn a_listener_that_cannot_bind_exits_one() {
         .env(
             "RATATOSKR__DATABASE__URL",
             "postgres://telegram:telegram@127.0.0.1:15437/telegram",
+        )
+        .env("RATATOSKR__PLATFORM__BASE_URL", "http://127.0.0.1:9463")
+        .env("RATATOSKR__PLATFORM__AUDIENCE", "ratatoskr-edge-test")
+        .env(
+            "RATATOSKR__PLATFORM__ASSERTION_SIGNING_KEY",
+            "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20",
         )
         .output()
         .expect("the binary must run");

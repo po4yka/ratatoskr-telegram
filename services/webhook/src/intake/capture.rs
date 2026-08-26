@@ -55,7 +55,10 @@ pub(crate) async fn submit(
     url: &str,
 ) -> Result<AcceptedCapture, SubmitClass> {
     let subject = telegram_user_id.to_string();
-    let session = sessions.credential(&subject).await.map_err(classify)?;
+    let session = sessions
+        .credential(&subject)
+        .await
+        .map_err(|error| classify(&error))?;
     let client = sessions.client();
 
     // Resending a link whose operation is already tracked must not duplicate the message:
@@ -153,8 +156,8 @@ fn is_transient(error: &platform_api::PlatformError) -> bool {
     )
 }
 
-fn classify(error: platform_api::PlatformError) -> SubmitClass {
-    if is_transient(&error) {
+fn classify(error: &platform_api::PlatformError) -> SubmitClass {
+    if is_transient(error) {
         SubmitClass::TransientExhausted
     } else {
         SubmitClass::PermanentRefusal
