@@ -7,6 +7,7 @@ members = [
     "crates/persistence",
     "crates/bot-api",
     "crates/platform-api",
+    "crates/blob-store",
     "services/webhook",
     "services/dispatcher",
 ]
@@ -26,6 +27,13 @@ ratatoskr-telegram-http        = { version = "0.1.0", path = "crates/http" }
 ratatoskr-telegram-persistence = { version = "0.1.0", path = "crates/persistence" }
 ratatoskr-telegram-bot-api     = { version = "0.1.0", path = "crates/bot-api" }
 ratatoskr-telegram-platform-api = { version = "0.1.0", path = "crates/platform-api" }
+ratatoskr-telegram-blob-store  = { version = "0.1.0", path = "crates/blob-store" }
+
+# ---- Ratatoskr fleet contracts ----
+# The published BlobRef wire types (`ratatoskr-identifiers`). Pinned by revision exactly like the
+# extractor pins the same crate, so every fleet member speaks one contract version; `deny.toml`'s
+# `required-git-spec = "rev"` enforces this form.
+ratatoskr-identifiers = { git = "https://github.com/po4yka/ratatoskr-contracts.git", rev = "d56c6891ce9b4fca2c65d43205080d9a666ab5a0" }
 
 # ---- Telegram Bot API ----
 # The sanctioned client for every Telegram API call this service makes (plan item 2 onward:
@@ -97,6 +105,7 @@ uuid = { version = "1.18.1", features = ["v7", "serde"] }
 # ---- dev only ----
 tower         = "0.5.3"
 http-body-util = "0.1.5"   # also a regular dependency of the webhook intake's capped body reader
+tempfile      = "3.20.0"   # per-test blob-store roots; never a regular dependency
 
 [workspace.lints.rust]
 unsafe_code                   = "forbid"
