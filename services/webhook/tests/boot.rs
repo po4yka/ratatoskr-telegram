@@ -434,14 +434,19 @@ fn a_listener_that_cannot_bind_exits_one() {
     let taken = std::net::TcpListener::bind("127.0.0.1:0").expect("a port must be available");
     let port = taken.local_addr().expect("the port is known").port();
 
+    // A reachable database, so the process gets past preparation and reaches the bind that this
+    // test is about.
+    let runtime = tokio::runtime::Runtime::new().expect("boot runtime");
+    let database_url = runtime.block_on(async {
+        let test = telegram_persistence::test_support::TestDatabase::create()
+            .await
+            .expect("a disposable database");
+        test.url()
+    });
+
     let refused = Command::new(built_binary("ratatoskr-telegram-dispatcher"))
         .env("RATATOSKR__ADMIN__BIND", format!("127.0.0.1:{port}"))
-        // A reachable database, so the process gets past preparation and reaches the bind that
-        // this test is about.
-        .env(
-            "RATATOSKR__DATABASE__URL",
-            "postgres://telegram:telegram@127.0.0.1:15437/telegram",
-        )
+        .env("RATATOSKR__DATABASE__URL", database_url.as_str())
         .env("RATATOSKR__PLATFORM__BASE_URL", "http://127.0.0.1:9463")
         .env("RATATOSKR__PLATFORM__AUDIENCE", "ratatoskr-edge-test")
         .env(
