@@ -14,7 +14,7 @@ use tracing_subscriber::EnvFilter;
 
 use secrecy::ExposeSecret;
 
-use crate::config::model::TelegramConfig;
+use crate::config::model::{self, TelegramConfig};
 use crate::role::RuntimeRole;
 
 /// One startup-rule violation.
@@ -73,6 +73,7 @@ pub(crate) fn validate(role: RuntimeRole, config: &TelegramConfig) -> Vec<Violat
     found.extend(otlp_violations(config));
     found.extend(database_violations(config));
     found.extend(bot_api_violations(config));
+    found.extend(ingestion_violations(config));
     found.extend(access_violations(config));
     found.extend(webhook_violations(role, config));
     found.extend(dispatcher_violations(role, config));
@@ -436,6 +437,22 @@ fn dispatcher_violations(role: RuntimeRole, config: &TelegramConfig) -> Vec<Viol
     );
 
     found
+}
+
+/// V18 — the attachment ingestion budget. Zero reads as "refuse every attachment", which no
+/// operator could have meant, and anything past the Bot API's own download ceiling for bots
+/// could never be honoured: Telegram refuses to serve such a file before this service is asked.
+fn ingestion_violations(config: &TelegramConfig) -> Vec<Violation> {
+    let budget = config.ingestion.max_attachment_bytes;
+    if budget == 0 || budget > model::BOT_API_DOWNLOAD_CEILING_BYTES {
+        return vec![Violation {
+            key: "ingestion.max_attachment_bytes",
+            env_var: "RATATOSKR__INGESTION__MAX_ATTACHMENT_BYTES",
+            rule: "must be greater than 0 and at most the Bot API's 20 MiB file-download \
+                   ceiling for bots; zero would refuse every attachment",
+        }];
+    }
+    Vec::new()
 }
 
 /// The operator-facing report for a set of violations. One block per problem, stable order, no

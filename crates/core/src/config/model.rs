@@ -41,6 +41,10 @@ pub struct TelegramConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub database: Option<DatabaseConfig>,
 
+    /// Attachment ingestion limits. Present for every role; only the webhook ingests files today.
+    #[serde(default)]
+    pub ingestion: IngestionConfig,
+
     /// Outbound delivery tuning. Present for every role; only the dispatcher reads it.
     #[serde(default)]
     pub dispatcher: DispatcherConfig,
@@ -285,6 +289,34 @@ pub struct AdminConfig {
     /// firewall, not the bind address. An any-address default would silently publish `/metrics` on
     /// a developer's LAN, and one variable in an environment file is a loud, deliberate override.
     pub bind: SocketAddr,
+}
+
+/// Attachment ingestion limits: how many bytes one Bot API file transfer may cost.
+///
+/// The budget gates twice - against the declared size before any download starts, and against
+/// the streamed byte count while the transfer runs (rule V18 bounds both).
+#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct IngestionConfig {
+    /// `RATATOSKR__INGESTION__MAX_ATTACHMENT_BYTES`. The per-attachment byte ceiling.
+    #[serde(default = "default_max_attachment_bytes")]
+    pub max_attachment_bytes: u64,
+}
+
+/// The Bot API refuses `getFile` downloads past 20 MiB for bots, so a larger budget could never
+/// be honoured; 18 MiB leaves refusal to this service before Telegram's own limit does.
+pub(crate) const BOT_API_DOWNLOAD_CEILING_BYTES: u64 = 20 * 1_048_576;
+
+fn default_max_attachment_bytes() -> u64 {
+    18 * 1_048_576
+}
+
+impl Default for IngestionConfig {
+    fn default() -> Self {
+        Self {
+            max_attachment_bytes: default_max_attachment_bytes(),
+        }
+    }
 }
 
 /// Who may talk to this deployment: the owner-first access policy seed.

@@ -105,6 +105,7 @@ impl TelegramConfig {
             database: None,
             bot_api: BotApiConfig::default(),
             dispatcher: model::DispatcherConfig::default(),
+            ingestion: model::IngestionConfig::default(),
             platform: crate::config::model::PlatformConfig::default(),
             // The intake listener is webhook-role configuration; its requirements are enforced by
             // rule V13 per role, not by a default that would silently satisfy them.
