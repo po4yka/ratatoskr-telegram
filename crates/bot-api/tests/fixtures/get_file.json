@@ -1,0 +1,9 @@
+{
+  "ok": true,
+  "result": {
+    "file_id": "attach-doc-1",
+    "file_unique_id": "uniq-doc-1",
+    "file_size": 27,
+    "file_path": "documents/report.pdf"
+  }
+}

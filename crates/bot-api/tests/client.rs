@@ -17,9 +17,12 @@ use axum::Router;
 use axum::extract::Path;
 use axum::http::HeaderMap;
 use axum::http::header;
+use axum::response::IntoResponse as _;
 use axum::response::Json;
 use axum::routing::any;
-use bot_api::{BotApiError, ChatAction, ChatId, Client, MessageId, MessageOptions};
+use bot_api::{
+    BotApiError, ChatAction, ChatId, Client, DownloadStream, File, MessageId, MessageOptions,
+};
 use secrecy::{ExposeSecret as _, SecretString};
 use serde_json::{Value, json};
 use url::Url;
@@ -65,6 +68,14 @@ struct Harness {
 
 impl Harness {
     async fn spawn(respond: impl Fn(&Captured) -> Value + Send + Sync + 'static) -> Self {
+        Self::spawn_raw(move |captured| Json(respond(captured)).into_response()).await
+    }
+
+    /// Like [`Harness::spawn`], but the responder owns the whole response - raw byte bodies for
+    /// the file-download routes that never carry JSON.
+    async fn spawn_raw(
+        respond: impl Fn(&Captured) -> axum::response::Response + Send + Sync + 'static,
+    ) -> Self {
         let captured: Arc<Mutex<Vec<Captured>>> = Arc::default();
         let state = Arc::clone(&captured);
         // Handlers must be Clone; both captures are shared through an Arc for exactly that.
@@ -98,24 +109,33 @@ impl Harness {
                         };
                         let response = respond(&entry);
                         state.lock().expect("capture lock").push(entry);
-                        Json(response)
+                        response
                     }
                 },
             ),
         );
-        // Bound on the CALLER'S runtime; serving runs on a dedicated one in a thread of its own,
-        // so the harness never nests a block_on inside the test's runtime.
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-            .await
-            .expect("bind");
-        let bound = listener.local_addr().expect("local addr");
+        // Bind inside the serving runtime: a `tokio::net::TcpListener` belongs to the runtime
+        // whose driver registered it, so binding on the test's runtime and serving on another
+        // thread's runtime hands the accept loop IO it cannot poll. One thread owns bind, serve,
+        // and shutdown together; `spawn_raw` returns only after the port is bound.
+        let (bound_tx, bound_rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
             let runtime = tokio::runtime::Builder::new_multi_thread()
                 .enable_all()
                 .build()
                 .expect("harness runtime");
-            let _ = runtime.block_on(axum::serve(listener, app).into_future());
+            runtime.block_on(async move {
+                let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+                    .await
+                    .expect("bind");
+                let bound = listener.local_addr().expect("local addr");
+                bound_tx
+                    .send(bound)
+                    .expect("the test receives the bound address");
+                let _ = axum::serve(listener, app).into_future().await;
+            });
         });
+        let bound = bound_rx.recv().expect("the harness binds before returning");
         Self {
             base_url: Url::parse(&format!("http://{bound}")).expect("base url"),
             captured,
@@ -401,5 +421,60 @@ async fn set_webhook_carries_the_url_and_the_secret() {
     assert_eq!(
         captured.form_field("secret_token").as_deref(),
         Some(webhook_secret.expose_secret()),
+    );
+}
+
+/// `get_file` resolves a synthetic file id into the served metadata.
+#[tokio::test]
+async fn get_file_resolves_the_harness_file_metadata() {
+    let harness = Harness::spawn({
+        let file = fixture(include_str!("fixtures/get_file.json"));
+        move |_| file.clone()
+    })
+    .await;
+    let resolved: File = client(&harness.base_url)
+        .get_file("attach-doc-1")
+        .await
+        .expect("get_file must resolve");
+
+    assert_eq!(resolved.path, "documents/report.pdf");
+    assert_eq!(resolved.size, 27);
+
+    let captured = &harness.requests()[0];
+    assert_eq!(captured.path, format!("/bot{TOKEN}/GetFile"));
+    let body = captured.body.clone().expect("getFile carries a body");
+    assert_eq!(body["file_id"], "attach-doc-1");
+}
+
+/// The bounded download streams exactly the bytes the harness serves, through the
+/// token-bearing file route, without ever materializing them outside the stream.
+#[tokio::test]
+async fn download_streams_exactly_the_served_bytes() {
+    const PAYLOAD: &[u8] = b"ratatoskr harness file payload bytes";
+    let harness = Harness::spawn_raw(move |captured| {
+        if captured.path.starts_with("/file/") {
+            axum::body::Bytes::from_static(PAYLOAD).into_response()
+        } else {
+            Json(ok_result(&json!(true))).into_response()
+        }
+    })
+    .await;
+
+    let mut stream: DownloadStream = client(&harness.base_url)
+        .download_file("documents/report.pdf")
+        .await
+        .expect("the download must start");
+    let mut received = Vec::new();
+    tokio::io::AsyncReadExt::read_to_end(&mut stream, &mut received)
+        .await
+        .expect("the stream must read to end");
+    assert_eq!(received, PAYLOAD);
+
+    // The download addressed this deployment's own bot over the `/file` origin.
+    let requests = harness.requests();
+    let paths: Vec<&str> = requests.iter().map(|c| c.path.as_str()).collect();
+    assert!(
+        paths.contains(&format!("/file/bot{TOKEN}/documents/report.pdf").as_str()),
+        "{paths:?}"
     );
 }

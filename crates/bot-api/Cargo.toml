@@ -19,10 +19,12 @@ url.workspace      = true
 thiserror.workspace = true
 serde.workspace    = true
 serde_json.workspace = true
+# File downloads stream their bodies through an internal channel onto an AsyncRead surface.
+tokio = { workspace = true, features = ["io-util", "sync"] }
 
 [dev-dependencies]
 axum.workspace    = true
-tokio = { workspace = true, features = ["rt", "macros"] }
+tokio = { workspace = true, features = ["rt", "macros", "io-util"] }
 serde_json.workspace = true
 
 [lints]

@@ -22,7 +22,7 @@ use thiserror::Error as ThisError;
 use url::Url;
 
 pub use teloxide::types::{
-    CallbackQuery, Chat, ChatAction, ChatId, ChatKind, MaybeInaccessibleMessage, Me, Message,
+    CallbackQuery, Chat, ChatAction, ChatId, ChatKind, File, MaybeInaccessibleMessage, Me, Message,
     MessageId, Update, UpdateKind, User,
 };
 
@@ -116,6 +116,12 @@ impl BotApiError {
 #[derive(Debug, Clone)]
 pub struct Client {
     bot: teloxide::Bot,
+    /// The HTTP stack used for file downloads, which bypass teloxide's method routing.
+    http: reqwest::Client,
+    /// The Bot API origin without a trailing slash; file downloads append `/file/bot…/path`.
+    origin: reqwest::Url,
+    /// The bot credential, kept for the download URL path only. It never renders or logs.
+    token: Arc<SecretString>,
 }
 
 impl Client {
@@ -147,7 +153,11 @@ impl Client {
         let api_url = reqwest::Url::parse(trimmed).map_err(|_| BotApiError::Json)?;
 
         Ok(Self {
-            bot: teloxide::Bot::with_client(token.expose_secret(), http).set_api_url(api_url),
+            bot: teloxide::Bot::with_client(token.expose_secret(), http.clone())
+                .set_api_url(api_url),
+            http,
+            origin: reqwest::Url::parse(trimmed).map_err(|_| BotApiError::Json)?,
+            token: Arc::new(SecretString::new(token.expose_secret().to_owned().into())),
         })
     }
 
@@ -276,6 +286,126 @@ impl Client {
             .await
             .map(|_| ())
             .map_err(BotApiError::map)
+    }
+
+    /// Resolve one uploaded file's transfer metadata: the Bot API answers with the server-side
+    /// path the bounded [`Client::download_file`] streams from.
+    ///
+    /// # Errors
+    ///
+    /// As the taxonomy above.
+    pub async fn get_file(&self, file_id: &str) -> Result<File, BotApiError> {
+        self.bot
+            .get_file(teloxide::types::FileId(file_id.to_owned()))
+            .send()
+            .await
+            .map_err(BotApiError::map)
+    }
+
+    /// Open the byte stream for one resolved file path. The token-bearing URL is assembled and
+    /// consumed inside this boundary; failures surface as taxonomy classes without echoing it.
+    ///
+    /// The returned stream yields exactly the served bytes and ends when the response does; body
+    /// transport faults arrive as ordinary `std::io` errors mid-read.
+    ///
+    /// # Errors
+    ///
+    /// As the taxonomy above.
+    pub async fn download_file(&self, file_path: &str) -> Result<DownloadStream, BotApiError> {
+        let mut url = self.origin.clone();
+        url.set_path(&format!(
+            "/file/bot{}/{file_path}",
+            self.token.expose_secret()
+        ));
+
+        let response = self
+            .http
+            .get(url)
+            .send()
+            .await
+            .map_err(|error| BotApiError::Network(Arc::new(error)))?;
+        if !response.status().is_success() {
+            // Status only: the body of a failed file request is provider detail, not user or log
+            // material, and it must never carry the credential-bearing path back out.
+            return Err(BotApiError::Api {
+                description: format!("the file endpoint answered {}", response.status()),
+            });
+        }
+
+        let (sender, receiver) = tokio::sync::mpsc::channel(4);
+        tokio::spawn(async move {
+            let mut response = response;
+            loop {
+                match response.chunk().await {
+                    Ok(Some(chunk)) => {
+                        if sender.send(Ok(chunk.to_vec())).await.is_err() {
+                            break; // the consumer dropped the stream
+                        }
+                    }
+                    Ok(None) => break,
+                    Err(_) => {
+                        // Class, never the URL or provider error text.
+                        let _ = sender
+                            .send(Err(std::io::Error::other("the file transfer failed")))
+                            .await;
+                        break;
+                    }
+                }
+            }
+        });
+        Ok(DownloadStream {
+            receiver,
+            active: None,
+        })
+    }
+}
+
+/// The streaming body of one file download: an [`tokio::io::AsyncRead`] that yields exactly the
+/// served bytes and ends when the response does.
+#[derive(Debug)]
+pub struct DownloadStream {
+    receiver: tokio::sync::mpsc::Receiver<std::io::Result<Vec<u8>>>,
+    active: Option<Vec<u8>>,
+}
+
+impl tokio::io::AsyncRead for DownloadStream {
+    fn poll_read(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        use tokio::sync::mpsc::error::TryRecvError;
+
+        let this = self.get_mut();
+        loop {
+            if this.active.as_ref().is_none_or(Vec::is_empty) {
+                match this.receiver.try_recv() {
+                    Ok(Ok(chunk)) => this.active = Some(chunk),
+                    Ok(Err(error)) => return std::task::Poll::Ready(Err(error)),
+                    Err(TryRecvError::Empty) => {
+                        return match this.receiver.poll_recv(cx) {
+                            std::task::Poll::Ready(Some(Ok(chunk))) => {
+                                this.active = Some(chunk);
+                                continue;
+                            }
+                            std::task::Poll::Ready(Some(Err(error))) => {
+                                std::task::Poll::Ready(Err(error))
+                            }
+                            std::task::Poll::Ready(None) => std::task::Poll::Ready(Ok(())),
+                            std::task::Poll::Pending => std::task::Poll::Pending,
+                        };
+                    }
+                    Err(TryRecvError::Disconnected) => return std::task::Poll::Ready(Ok(())),
+                }
+            }
+            let Some(active) = this.active.as_mut() else {
+                continue;
+            };
+            let take = active.len().min(buf.remaining());
+            let drained: Vec<u8> = active.drain(..take).collect();
+            buf.put_slice(&drained);
+            return std::task::Poll::Ready(Ok(()));
+        }
     }
 }
 
