@@ -32,6 +32,12 @@ pub enum BlobStoreError {
     /// A reference does not describe what the store holds for it.
     #[error("blob reference mismatch: {0}")]
     Mismatch(&'static str),
+    /// The source produced more bytes than the caller's budget allows. Nothing is published.
+    #[error("the byte budget was exceeded")]
+    BudgetExceeded {
+        /// The configured ceiling that was crossed.
+        limit: u64,
+    },
 }
 
 /// One stored artifact's ownership facts, kept beside the bytes so verification can check owner,
@@ -86,15 +92,18 @@ impl BlobStore {
 
     /// Stream `source` into the store, hashing and counting while copying, and publish the
     /// resulting [`BlobRef`]. Storing bytes that already exist converges on the same reference
-    /// without duplicating them.
+    /// without duplicating them. When `budget` is set and the source produces more bytes than it
+    /// allows, the store aborts with [`BlobStoreError::BudgetExceeded`] and publishes nothing.
     ///
     /// # Errors
     ///
-    /// Filesystem failures and a digest that stops matching the contract pattern.
+    /// Filesystem failures, a digest that stops matching the contract pattern, and a source
+    /// overrunning the budget.
     pub async fn store(
         &self,
         media_type: &MediaType,
         source: &mut (impl AsyncRead + Unpin),
+        budget: Option<u64>,
     ) -> Result<BlobRef, BlobStoreError> {
         use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
@@ -106,26 +115,40 @@ impl BlobStore {
         let mut hasher = Sha256::new();
         let mut total: u64 = 0;
         let mut chunk = vec![0u8; CHUNK_BYTES];
-        let mut file = tokio::fs::File::create(&staging)
-            .await
-            .map_err(|error| BlobStoreError::Io(Arc::new(error)))?;
-        loop {
-            let read = source
-                .read(&mut chunk)
-                .await
-                .map_err(|error| BlobStoreError::Io(Arc::new(error)))?;
-            if read == 0 {
-                break;
+        let mut file = match tokio::fs::File::create(&staging).await {
+            Ok(file) => file,
+            Err(error) => return Err(BlobStoreError::Io(Arc::new(error))),
+        };
+        // Copy, hash, count, and enforce the budget in one pass; any failure after creation drops
+        // the staging copy so no partial bytes can ever publish under a content name.
+        let copied = async {
+            loop {
+                let read = source
+                    .read(&mut chunk)
+                    .await
+                    .map_err(|error| BlobStoreError::Io(Arc::new(error)))?;
+                if read == 0 {
+                    break;
+                }
+                total += u64::try_from(read).unwrap_or(u64::MAX);
+                if budget.is_some_and(|limit| total > limit) {
+                    return Err(BlobStoreError::BudgetExceeded {
+                        limit: budget.unwrap_or_default(),
+                    });
+                }
+                hasher.update(&chunk[..read]);
+                file.write_all(&chunk[..read])
+                    .await
+                    .map_err(|error| BlobStoreError::Io(Arc::new(error)))?;
             }
-            hasher.update(&chunk[..read]);
-            total += u64::try_from(read).unwrap_or(u64::MAX);
-            file.write_all(&chunk[..read])
+            file.flush()
                 .await
-                .map_err(|error| BlobStoreError::Io(Arc::new(error)))?;
+                .map_err(|error| BlobStoreError::Io(Arc::new(error)))
+        };
+        if let Err(error) = copied.await {
+            let _ = tokio::fs::remove_file(&staging).await;
+            return Err(error);
         }
-        file.flush()
-            .await
-            .map_err(|error| BlobStoreError::Io(Arc::new(error)))?;
         drop(file);
 
         let hex = format!("{:x}", hasher.finalize());
@@ -247,7 +270,7 @@ mod store_tests {
 
         let mut source = sample_source().await;
         let blob = store
-            .store(&pdf_media(), &mut source)
+            .store(&pdf_media(), &mut source, None)
             .await
             .expect("sample stores");
 
@@ -277,9 +300,12 @@ mod store_tests {
 
         let mut first = sample_source().await;
         let mut second = sample_source().await;
-        let one = store.store(&pdf_media(), &mut first).await.expect("first");
+        let one = store
+            .store(&pdf_media(), &mut first, None)
+            .await
+            .expect("first");
         let two = store
-            .store(&pdf_media(), &mut second)
+            .store(&pdf_media(), &mut second, None)
             .await
             .expect("second");
 
@@ -302,7 +328,7 @@ mod store_tests {
         let store = BlobStore::open(dir.path()).expect("store opens");
         let mut source = sample_source().await;
         let blob = store
-            .store(&pdf_media(), &mut source)
+            .store(&pdf_media(), &mut source, None)
             .await
             .expect("stored");
         store.verify(&blob).expect("fresh store verifies");
@@ -336,6 +362,43 @@ mod store_tests {
             store.verify(&blob).is_err(),
             "tampered bytes must fail verify"
         );
+    }
+
+    #[tokio::test]
+    async fn a_stream_overrunning_the_budget_aborts_without_publishing() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store = BlobStore::open(dir.path()).expect("store opens");
+
+        let mut source = sample_source().await;
+        let outcome = store
+            .store(&pdf_media(), &mut source, Some(8))
+            .await
+            .expect_err("an overrunning source must abort");
+
+        assert!(
+            matches!(outcome, BlobStoreError::BudgetExceeded { limit: 8 }),
+            "{outcome:?}"
+        );
+        let hashed = walk_files(&dir.path().join("sha256"));
+        assert!(hashed.is_empty(), "nothing may publish: {hashed:?}");
+        let staged = walk_files(&dir.path().join("staging"));
+        assert!(
+            staged.is_empty(),
+            "no partial staging file survives: {staged:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn bytes_exactly_within_the_budget_store_normally() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store = BlobStore::open(dir.path()).expect("store opens");
+
+        let mut source = sample_source().await;
+        let blob = store
+            .store(&pdf_media(), &mut source, Some(SAMPLE.len() as u64))
+            .await
+            .expect("an exact-budget source stores");
+        store.verify(&blob).expect("the stored blob verifies");
     }
 
     fn walk_files(root: &Path) -> Vec<PathBuf> {
