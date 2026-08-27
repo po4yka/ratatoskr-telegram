@@ -426,10 +426,12 @@ async fn authorized_url_message_submits_capture_and_enqueues_ack() {
     assert_eq!(job.2.as_deref(), Some(expected_correlation.as_str()));
     assert_eq!(job.3.as_deref(), Some("HTML"), "the ack carries HTML");
 
-    let intents: i64 = sqlx::query_scalar("select count(*) from telegram.interaction_intents")
-        .fetch_one(fixture.database.pool())
-        .await
-        .expect("intent count");
+    let intents: i64 = sqlx::query_scalar(
+        "select count(*) from telegram.interaction_tokens where surface = 'deep_link'",
+    )
+    .fetch_one(fixture.database.pool())
+    .await
+    .expect("intent count");
     assert_eq!(intents, 1, "one deep-link intent backs the future button");
 }
 
@@ -601,7 +603,8 @@ async fn pdf_document_within_limits_stores_and_submits_a_blob_capture() {
     );
 
     let intent = sqlx::query(
-        "select source_url, metadata from telegram.interaction_intents where operation_id = $1",
+        "select payload->>'source_url' as source_url, payload->'metadata' as metadata
+         from telegram.interaction_tokens where operation_id = $1",
     )
     .bind(OPERATION_ID.parse::<uuid::Uuid>().expect("synthetic uuid"))
     .fetch_one(fixture.database.pool())
@@ -775,8 +778,8 @@ async fn forwarded_message_with_link_submits_capture_with_origin() {
 
     // The intent record persists the same provenance beside the address.
     let origin_kind: Option<String> = sqlx::query_scalar(
-        "select metadata->'forward'->>'kind' from telegram.interaction_intents
-         where source_url = 'https://example.test/story'",
+        "select payload->'metadata'->'forward'->>'kind' from telegram.interaction_tokens
+         where payload->>'source_url' = 'https://example.test/story'",
     )
     .fetch_one(fixture.database.pool())
     .await

@@ -1,65 +1,4 @@
-# persistence-schema Specification
-
-## Purpose
-The `telegram` PostgreSQL schema this service owns, how it is applied at startup, and the readiness check that watches it.
-
-## Requirements
-
-### Requirement: The service owns one first-version schema
-
-The service SHALL own the `telegram` PostgreSQL schema and no other. The schema definition SHALL be one file at the repository root; a schema change edits that file in place and there is no migration ledger and no second version.
-
-#### Scenario: A fresh database receives the schema
-- **WHEN** the schema file is applied to an empty database
-- **THEN** the `telegram` schema exists
-
-#### Scenario: The schema is defined in exactly one editable file
-- **WHEN** a schema change is needed
-- **THEN** it is made by editing the root `schema.sql` in place, and the deployed binary embeds the same file contents it was built with
-
-### Requirement: Schema application is startup work, idempotent and all-or-nothing
-
-When a database is configured, a process SHALL apply the schema at startup before reporting itself ready: application SHALL be skipped when the schema already exists, SHALL be safe to run concurrently with another starting process, and SHALL either apply completely or leave the database unchanged.
-
-#### Scenario: Applying twice changes nothing the second time
-- **WHEN** the schema is applied to a database that already has it
-- **THEN** the second application makes no changes and reports success
-
-### Requirement: The database readiness check probes in the background
-
-When a database is configured, the process SHALL probe it on a fixed interval in the background and expose the latest result through `/health/ready`; when no database is configured there SHALL be no database check.
-
-#### Scenario: An answering database turns the check green
-- **WHEN** a configured database accepts queries
-- **THEN** the next background probe marks the database check passing
-
-### Requirement: Update deduplication state is persisted under bot identity
-
-The schema SHALL contain a `telegram.updates` table whose primary key is `(bot_id, update_id)`, recording each admitted update's kind, its processing state drawn from `accepted`, `processing`, `processed`, `unsupported` and `failed`, and its receipt and settle timestamps. No raw update payload SHALL be stored.
-
-#### Scenario: A fresh database has the updates table
-
-- **WHEN** the schema file is applied to an empty database
-- **THEN** `telegram.updates` exists with the composite key and the state vocabulary
-
-#### Scenario: A second insert of the same pair changes nothing
-
-- **WHEN** the same `(bot_id, update_id)` is recorded twice
-- **THEN** the second attempt reports a duplicate and the table still holds one row
-
-### Requirement: Processing state settles through typed transitions
-
-An admitted row SHALL start as `accepted`; the processing worker SHALL move it through `processing` to exactly one terminal state — `processed`, `unsupported` or `failed`. Recording a state for an update that was never admitted SHALL fail rather than write.
-
-#### Scenario: An admitted update reaches a terminal state
-
-- **WHEN** the worker settles an accepted row as processed
-- **THEN** the row reads `processed` with a settle timestamp
-
-#### Scenario: A state transition for an unknown update fails
-
-- **WHEN** a settlement names a `(bot_id, update_id)` that was never inserted
-- **THEN** the operation fails and no row appears
+## MODIFIED Requirements
 
 ### Requirement: Deep-link intents persist as opaque owner-bound records
 
@@ -79,15 +18,6 @@ The schema SHALL contain shared interaction-token records for deep-link operatio
 
 - **WHEN** an attachment capture's deep-link intent stores no source address and its bounded payload names the stored blob reference
 - **THEN** the insert succeeds, a URL-carrying intent still succeeds, and a record presenting neither an address nor blob facts is refused
-
-### Requirement: Outbound payloads are stored whole
-
-The `telegram.outbound_jobs` table SHALL store each job's message payload so that text, parse mode, and inline keyboard survive restarts and retries bit-identically, alongside the existing content hash that deduplicates identical re-renders.
-
-#### Scenario: A queued job restores its full payload after restart
-
-- **WHEN** a claimed-but-undelivered job with markup is reclaimed after a simulated crash
-- **THEN** the redelivered request carries the same text, parse mode, and buttons it was enqueued with
 
 ### Requirement: Callback confirmations persist in generalized dialogue and token state
 

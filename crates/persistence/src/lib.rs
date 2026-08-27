@@ -13,9 +13,10 @@
 pub mod test_support;
 
 pub mod bindings;
-pub mod callback_flows;
+pub mod dialogues;
 pub mod inbox;
-pub mod intents;
+pub mod interaction_cleanup;
+pub mod interaction_tokens;
 pub mod message_bindings;
 pub mod outbound_jobs;
 pub mod projection_accept;

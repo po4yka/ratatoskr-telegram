@@ -1,11 +1,11 @@
 # Developing Ratatoskr Telegram
 
-> Status: Implemented for plan items 1 through 6; items 7 through 10 are Proposed.
-> Last reviewed: 2026-08-26
+> Status: Implemented for plan items 1 through 8; items 9 and 10 are Proposed.
+> Last reviewed: 2026-08-27
 
 ## Current stage
 
-Plan items 1 through 3 of `docs/IMPLEMENTATION_PLAN.md` are implemented and the commands marked **real**
+Plan items 1 through 8 of `docs/IMPLEMENTATION_PLAN.md` are implemented and the commands marked **real**
 below are real. The Cargo workspace, its pinned toolchain and its committed `Cargo.lock`; the
 `ratatoskr-telegram-core`, `ratatoskr-telegram-telemetry`, `ratatoskr-telegram-http` and
 `ratatoskr-telegram-persistence` library crates; the `ratatoskr-telegram-webhook` and
@@ -53,9 +53,14 @@ accepted document type is `application/pdf`; video, voice, audio, and other docu
 one explicit unsupported reply. Declared and streamed byte limits are enforced before and during
 download, and a URL-less terminal render describes the attachment without inventing a link.
 
-Not present yet, in plan order: GitHub flows (item 7),
-callback tokens and dialogue state including retry buttons (item 8), Mini App initData validation
-(item 9), notifications and workspace integration (item 10). No test contacts Telegram or a live
+Plan item 7 added the Platform-backed GitHub preview and explicit metadata/track/star confirmation
+flow. Plan item 8 moved that flow onto the generalized `dialog_states` and `interaction_tokens`
+authority: exact 64-character random tokens are one-time, expiring, and bound to bot, user, chat,
+message, dialogue step, and version. The same registry backs exact `/start <token>` operation-status
+intents. The worker runs bounded stale-state cleanup at startup and on a fixed monotonic interval.
+
+Not present yet, in plan order: Mini App initData validation (item 9), notifications and workspace
+integration (item 10). No test contacts Telegram or a live
 Platform: both clients run against local harness servers with synthetic bodies.
 
 The database is REQUIRED for both roles since item 4: intake writes update deduplication through
@@ -230,7 +235,7 @@ own their first writer.
 2. Acknowledge quickly; process durable interactions asynchronously.
 3. Keep Telegram identity/interaction/message projection state separate from article, GitHub,
    Vault, and Knowledge authority.
-4. Use short opaque callback/deep-link tokens and validate Mini App identity server-side.
+4. Use exact opaque callback/deep-link tokens and validate Mini App identity server-side.
 5. Test replay, ordering, callback expiry, rate limits, partial domain results, edits/deletes,
    restart, and reauthorization as those items land.
 

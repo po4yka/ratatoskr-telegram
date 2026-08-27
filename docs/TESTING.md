@@ -5,7 +5,9 @@ Required tests:
 - Webhook secret, malformed/oversized body, duplicate/out-of-order updates, fast acknowledgment, restart/redelivery.
 - Identity binding, access allow/deny, private/group/thread context, account changes.
 - Command/message URL/file/forward classification and dialogue expiry/cancel/concurrency.
-- Callback token scope/expiry/single-use/replay and opaque deep-link intents.
+- Callback token grammar/scope/expiry/single-use/concurrent replay, dialogue expected-version and
+  timeout transitions, opaque `/start` ownership/replay, and bounded cleanup that preserves live
+  authority plus operation/message-binding state.
 - Mini App `initData` valid/invalid signature, stale auth time, wrong bot/audience, replay, user mismatch.
 - Article flow and GitHub metadata/track/star confirmation/partial-result matrices, including a
   fake Platform/GitHub server that counts action calls and proves preview and selection perform zero.

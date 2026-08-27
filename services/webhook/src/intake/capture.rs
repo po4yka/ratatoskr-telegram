@@ -53,7 +53,7 @@ pub(crate) async fn submit(
     chat_id: i64,
     telegram_user_id: i64,
     source: platform_api::CaptureSource,
-    metadata: Option<telegram_persistence::intents::IntentMetadata>,
+    metadata: Option<telegram_persistence::interaction_tokens::IntentMetadata>,
 ) -> Result<AcceptedCapture, SubmitClass> {
     let subject = telegram_user_id.to_string();
     let session = sessions
@@ -95,20 +95,24 @@ pub(crate) async fn submit(
             .ensure_operation_binding(bot_id, operation_id, chat_id)
             .await
             .map_err(|_| SubmitClass::TransientExhausted)?;
-        let intent_id = uuid::Uuid::now_v7();
+        let now = now_secs();
         database
-            .insert_intent(
-                &telegram_persistence::intents::NewIntent {
-                    id: intent_id,
-                    bot_id,
-                    telegram_user_id,
-                    chat_id,
+            .issue_operation_intent(
+                &telegram_persistence::interaction_tokens::NewOperationIntent {
+                    scope: telegram_persistence::interaction_tokens::TokenScope {
+                        bot_id,
+                        telegram_user_id,
+                        chat_id,
+                        message_id: None,
+                    },
                     operation_id,
-                    source_url: source_url(&source),
-                    metadata,
-                    expires_at_secs: now_secs() + INTENT_TTL_SECS,
+                    payload: telegram_persistence::interaction_tokens::OperationIntentPayload {
+                        source_url: source_url(&source),
+                        metadata,
+                    },
+                    expires_at: now + INTENT_TTL_SECS,
                 },
-                now_secs(),
+                now,
             )
             .await
             .map_err(|_| SubmitClass::TransientExhausted)?;

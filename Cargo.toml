@@ -101,7 +101,7 @@ jiff          = { version = "0.2.15", default-features = false, features = ["std
 # `uuid` v7 because ratatoskr-contracts mints v7 and the database stores the same bytes.
 # `serde` because Platform wire shapes carry identifiers as JSON values the platform-api
 # boundary deserializes directly.
-uuid = { version = "1.18.1", features = ["v7", "serde"] }
+uuid = { version = "1.18.1", features = ["v4", "v7", "serde"] }
 
 # ---- dev only ----
 tower         = "0.5.3"

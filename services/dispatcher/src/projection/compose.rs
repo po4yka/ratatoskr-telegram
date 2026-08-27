@@ -19,7 +19,7 @@ use crate::projection::event::{OperationEvent, OperationStatus};
 pub fn compose_terminal(
     body: String,
     event: &OperationEvent,
-    intent: Option<&telegram_persistence::intents::IntentRecord>,
+    intent: Option<&telegram_persistence::interaction_tokens::OperationIntentRecord>,
     username: Option<&str>,
 ) -> MessagePayload {
     let mut text = body;
@@ -28,10 +28,11 @@ pub fn compose_terminal(
         intent.is_some() && username.is_some() && event.status != OperationStatus::Failed;
     if let Some(record) = intent {
         let is_blob_capture = record
+            .payload
             .metadata
             .as_ref()
             .is_some_and(|metadata| metadata.blob.is_some());
-        if let Some(source_url) = record.source_url.as_deref() {
+        if let Some(source_url) = record.payload.source_url.as_deref() {
             if let Ok(source) = Url::parse(source_url) {
                 let escaped = escape_html(source.as_str());
                 text.push_str("\n<a href=\"");
@@ -41,6 +42,7 @@ pub fn compose_terminal(
                 text.push_str("</a>");
             }
         } else if let Some(blob) = record
+            .payload
             .metadata
             .as_ref()
             .and_then(|metadata| metadata.blob.as_ref())
@@ -59,7 +61,7 @@ pub fn compose_terminal(
             });
         }
         if let (Some(username), true) = (username, wants_button) {
-            let target = format!("https://t.me/{username}?startapp={}", record.id);
+            let target = format!("https://t.me/{username}?start={}", record.token);
             text.push('\n');
             return MessagePayload {
                 text,
@@ -119,7 +121,7 @@ mod tests {
     use super::compose_terminal;
     use crate::projection::event::{OperationEvent, OperationStatus};
     use sqlx::types::Uuid;
-    use telegram_persistence::intents::IntentRecord;
+    use telegram_persistence::interaction_tokens::{OperationIntentPayload, OperationIntentRecord};
 
     const USERNAME: &str = "ratatoskr_test_bot";
 
@@ -138,30 +140,34 @@ mod tests {
         }
     }
 
-    fn an_intent() -> IntentRecord {
-        IntentRecord {
-            id: Uuid::now_v7(),
+    fn an_intent() -> OperationIntentRecord {
+        OperationIntentRecord {
+            token: "A".repeat(64),
             bot_id: 42,
             chat_id: 900_700_601,
             operation_id: Uuid::now_v7(),
-            source_url: Some("https://example.test/article".to_owned()),
-            metadata: None,
+            payload: OperationIntentPayload {
+                source_url: Some("https://example.test/article".to_owned()),
+                metadata: None,
+            },
         }
     }
 
-    fn an_attachment_intent() -> IntentRecord {
-        IntentRecord {
-            source_url: None,
-            metadata: Some(telegram_persistence::intents::IntentMetadata {
-                forward: None,
-                blob: Some(telegram_persistence::intents::BlobCapture {
-                    owner_service: "ratatoskr-telegram".to_owned(),
-                    algorithm: "sha256".to_owned(),
-                    digest_hex: "f".repeat(64),
-                    media_type: "application/pdf".to_owned(),
-                    length_bytes: 1_024,
+    fn an_attachment_intent() -> OperationIntentRecord {
+        OperationIntentRecord {
+            payload: OperationIntentPayload {
+                source_url: None,
+                metadata: Some(telegram_persistence::interaction_tokens::IntentMetadata {
+                    forward: None,
+                    blob: Some(telegram_persistence::interaction_tokens::BlobCapture {
+                        owner_service: "ratatoskr-telegram".to_owned(),
+                        algorithm: "sha256".to_owned(),
+                        digest_hex: "f".repeat(64),
+                        media_type: "application/pdf".to_owned(),
+                        length_bytes: 1_024,
+                    }),
                 }),
-            }),
+            },
             ..an_intent()
         }
     }
@@ -190,7 +196,7 @@ mod tests {
             .expect("url");
         assert_eq!(
             target,
-            format!("https://t.me/{USERNAME}?startapp={}", intent.id),
+            format!("https://t.me/{USERNAME}?start={}", intent.token),
             "the button carries only the opaque token"
         );
     }
@@ -259,7 +265,7 @@ mod tests {
         let markup = payload
             .reply_markup
             .expect("the opaque Mini App button exists");
-        let expected = format!("https://t.me/{USERNAME}?startapp={}", intent.id);
+        let expected = format!("https://t.me/{USERNAME}?start={}", intent.token);
         assert_eq!(
             markup["inline_keyboard"][0][0]["url"].as_str(),
             Some(expected.as_str()),

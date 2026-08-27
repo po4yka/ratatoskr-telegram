@@ -176,7 +176,7 @@ fn callback(update_id: i64, message_id: i64, data: &str, actor: i64) -> Value {
 }
 
 async fn token(database: &TestDatabase, action: &str) -> String {
-    sqlx::query("select token from telegram.callback_tokens where action=$1 order by expires_at desc limit 1")
+    sqlx::query("select token from telegram.interaction_tokens where action=$1 order by expires_at desc limit 1")
         .bind(action).fetch_one(database.pool()).await.expect("token").get("token")
 }
 
@@ -203,7 +203,7 @@ async fn repository_preview_confirmation_gate_and_partial_result_are_truthful() 
         "<b>GitHub repository</b>\nowner/repository\nA &lt;tool&gt;\nStars: 42\nLanguage: Rust"
     );
 
-    let flow_id: uuid::Uuid = sqlx::query_scalar("select id from telegram.callback_flows")
+    let flow_id: uuid::Uuid = sqlx::query_scalar("select id from telegram.dialog_states")
         .fetch_one(fixture.database.pool())
         .await
         .expect("flow");
@@ -262,7 +262,7 @@ async fn uncertain_action_retries_only_the_same_identity_and_never_claims_succes
     let fixture = Fixture::create(&base).await;
     fixture.deliver(message(11_001)).await;
     fixture.wait_settled(11_001).await;
-    let flow_id: uuid::Uuid = sqlx::query_scalar("select id from telegram.callback_flows")
+    let flow_id: uuid::Uuid = sqlx::query_scalar("select id from telegram.dialog_states")
         .fetch_one(fixture.database.pool())
         .await
         .expect("flow");
@@ -301,4 +301,47 @@ async fn uncertain_action_retries_only_the_same_identity_and_never_claims_succes
     .expect("unknown result");
     assert!(result.contains("outcome unknown"), "{result}");
     assert!(!result.contains("succeeded"), "{result}");
+}
+
+#[tokio::test]
+async fn second_press_is_answered_as_expired_without_another_action() {
+    let (base, calls) = harness(false).await;
+    let fixture = Fixture::create(&base).await;
+    fixture.deliver(message(12_001)).await;
+    fixture.wait_settled(12_001).await;
+    let flow_id: uuid::Uuid = sqlx::query_scalar("select id from telegram.dialog_states")
+        .fetch_one(fixture.database.pool())
+        .await
+        .expect("flow");
+    fixture
+        .database
+        .database
+        .stamp_callback_message(flow_id, BOT, OWNER, 100, 1_800_000_000)
+        .await
+        .expect("stamp");
+    let select_star = token(&fixture.database, "select_star").await;
+
+    fixture
+        .deliver(callback(12_002, 100, &select_star, OWNER))
+        .await;
+    fixture.wait_settled(12_002).await;
+    fixture
+        .deliver(callback(12_003, 100, &select_star, OWNER))
+        .await;
+    fixture.wait_settled(12_003).await;
+
+    assert_eq!(calls.callback_answers.load(Ordering::SeqCst), 2);
+    assert_eq!(calls.actions.load(Ordering::SeqCst), 0);
+    let version: i64 = sqlx::query_scalar("select version from telegram.dialog_states")
+        .fetch_one(fixture.database.pool())
+        .await
+        .expect("one selection transition");
+    assert_eq!(version, 1, "the replay cannot advance the flow");
+    let reply: String = sqlx::query_scalar(
+        "select payload->>'text' from telegram.outbound_jobs order by id desc limit 1",
+    )
+    .fetch_one(fixture.database.pool())
+    .await
+    .expect("expired-state reply");
+    assert_eq!(reply, "This action has expired. Please start again.");
 }

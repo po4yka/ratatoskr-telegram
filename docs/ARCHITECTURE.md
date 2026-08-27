@@ -1,6 +1,9 @@
 # Ratatoskr Telegram Architecture
 
-> Status: target architecture. Plan items 1 and 2 are implemented: the Rust service foundation, Bot API client, secure webhook, durable update admission, PostgreSQL-backed recovery, and terminal settlement. The remaining sections define the intended identity, Mini App authentication, interaction-state, Platform, eventing, and outbound-projection boundaries.
+> Status: target architecture. Plan items 1 through 8 are implemented, including secure durable
+> intake, capture/GitHub flows, ordered delivery, generalized interaction tokens, versioned dialogue
+> state, opaque `/start` intents, and bounded cleanup. Mini App authentication, notifications, and
+> workspace integration remain planned.
 
 ## 1. Purpose
 
@@ -121,8 +124,7 @@ telegram.chat_memberships
 telegram.updates
 telegram.interactions
 telegram.dialog_states
-telegram.interaction_intents
-telegram.callback_tokens
+telegram.interaction_tokens
 telegram.message_bindings
 telegram.outbound_messages
 telegram.outbound_attempts
@@ -401,30 +403,30 @@ Processing rules:
 
 ## 14. Deep-link and interaction intents
 
-Mini App links use opaque short-lived intent IDs:
+The implemented Bot API operation-status link uses the shared opaque token registry:
 
 ```text
-https://t.me/<bot>?startapp=<opaque-intent-id>
+https://t.me/<bot>?start=<64-character-token>
 ```
 
-Intent records may target:
+The current closed deep-link action targets:
 
 ```text
-article preview
-repository preview
 operation status
-search result
-settings section
 ```
 
 Intent rules:
 
-- bound to internal user and expected action;
+- bound to bot, Telegram user, chat, and expected action;
 - expires;
-- optional one-time consumption;
+- one-time consumption;
 - payload stored server-side;
+- exact `/start` grammar carries no business data;
 - forwarded/stale links cannot expose another user's resource;
 - raw URLs and policy JSON are not placed in the deep link.
+
+Mini App `startapp` authentication remains item 9 and must bind its validated launch parameter to
+server-side authority rather than treating this Bot API `/start` transport as a session.
 
 ## 15. Telegram Mini App architecture
 
@@ -745,7 +747,9 @@ telegram_webhook_latency_seconds
 telegram_updates_total by coarse type
 telegram_duplicate_updates_total
 telegram_interactions_by_state
-telegram_callback_replay_rejections_total
+telegram_interaction_token_presentations_total
+telegram_dialogue_transitions_total
+telegram_interaction_cleanup_rows_total
 telegram_mini_app_auth_results_total
 telegram_outbound_queue_depth
 telegram_bot_api_requests_total
@@ -847,12 +851,12 @@ Initial milestones:
 
 1. Bot token configuration, webhook secret validation, and update deduplication.
 2. Identity binding and owner-only private-chat access.
-3. Article URL capture with Platform operation progress.
-4. Dispatcher outbox, message bindings, edit/retry/rate limits.
-5. GitHub repository preview and `metadata`/`track`/`star` flow.
-6. PDF/file streaming and batch URL handling.
-7. Mini App raw `initData` validation and assertion exchange.
-8. Opaque deep-link intents and shared web Mini App screens.
+3. Dispatcher outbox, message bindings, edit/retry/rate limits.
+4. Article URL capture with Platform operation progress.
+5. PDF/file streaming and forwarded-message handling.
+6. GitHub repository preview and `metadata`/`track`/`star` flow.
+7. Opaque callback/deep-link tokens, durable dialogue state, and bounded cleanup. (implemented)
+8. Mini App raw `initData` validation and assertion exchange.
 9. Notification preferences and selected domain notifications.
 10. Security audit, operational runbooks, and optional multi-user/group policy.
 

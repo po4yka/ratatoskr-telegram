@@ -53,6 +53,20 @@ pub const TELEGRAM_CAPTURE_SUBMISSIONS_TOTAL: &str = "telegram_capture_submissio
 /// Follower lifecycle events, by closed safe class (started/resumed/ended/dropped).
 pub const TELEGRAM_OPERATION_FOLLOWS_TOTAL: &str = "telegram_operation_follows_total";
 
+/// `telegram_interaction_token_presentations_total{surface,outcome}` — counter. Presentation of
+/// callback or deep-link authority by closed result class only; token and scope values are never
+/// labels.
+pub const TELEGRAM_INTERACTION_TOKEN_PRESENTATIONS_TOTAL: &str =
+    "telegram_interaction_token_presentations_total";
+
+/// `telegram_dialogue_transitions_total{kind,outcome}` — counter. Successful transitions,
+/// refusals, and timeout expiry using closed dialogue-kind/outcome vocabularies.
+pub const TELEGRAM_DIALOGUE_TRANSITIONS_TOTAL: &str = "telegram_dialogue_transitions_total";
+
+/// `telegram_interaction_cleanup_rows_total{kind}` — counter. Rows expired or removed by bounded
+/// worker-owned cleanup passes; no interaction identifier appears in the label set.
+pub const TELEGRAM_INTERACTION_CLEANUP_ROWS_TOTAL: &str = "telegram_interaction_cleanup_rows_total";
+
 /// `telegram_rate_limit_waits_total` — counter. One increment per authoritative Telegram `429`
 /// pause the sender honours and cools the chat down for.
 pub const TELEGRAM_RATE_LIMIT_WAITS_TOTAL: &str = "telegram_rate_limit_waits_total";

@@ -11,11 +11,15 @@
 //! items remain processable in the database rather than silently gone.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use ratatoskr_identifiers::MediaType;
 use ratatoskr_telegram_blob_store::BlobStore;
 use telegram_persistence::{Database, UpdateState};
-use telegram_telemetry::metrics::TELEGRAM_UPDATES_DENIED_TOTAL;
+use telegram_telemetry::metrics::{
+    TELEGRAM_DIALOGUE_TRANSITIONS_TOTAL, TELEGRAM_INTERACTION_CLEANUP_ROWS_TOTAL,
+    TELEGRAM_INTERACTION_TOKEN_PRESENTATIONS_TOTAL, TELEGRAM_UPDATES_DENIED_TOTAL,
+};
 use tracing::Instrument as _;
 
 use crate::intake::QueuedUpdate;
@@ -24,6 +28,10 @@ use crate::intake::capture;
 use crate::intake::classify::supported;
 use crate::intake::github;
 use crate::intake::intent;
+
+const INTERACTION_CLEANUP_BATCH: u32 = 100;
+const INTERACTION_CLEANUP_INTERVAL: Duration = Duration::from_mins(1);
+const TERMINAL_DIALOGUE_RETENTION_SECS: i64 = 7 * 24 * 60 * 60;
 
 /// Everything the capture arm needs, built once at startup and shared across claims.
 #[derive(Clone)]
@@ -66,7 +74,16 @@ pub async fn run_worker(
     mut receiver: tokio::sync::mpsc::Receiver<QueuedUpdate>,
     capture_context: Option<CaptureContext>,
 ) {
+    run_interaction_cleanup(&database).await;
+    let mut next_cleanup = tokio::time::Instant::now() + INTERACTION_CLEANUP_INTERVAL;
     loop {
+        let monotonic_now = tokio::time::Instant::now();
+        if monotonic_now >= next_cleanup {
+            run_interaction_cleanup(&database).await;
+            while next_cleanup <= monotonic_now {
+                next_cleanup += INTERACTION_CLEANUP_INTERVAL;
+            }
+        }
         match database.claim_update().await {
             Ok(Some(pending)) => match serde_json::from_str(&pending.payload) {
                 Ok(update) => {
@@ -94,20 +111,70 @@ pub async fn run_worker(
                 }
             },
             Ok(None) => {
+                // cancel-safe: `mpsc::Receiver::recv` and `sleep_until` do not lose state when
+                // the other branch wins. Database transactions never appear inside this select.
                 tokio::select! {
                     item = receiver.recv() => {
                         if item.is_none() {
                             break;
                         }
                     }
-                    () = tokio::time::sleep(std::time::Duration::from_secs(1)) => {}
+                    () = tokio::time::sleep_until(next_cleanup) => {}
+                    () = tokio::time::sleep(Duration::from_secs(1)) => {}
                 }
             }
             Err(error) => {
                 tracing::error!(error = %error, class = "claim_failed", "pending updates could not be claimed");
-                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                tokio::time::sleep(Duration::from_secs(1)).await;
             }
         }
+    }
+}
+
+async fn run_interaction_cleanup(database: &Database) {
+    let now = now_secs();
+    match database
+        .cleanup_interactions(
+            now,
+            now.saturating_sub(TERMINAL_DIALOGUE_RETENTION_SECS),
+            INTERACTION_CLEANUP_BATCH,
+        )
+        .await
+    {
+        Ok(counts) => {
+            metrics::counter!(
+                TELEGRAM_INTERACTION_CLEANUP_ROWS_TOTAL,
+                "kind" => "dialogues_expired",
+            )
+            .increment(counts.dialogues_expired);
+            metrics::counter!(
+                TELEGRAM_INTERACTION_CLEANUP_ROWS_TOTAL,
+                "kind" => "tokens_deleted",
+            )
+            .increment(counts.tokens_deleted);
+            metrics::counter!(
+                TELEGRAM_INTERACTION_CLEANUP_ROWS_TOTAL,
+                "kind" => "dialogues_deleted",
+            )
+            .increment(counts.dialogues_deleted);
+            metrics::counter!(
+                TELEGRAM_DIALOGUE_TRANSITIONS_TOTAL,
+                "kind" => "github_repository",
+                "outcome" => "expired",
+            )
+            .increment(counts.dialogues_expired);
+            tracing::debug!(
+                dialogues_expired = counts.dialogues_expired,
+                tokens_deleted = counts.tokens_deleted,
+                dialogues_deleted = counts.dialogues_deleted,
+                "interaction cleanup pass completed",
+            );
+        }
+        Err(error) => tracing::error!(
+            error = %error,
+            class = "interaction_cleanup_failed",
+            "interaction cleanup pass failed",
+        ),
     }
 }
 
@@ -235,6 +302,9 @@ async fn self_domain_action(
     let Some(parts) = message_parts(&item.update.kind) else {
         return UpdateState::Processed;
     };
+    if let Some(token) = parts.text.and_then(intent::parse_start_token) {
+        return handle_start_token(database, item.bot_id, &parts, &token).await;
+    }
     let Some(context) = capture_context else {
         // Test-only arm: no Platform half wired, nothing to act on.
         return UpdateState::Processed;
@@ -293,6 +363,71 @@ async fn self_domain_action(
     handle_attachment(database, item.bot_id, &parts, context).await
 }
 
+/// Resolve opaque start authority without creating or changing a domain operation.
+async fn handle_start_token(
+    database: &Database,
+    bot_id: i64,
+    parts: &MessageParts<'_>,
+    token: &intent::DeepLinkToken,
+) -> UpdateState {
+    let presentation = telegram_persistence::interaction_tokens::TokenPresentation {
+        token: token.as_str(),
+        surface: telegram_persistence::interaction_tokens::TokenSurface::DeepLink,
+        scope: telegram_persistence::interaction_tokens::TokenScope {
+            bot_id,
+            telegram_user_id: parts.sender_id,
+            chat_id: parts.chat_id,
+            message_id: None,
+        },
+        now: now_secs(),
+    };
+    match database.resolve_operation_intent(presentation).await {
+        Ok(Ok(_)) => {
+            metrics::counter!(
+                TELEGRAM_INTERACTION_TOKEN_PRESENTATIONS_TOTAL,
+                "surface" => "deep_link",
+                "outcome" => "released",
+            )
+            .increment(1);
+            UpdateState::Processed
+        }
+        Ok(Err(refusal)) => {
+            metrics::counter!(
+                TELEGRAM_INTERACTION_TOKEN_PRESENTATIONS_TOTAL,
+                "surface" => "deep_link",
+                "outcome" => token_refusal_name(refusal),
+            )
+            .increment(1);
+            // A valid-shaped forwarded, expired, or replayed token is intentionally
+            // indistinguishable and releases no operation action.
+            UpdateState::Processed
+        }
+        Err(error) => {
+            metrics::counter!(
+                TELEGRAM_INTERACTION_TOKEN_PRESENTATIONS_TOTAL,
+                "surface" => "deep_link",
+                "outcome" => "storage_error",
+            )
+            .increment(1);
+            tracing::warn!(error = %error, class = "deep_link_resolution_failed", "deep-link authority could not be evaluated");
+            UpdateState::Failed
+        }
+    }
+}
+
+const fn token_refusal_name(
+    refusal: telegram_persistence::interaction_tokens::TokenRefusal,
+) -> &'static str {
+    use telegram_persistence::interaction_tokens::TokenRefusal;
+    match refusal {
+        TokenRefusal::Invalid => "invalid",
+        TokenRefusal::Expired => "expired",
+        TokenRefusal::ScopeMismatch => "scope_mismatch",
+        TokenRefusal::Consumed => "consumed",
+        TokenRefusal::StaleState => "stale_state",
+    }
+}
+
 /// Submit one capture intent and map the outcome to the update's terminal state.
 async fn run_capture(
     database: &Database,
@@ -301,7 +436,7 @@ async fn run_capture(
     telegram_user_id: i64,
     source: platform_api::CaptureSource,
     context: &CaptureContext,
-    metadata: Option<telegram_persistence::intents::IntentMetadata>,
+    metadata: Option<telegram_persistence::interaction_tokens::IntentMetadata>,
 ) -> UpdateState {
     match capture::submit(
         &context.sessions,
@@ -382,9 +517,9 @@ async fn handle_attachment(
             return UpdateState::Failed;
         }
     };
-    let metadata = telegram_persistence::intents::IntentMetadata {
+    let metadata = telegram_persistence::interaction_tokens::IntentMetadata {
         forward: parts.forward.clone(),
-        blob: Some(telegram_persistence::intents::BlobCapture {
+        blob: Some(telegram_persistence::interaction_tokens::BlobCapture {
             owner_service: blob.owner_service.as_str().to_owned(),
             algorithm: "sha256".to_owned(),
             digest_hex: blob.digest.hex.as_str().to_owned(),
@@ -515,7 +650,7 @@ struct MessageParts<'a> {
     caption: Option<&'a str>,
     sender_id: i64,
     chat_id: i64,
-    forward: Option<telegram_persistence::intents::CaptureOrigin>,
+    forward: Option<telegram_persistence::interaction_tokens::CaptureOrigin>,
     attachment: Option<MessageAttachment>,
 }
 
@@ -599,9 +734,9 @@ fn message_attachment(message: &bot_api::Message) -> Option<MessageAttachment> {
 
 /// Provenance for a URL capture contains only the forward facts and never a blob marker.
 fn url_metadata(
-    forward: telegram_persistence::intents::CaptureOrigin,
-) -> telegram_persistence::intents::IntentMetadata {
-    telegram_persistence::intents::IntentMetadata {
+    forward: telegram_persistence::interaction_tokens::CaptureOrigin,
+) -> telegram_persistence::interaction_tokens::IntentMetadata {
+    telegram_persistence::interaction_tokens::IntentMetadata {
         forward: Some(forward),
         blob: None,
     }
@@ -611,9 +746,9 @@ fn url_metadata(
 /// untrusted input; nothing beyond these facts is stored or submitted.
 fn minimize_origin(
     origin: &bot_api::MessageOrigin,
-) -> Option<telegram_persistence::intents::CaptureOrigin> {
+) -> Option<telegram_persistence::interaction_tokens::CaptureOrigin> {
     use bot_api::MessageOrigin as Origin;
-    use telegram_persistence::intents::CaptureOrigin;
+    use telegram_persistence::interaction_tokens::CaptureOrigin;
 
     let sent_at_secs = origin.date().timestamp();
     match origin {

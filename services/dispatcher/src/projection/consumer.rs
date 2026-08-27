@@ -84,7 +84,7 @@ impl ProjectionConsumer {
         let payload = if event.status.is_terminal() {
             let intent = self
                 .database
-                .find_live_intent_by_operation(event.operation_id, self.clock.now_secs())
+                .find_live_operation_intent_by_operation(event.operation_id, self.clock.now_secs())
                 .await
                 .ok()
                 .flatten();

@@ -7,7 +7,7 @@
 5. Add URL/article capture command/message flow.
 6. Add file/forward handling with safe blob handoff.
 7. Add GitHub repository preview and `metadata`/`track`/`star` confirmations/partial results. (done)
-8. Implement callback tokens, dialogue state, opaque deep-link intents.
+8. Implement callback tokens, dialogue state, opaque deep-link intents. (done)
 9. Implement Mini App `initData` validation and short-lived Platform assertion exchange.
 10. Add notifications/preferences, deployment/runbooks, failure recovery, and workspace integration.
 

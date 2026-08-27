@@ -7,11 +7,14 @@ use ratatoskr_github_contracts::{
     RepositoryActionSkipReason, RepositoryDesiredBackupOutcome, RepositoryMetadataOutcome,
     RepositoryPreviewResponse, RepositoryProviderStarOutcome,
 };
-use telegram_persistence::callback_flows::{CallbackRefusal, DecisionTransition};
+use telegram_persistence::dialogues::{CallbackRefusal, DecisionTransition};
+use telegram_telemetry::metrics::{
+    TELEGRAM_DIALOGUE_TRANSITIONS_TOTAL, TELEGRAM_INTERACTION_TOKEN_PRESENTATIONS_TOTAL,
+};
 
 use super::worker::CaptureContext;
 
-const FLOW_TTL_SECS: i64 = 15 * 60;
+const DIALOGUE_TTL_SECS: i64 = 15 * 60;
 const ATTEMPTS: usize = 2;
 
 /// Parse exactly one canonical GitHub repository URL.
@@ -174,13 +177,39 @@ fn keyboard(buttons: impl IntoIterator<Item = (String, String)>) -> serde_json::
     serde_json::json!({"inline_keyboard": rows})
 }
 
+fn record_callback_token(outcome: &'static str) {
+    metrics::counter!(
+        TELEGRAM_INTERACTION_TOKEN_PRESENTATIONS_TOTAL,
+        "surface" => "callback",
+        "outcome" => outcome,
+    )
+    .increment(1);
+}
+
+fn record_dialogue_transition(outcome: &'static str) {
+    metrics::counter!(
+        TELEGRAM_DIALOGUE_TRANSITIONS_TOTAL,
+        "kind" => "github_repository",
+        "outcome" => outcome,
+    )
+    .increment(1);
+}
+
+const fn callback_refusal_name(refusal: CallbackRefusal) -> &'static str {
+    match refusal {
+        CallbackRefusal::Invalid => "invalid",
+        CallbackRefusal::Expired => "expired",
+        CallbackRefusal::Consumed => "consumed",
+    }
+}
+
 async fn enqueue(
     database: &telegram_persistence::Database,
     bot_id: i64,
     chat_id: i64,
     text: String,
     reply_markup: Option<serde_json::Value>,
-    flow_id: Option<uuid::Uuid>,
+    dialogue_id: Option<uuid::Uuid>,
     now: i64,
 ) -> Result<(), telegram_persistence::PersistenceError> {
     let payload = telegram_persistence::outbound_jobs::MessagePayload {
@@ -199,7 +228,7 @@ async fn enqueue(
                 content_hash,
                 operation_id: None,
                 revision: None,
-                correlation_id: flow_id.map(|id| format!("callback-flow:{id}")),
+                correlation_id: dialogue_id.map(|id| format!("telegram-dialogue:{id}")),
                 next_attempt_at: None,
             },
             now,
@@ -276,20 +305,20 @@ pub(super) async fn preview(
         .await
         .is_ok();
     };
-    let Ok(flow) = database
-        .create_repository_preview_flow(
+    let Ok(dialogue) = database
+        .create_repository_preview_dialogue(
             bot_id,
             actor_id,
             chat_id,
             &preview,
             now,
-            now + FLOW_TTL_SECS,
+            now + DIALOGUE_TTL_SECS,
         )
         .await
     else {
         return false;
     };
-    let buttons = flow
+    let buttons = dialogue
         .selections
         .into_iter()
         .map(|selection| (mode_label(selection.mode).to_owned(), selection.token));
@@ -299,7 +328,7 @@ pub(super) async fn preview(
         chat_id,
         render_preview(&preview),
         Some(keyboard(buttons)),
-        Some(flow.flow_id),
+        Some(dialogue.dialogue_id),
         now,
     )
     .await
@@ -336,6 +365,8 @@ async fn selection(
         .await?
     {
         Ok(next) => {
+            record_callback_token("released");
+            record_dialogue_transition("preview_to_confirming");
             let text = format!(
                 "<b>Confirm repository action</b>\n{}\nNothing is written until you confirm.",
                 mode_label(next.mode)
@@ -350,19 +381,25 @@ async fn selection(
                 chat,
                 text,
                 Some(markup),
-                Some(next.flow_id),
+                Some(next.dialogue_id),
                 now,
             )
             .await?;
             Ok(Some(true))
         }
         Err(CallbackRefusal::Invalid) => Ok(None),
-        Err(_) => {
+        Err(refusal) => {
+            record_callback_token(callback_refusal_name(refusal));
+            record_dialogue_transition(if refusal == CallbackRefusal::Expired {
+                "expired"
+            } else {
+                "refused"
+            });
             enqueue(
                 database,
                 bot_id,
                 chat,
-                "This action is unavailable, expired, or already used.".to_owned(),
+                "This action has expired. Please start again.".to_owned(),
                 None,
                 None,
                 now,
@@ -408,23 +445,36 @@ async fn decision(
     context: &CaptureContext,
     now: i64,
 ) -> Result<bool, telegram_persistence::PersistenceError> {
-    let Ok(transition) = database
+    let transition = database
         .consume_repository_decision(opaque, bot_id, actor, chat, message, now)
-        .await?
-    else {
-        enqueue(
-            database,
-            bot_id,
-            chat,
-            "This action is unavailable, expired, or already used.".to_owned(),
-            None,
-            None,
-            now,
-        )
         .await?;
-        return Ok(false);
+    let transition = match transition {
+        Ok(transition) => {
+            record_callback_token("released");
+            transition
+        }
+        Err(refusal) => {
+            record_callback_token(callback_refusal_name(refusal));
+            record_dialogue_transition(if refusal == CallbackRefusal::Expired {
+                "expired"
+            } else {
+                "refused"
+            });
+            enqueue(
+                database,
+                bot_id,
+                chat,
+                "This action has expired. Please start again.".to_owned(),
+                None,
+                None,
+                now,
+            )
+            .await?;
+            return Ok(true);
+        }
     };
     let DecisionTransition::Confirmed(action) = transition else {
+        record_dialogue_transition("cancelled");
         enqueue(
             database,
             bot_id,
@@ -437,8 +487,9 @@ async fn decision(
         .await?;
         return Ok(true);
     };
+    record_dialogue_transition("confirming_to_submitting");
     let Ok(evidence) =
-        ConfirmationEvidenceRef::parse(&format!("telegram-confirmation:{}", action.flow_id))
+        ConfirmationEvidenceRef::parse(&format!("telegram-confirmation:{}", action.dialogue_id))
     else {
         return Ok(false);
     };
@@ -464,8 +515,9 @@ async fn decision(
         return Ok(false);
     };
     database
-        .complete_repository_flow(action.flow_id, &result, now)
+        .complete_repository_dialogue(action.dialogue_id, &result, now)
         .await?;
+    record_dialogue_transition("completed");
     enqueue(
         database,
         bot_id,

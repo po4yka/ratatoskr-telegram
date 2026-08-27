@@ -151,16 +151,20 @@ async fn seed_live(db: &TestDatabase, operation: Uuid) {
         .await
         .expect("binding");
     db.database
-        .insert_intent(
-            &telegram_persistence::intents::NewIntent {
-                id: Uuid::now_v7(),
-                bot_id: BOT,
-                telegram_user_id: OWNER,
-                chat_id: CHAT,
+        .issue_operation_intent(
+            &telegram_persistence::interaction_tokens::NewOperationIntent {
+                scope: telegram_persistence::interaction_tokens::TokenScope {
+                    bot_id: BOT,
+                    telegram_user_id: OWNER,
+                    chat_id: CHAT,
+                    message_id: None,
+                },
                 operation_id: operation,
-                source_url: Some("https://example.test/a".to_owned()),
-                metadata: None,
-                expires_at_secs: 2_000_000_000,
+                payload: telegram_persistence::interaction_tokens::OperationIntentPayload {
+                    source_url: Some("https://example.test/a".to_owned()),
+                    metadata: None,
+                },
+                expires_at: 2_000_000_000,
             },
             1_800_000_000,
         )

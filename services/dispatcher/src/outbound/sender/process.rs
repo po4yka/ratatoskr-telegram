@@ -146,15 +146,15 @@ impl OutboundSender {
         message_id: i64,
         now: i64,
     ) -> Result<(), SenderError> {
-        if let Some(flow_id) = job
+        if let Some(dialogue_id) = job
             .correlation_id
             .as_deref()
-            .and_then(|value| value.strip_prefix("callback-flow:"))
+            .and_then(|value| value.strip_prefix("telegram-dialogue:"))
             .and_then(|value| value.parse().ok())
         {
             let _ = self
                 .database
-                .stamp_callback_message(flow_id, job.bot_id, job.chat_id, message_id, now)
+                .stamp_callback_message(dialogue_id, job.bot_id, job.chat_id, message_id, now)
                 .await?;
         }
         let Some(operation_id) = job.operation_id else {

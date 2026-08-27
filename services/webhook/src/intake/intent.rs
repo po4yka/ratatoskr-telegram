@@ -17,6 +17,30 @@ pub(crate) struct CaptureIntent {
     pub url: String,
 }
 
+/// Opaque deep-link value carried by an exact Telegram `/start` command.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct DeepLinkToken(String);
+
+impl DeepLinkToken {
+    /// Borrow the opaque value for registry presentation.
+    pub(crate) fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+/// Parse an exact opaque deep-link transport command.
+pub(crate) fn parse_start_token(text: &str) -> Option<DeepLinkToken> {
+    let token = text.trim().strip_prefix("/start ")?;
+    if token.len() != 64
+        || !token
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+    {
+        return None;
+    }
+    Some(DeepLinkToken(token.to_owned()))
+}
+
 /// The deterministic idempotency key for a first capture attempt.
 ///
 /// Hex-encoded SHA-256 over a versioned binding of sender, address, and intent kind, so the
@@ -107,7 +131,29 @@ pub(crate) fn parse(text: &str) -> Option<CaptureIntent> {
     reason = "assertions inside the in-crate test module"
 )]
 mod tests {
-    use super::{CaptureIntent, MAX_URL_CHARS, capture_key, parse, retry_key};
+    use super::{CaptureIntent, MAX_URL_CHARS, capture_key, parse, parse_start_token, retry_key};
+
+    #[test]
+    fn start_command_parses_only_a_64_character_opaque_token() {
+        let valid = "A".repeat(64);
+        assert_eq!(valid.len(), 64);
+        assert_eq!(
+            parse_start_token(&format!("/start {valid}")).map(|token| token.0),
+            Some(valid),
+        );
+
+        for text in [
+            "/start https://example.test/article",
+            "/start {\"operation_id\":42}",
+            "/start 123456789",
+            "/start short",
+            "/start AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+            "/start AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA extra",
+            "/start",
+        ] {
+            assert!(parse_start_token(text).is_none(), "{text:?} must not parse");
+        }
+    }
 
     #[test]
     fn bare_https_url_and_summarize_form_parse_to_capture_intents() {

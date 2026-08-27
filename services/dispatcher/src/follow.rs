@@ -130,7 +130,7 @@ impl OperationFollower {
     async fn follow_one(&self, operation_id: Uuid) {
         let owner = match self
             .database
-            .find_intent_owner_by_operation(operation_id)
+            .find_operation_intent_owner(operation_id)
             .await
         {
             Ok(Some(owner)) => owner.to_string(),

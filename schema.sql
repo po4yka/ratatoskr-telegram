@@ -230,95 +230,100 @@ comment on table telegram.inbox is
     'Envelope event ids already consumed from at-least-once transports; the primary key is the '
     'deduplication decision.';
 
--- `interaction_intents` — opaque, expiring, owner-bound records behind Mini App deep links. The
--- identifier IS the opaque token: a UUIDv7 minted here and carried alone in the `startapp`
--- parameter, so no address, operation id, or policy state ever rides through Telegram. Rows are
--- written when the webhook accepts a capture and read back by whoever renders or resolves the
--- link; lookups match only unexpired rows and only for the owning Telegram user, so a forwarded
--- deep link resolves to nothing for anyone else. `kind` is a closed vocabulary because every
--- intent kind is a product decision, never an open string. `operation_id` and `source_url` are
--- unenforced references into Platform's operation domain and the submitted address respectively;
--- no credential and no content beyond that reference is stored. `metadata` carries bounded
--- capture-provenance facts - where a forward came from, or which stored blob an attachment
--- capture presents; its shape is closed at the persistence boundary and it is an object or
--- absent. An intent presents exactly one thing: an address, or stored blob facts.
-create table telegram.interaction_intents (
-    id               uuid        not null primary key,
-    bot_id           bigint      not null,
-    telegram_user_id bigint      not null,
-    chat_id          bigint      not null,
-    kind             text        not null check (kind in ('operation_status')),
-    operation_id     uuid        not null,
-    source_url       text        null,
-    metadata         jsonb       null check (metadata is null or jsonb_typeof(metadata) = 'object'),
-    created_at       timestamptz not null default now(),
-    expires_at       timestamptz not null,
-    -- Strictly boolean: a plain `or` over nullable operands evaluates to NULL - which a CHECK
-    -- accepts - when both sides are unknown, letting an intent that presents nothing slip in.
+-- `dialog_states` is the durable, versioned state for finite Telegram interactions. The only
+-- dialogue implemented today is the GitHub repository confirmation flow. Its payload is decoded
+-- through a closed Rust type; SQL additionally refuses non-object values. Provider credentials,
+-- private message bodies, and domain-owned content never belong here.
+create table telegram.dialog_states (
+    id                     uuid        not null primary key,
+    kind                   text        not null check (kind in ('github_repository')),
+    bot_id                 bigint      not null,
+    telegram_user_id       bigint      not null,
+    chat_id                bigint      not null,
+    expected_message_id    bigint,
+    step                   text        not null check (step in ('preview', 'confirming',
+                                                                'submitting', 'completed')),
+    version                bigint      not null default 0 check (version >= 0),
+    lifecycle              text        not null default 'active'
+                                       check (lifecycle in ('active', 'completed', 'cancelled',
+                                                            'expired')),
+    payload                jsonb       not null check (jsonb_typeof(payload) = 'object'),
+    action_idempotency_key text        not null unique,
+    created_at             timestamptz not null,
+    updated_at             timestamptz not null,
+    expires_at             timestamptz not null,
+    terminal_at            timestamptz,
+    check (expires_at > created_at),
+    check ((lifecycle = 'active') = (terminal_at is null)),
+    check ((lifecycle = 'completed') = (step = 'completed'))
+);
+
+create index dialog_states_expiry_idx
+    on telegram.dialog_states (expires_at, id)
+    where lifecycle = 'active';
+
+comment on table telegram.dialog_states is
+    'Scoped, versioned Telegram dialogue state. Payloads contain bounded references only and are '
+    'decoded through the closed type for the named dialogue kind.';
+
+-- `interaction_tokens` is the shared client-presented authority for Telegram callback data and
+-- `/start` deep links. The application mints the exact 64-byte random token; no business state is
+-- encoded into it. Consumption evidence is paired and scope is checked before either this row or
+-- its dialogue can change.
+create table telegram.interaction_tokens (
+    token                     text        not null primary key
+                                          check (octet_length(token) = 64)
+                                          check (token ~ '^[A-Za-z0-9_-]{64}$'),
+    surface                   text        not null check (surface in ('callback', 'deep_link')),
+    action                    text        not null
+                                          check (action in ('select_metadata', 'select_track',
+                                                             'select_star', 'confirm', 'cancel',
+                                                             'operation_status')),
+    bot_id                    bigint      not null,
+    telegram_user_id          bigint      not null,
+    chat_id                   bigint      not null,
+    expected_message_id       bigint,
+    dialogue_id               uuid references telegram.dialog_states(id) on delete cascade,
+    expected_dialogue_version bigint check (expected_dialogue_version >= 0),
+    operation_id              uuid,
+    payload                   jsonb check (payload is null or jsonb_typeof(payload) = 'object'),
+    created_at                timestamptz not null,
+    expires_at                timestamptz not null,
+    consumed_at               timestamptz,
+    consumed_by_user          bigint,
+    check (expires_at > created_at),
+    check ((consumed_at is null) = (consumed_by_user is null)),
     check (
-        source_url is not null
-        or coalesce(jsonb_exists(metadata, 'blob'), false)
+        (surface = 'callback'
+         and action in ('select_metadata', 'select_track', 'select_star', 'confirm', 'cancel')
+         and dialogue_id is not null
+         and expected_dialogue_version is not null
+         and operation_id is null
+         and payload is null)
+        or
+        (surface = 'deep_link'
+         and action = 'operation_status'
+         and expected_message_id is null
+         and dialogue_id is null
+         and expected_dialogue_version is null
+         and operation_id is not null
+         and payload is not null
+         and (
+             jsonb_exists(payload, 'source_url')
+             or coalesce(jsonb_exists(payload->'metadata', 'blob'), false)
+         ))
     )
 );
 
-create index interaction_intents_operation_idx
-    on telegram.interaction_intents (operation_id);
+create index interaction_tokens_dialogue_idx
+    on telegram.interaction_tokens (dialogue_id);
 
-comment on table telegram.interaction_intents is
-    'Opaque deep-link intents: one expiring, owner-bound record per Mini App link this service '
-    'renders. The id is the token; everything sensitive stays behind it.';
+create index interaction_tokens_operation_idx
+    on telegram.interaction_tokens (operation_id)
+    where surface = 'deep_link';
 
-comment on column telegram.interaction_intents.metadata is
-    'Bounded provenance facts (forward origin, or stored blob facts). Object-typed, closed shape '
-    'at the boundary; no message content.';
+create index interaction_tokens_cleanup_idx
+    on telegram.interaction_tokens (expires_at, token);
 
-comment on column telegram.interaction_intents.expires_at is
-    'When the intent stops resolving. Enforced by the lookup, which reports nothing for expired '
-    'rows even to their owner; pruning aged rows is a stated retention duty.';
-
--- `callback_flows` and `callback_tokens` are the minimal authority behind GitHub repository
--- buttons. Telegram callback_data carries only the random token; target, owner, chat, expected
--- provider message, stage/version, expiry and the stable action identity remain server-side.
-create table telegram.callback_flows (
-    id                           uuid        not null primary key,
-    bot_id                       bigint      not null,
-    telegram_user_id             bigint      not null,
-    chat_id                      bigint      not null,
-    expected_message_id          bigint,
-    github_repository_numeric_id bigint      not null check (github_repository_numeric_id > 0),
-    repository_full_name         text        not null,
-    canonical_url                text        not null,
-    account_ref                  text,
-    mode                         text        check (mode is null or mode in ('metadata', 'track', 'star')),
-    stage                        text        not null default 'preview'
-                                 check (stage in ('preview', 'confirming', 'submitting',
-                                                  'completed', 'cancelled')),
-    version                      bigint      not null default 0 check (version >= 0),
-    action_idempotency_key       text        not null unique,
-    result                       jsonb,
-    created_at                   timestamptz not null,
-    expires_at                   timestamptz not null,
-    updated_at                   timestamptz not null
-);
-
-create table telegram.callback_tokens (
-    token             text        not null primary key,
-    flow_id           uuid        not null references telegram.callback_flows(id) on delete cascade,
-    action            text        not null check (action in ('select_metadata', 'select_track',
-                                                              'select_star', 'confirm', 'cancel')),
-    expected_version  bigint      not null check (expected_version >= 0),
-    expires_at        timestamptz not null,
-    consumed_at       timestamptz,
-    consumed_by_user  bigint,
-    check ((consumed_at is null) = (consumed_by_user is null))
-);
-
-create index callback_tokens_flow_idx on telegram.callback_tokens (flow_id);
-
-comment on table telegram.callback_flows is
-    'Owner-bound GitHub repository confirmation state. It stores stable references and the exact '
-    'terminal result, never provider credentials, Platform sessions, callback payload JSON, or '
-    'private message bodies.';
-
-comment on table telegram.callback_tokens is
-    'Opaque one-time Telegram callback authorities. The token contains no business state.';
+comment on table telegram.interaction_tokens is
+    'Opaque, expiring, fully scoped callback and deep-link authorities with one-time consumption.';

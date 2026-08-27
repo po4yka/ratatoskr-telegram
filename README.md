@@ -2,13 +2,15 @@
 
 `ratatoskr-telegram` is the Telegram interaction bounded context for Ratatoskr. It provides a Bot API interface and will provide Telegram Mini App authentication for submitting articles, adding or tracking GitHub repositories, following long-running operations, and receiving notifications from a local Ratatoskr deployment.
 
-> **Status:** plan items 1–6 implemented. The service admits and deduplicates secure Bot API
+> **Status:** plan items 1–8 implemented. The service admits and deduplicates secure Bot API
 > updates, enforces the private owner access gate, submits URL captures to Platform, and projects
 > their progress through a durable outbound queue. Item 6 also captures forwarded external links
 > with minimized provenance and accepts bounded PDFs/photos: they stream through the Bot API into
 > a Telegram-owned content-addressed blob store, are SHA-256 hashed, and reach Platform as opaque
 > `BlobRef` references. Unsupported video, voice, audio, and document types receive one truthful
-> response; extraction and transcription remain outside this repository. See `DEVELOPMENT.md` for
+> response; extraction and transcription remain outside this repository. GitHub confirmations now
+> use durable versioned dialogues and exact 64-character, scope-bound, single-use callback tokens;
+> `/start` carries only the same kind of opaque server-side intent. See `DEVELOPMENT.md` for
 > operational configuration and `docs/IMPLEMENTATION_PLAN.md` for later items.
 
 > [!IMPORTANT]
@@ -72,8 +74,8 @@ The webhook process:
 - returns a successful HTTP response without waiting for downstream work.
 
 Identity and access resolution are live since item 3: the worker resolves sender and chat records
-and settles refusals as `denied` before any domain action. Command/message/callback/file parsing,
-interaction creation, and Platform operation submission remain planned for items 5 and later.
+and settles refusals as `denied` before any domain action. The worker now routes capture,
+repository-callback, and opaque `/start` interactions through durable state before settling them.
 
 #### Attachment blob root
 
@@ -223,26 +225,28 @@ Every state has an expiry and a safe cancellation path. Long-running domain stat
 
 ## Inline callbacks
 
-Inline keyboards use short opaque callback tokens. Raw URLs, secrets, complex JSON, or mutable authorization decisions are never embedded directly in callback data.
+Inline keyboards use opaque 64-character callback tokens. Raw URLs, secrets, complex JSON, or mutable authorization decisions are never embedded directly in callback data.
 
 A callback token resolves server-side to:
 
 ```text
-interaction_id
-user_id
+dialogue_id
+bot_id
+telegram_user_id
 chat_id
+expected_message_id
 action
-payload reference
+expected_dialogue_version
 expires_at
 consumed_at
 ```
 
 Rules:
 
-- callback ownership is verified against the Telegram user and chat;
-- destructive or external-write actions use one-time tokens;
+- callback ownership is verified against bot, Telegram user, chat, and acknowledged message;
+- every callback token is one-time and transactionally tied to the expected dialogue version;
 - expiry is enforced;
-- duplicate callback delivery is idempotent;
+- a replay receives `This action has expired. Please start again.` and never re-executes;
 - authorization is rechecked when the action executes;
 - consumed tokens cannot be replayed.
 
@@ -293,32 +297,32 @@ The Mini App uses the normal HTTPS Edge API for domain work. `sendData` or arbit
 
 ## Deep links and intents
 
-Deep links carry a short opaque intent ID:
+Current Bot API deep links carry exactly one opaque interaction token:
 
 ```text
-https://t.me/<bot>?startapp=<opaque-intent-id>
+https://t.me/<bot>?start=<64-character-token>
 ```
 
 The corresponding server record may contain:
 
 ```text
-id
-user_id
-kind
-payload_blob_ref
+token
+bot_id
+telegram_user_id
+chat_id
+action
+operation_id
+typed_payload
 expires_at
 consumed_at
 ```
 
-This supports opening the Mini App directly on:
+Item 8 implements the `operation_status` intent used by capture results. `/start` parses the token
+before URL routing, resolves it once under the issuing bot/user/chat scope, and does not mutate the
+Platform operation or message binding. Mini App `startapp` authentication remains item 9.
 
-- article preview;
-- repository preview;
-- operation status;
-- search result;
-- confirmation form.
-
-Raw URLs and workflow JSON are not placed in the deep-link parameter. Intents are user-bound, short-lived, and optionally one-time.
+Raw URLs and workflow JSON are not placed in the deep-link parameter. Intents are user-bound,
+expiring, and single-use.
 
 ## Data ownership
 
@@ -329,9 +333,8 @@ telegram_identities
 telegram_chats
 telegram_updates
 telegram_interactions
-telegram_dialog_states
-telegram_interaction_intents
-telegram_callback_tokens
+telegram.dialog_states
+telegram.interaction_tokens
 telegram_message_bindings
 telegram_notification_preferences
 telegram_delivery_attempts
@@ -443,7 +446,9 @@ telegram_updates_received
 telegram_updates_deduplicated
 telegram_unauthorized_updates
 telegram_interactions_created
-telegram_callback_replays_blocked
+telegram_interaction_token_presentations_total
+telegram_dialogue_transitions_total
+telegram_interaction_cleanup_rows_total
 telegram_mini_app_auth_failures
 telegram_delivery_duration
 telegram_delivery_retries
@@ -474,7 +479,7 @@ Traces correlate Telegram update, interaction, Platform operation, downstream co
 5. Add plain URL article submission.
 6. Add file/PDF and forwarded-message ingestion.
 7. Add GitHub repository preview and confirmed `metadata`, `track`, and `star` flows. (done)
-8. Add callback tokens, dialogue state, and opaque deep-link intents.
+8. Add callback tokens, dialogue state, and opaque deep-link intents. (done)
 9. Add Mini App `initData` validation and Platform identity assertions.
 10. Add notifications, deployment and recovery runbooks, and workspace integration tests.
 
@@ -484,6 +489,6 @@ The planned workspace snapshot will pin Telegram with compatible Platform, Contr
 
 ## Project status
 
-Plan items 1 through 7 of `docs/IMPLEMENTATION_PLAN.md` are implemented: the workspace builds, both binaries run and answer the operator plane, configuration refuses unknown or invalid values, telemetry correlates, and the first-version `telegram` schema applies at startup. The webhook authenticates, bounds, deduplicates, authorizes, and durably processes private owner updates; the dispatcher owns ordered/rate-limited Bot API delivery and truthful operation projections. Article URLs, bounded attachments, and forwarded links submit through Platform without leaking provider or file credentials.
+Plan items 1 through 8 of `docs/IMPLEMENTATION_PLAN.md` are implemented: the workspace builds, both binaries run and answer the operator plane, configuration refuses unknown or invalid values, telemetry correlates, and the first-version `telegram` schema applies at startup. The webhook authenticates, bounds, deduplicates, authorizes, and durably processes private owner updates; the dispatcher owns ordered/rate-limited Bot API delivery and truthful operation projections. Article URLs, bounded attachments, and forwarded links submit through Platform without leaking provider or file credentials.
 
-An exact canonical GitHub repository URL now routes before generic article capture. Telegram reads the preview through Platform's authenticated GitHub gateway, renders only GitHub-reported fields and capabilities, and persists opaque owner/chat/message/version-bound callback authorities. Selecting any mode only produces a second confirmation prompt; exactly one live confirmed token may submit under its durable idempotency identity. The final message preserves GitHub's aggregate and metadata/star/desired-backup component states, including partial failures, and never upgrades desired-policy acceptance into backup completion or verification. The callback store here is the minimal item-7 authority; general dialogue state, Mini App authentication, OAuth, and star-list UI remain future work.
+An exact canonical GitHub repository URL now routes before generic article capture. Telegram reads the preview through Platform's authenticated GitHub gateway, renders only GitHub-reported fields and capabilities, and persists the flow in `telegram.dialog_states`; every button is an opaque owner/bot/chat/message/version-bound row in `telegram.interaction_tokens`. Selecting any mode only produces a second confirmation prompt; exactly one live confirmed token may submit under its durable idempotency identity. Replays and stale or foreign presentations converge on the expired-state response without another action. The same registry backs one-time `/start` operation-status intents, and the webhook worker expires stale dialogue state and removes eligible tokens/retention-expired terminal rows in bounded startup and monotonic-interval passes. Mini App authentication, OAuth, and star-list UI remain future work.

@@ -1,9 +1,9 @@
-//! Callback-flow schema and transactional confirmation authority.
+//! Repository dialogue schema and transactional confirmation authority.
 
 #![allow(clippy::expect_used, clippy::panic, reason = "test assertions")]
 
 use ratatoskr_github_contracts::RepositoryActionCapability;
-use telegram_persistence::callback_flows::{CallbackRefusal, DecisionTransition};
+use telegram_persistence::dialogues::{CallbackRefusal, DecisionTransition};
 use telegram_persistence::test_support::TestDatabase;
 
 const T0: i64 = 1_800_000_000;
@@ -23,23 +23,25 @@ fn preview() -> ratatoskr_github_contracts::RepositoryPreviewResponse {
 #[tokio::test]
 async fn schema_and_store_enforce_owner_message_expiry_version_and_one_winner() {
     let test = TestDatabase::create().await.expect("database");
-    let flow = test
+    let dialogue = test
         .database
-        .create_repository_preview_flow(BOT, OWNER, CHAT, &preview(), T0, T0 + 900)
+        .create_repository_preview_dialogue(BOT, OWNER, CHAT, &preview(), T0, T0 + 900)
         .await
-        .expect("flow");
-    assert_eq!(flow.selections.len(), 3);
+        .expect("dialogue");
+    assert_eq!(dialogue.selections.len(), 3);
     assert!(
-        flow.selections
+        dialogue
+            .selections
             .iter()
-            .all(|selection| selection.token.len() <= 64)
+            .all(|selection| selection.token.len() == 64)
     );
     assert!(
-        flow.selections
+        dialogue
+            .selections
             .iter()
             .all(|selection| !selection.token.contains("github"))
     );
-    let star = flow
+    let star = dialogue
         .selections
         .iter()
         .find(|item| item.mode == RepositoryActionCapability::Star)
@@ -47,7 +49,7 @@ async fn schema_and_store_enforce_owner_message_expiry_version_and_one_winner() 
 
     assert!(
         test.database
-            .stamp_callback_message(flow.flow_id, BOT, CHAT, 100, T0 + 1)
+            .stamp_callback_message(dialogue.dialogue_id, BOT, CHAT, 100, T0 + 1)
             .await
             .expect("stamp")
     );
@@ -74,7 +76,7 @@ async fn schema_and_store_enforce_owner_message_expiry_version_and_one_winner() 
 
     assert!(
         test.database
-            .stamp_callback_message(flow.flow_id, BOT, CHAT, 101, T0 + 4)
+            .stamp_callback_message(dialogue.dialogue_id, BOT, CHAT, 101, T0 + 4)
             .await
             .expect("stamp confirm")
     );
@@ -104,18 +106,25 @@ async fn schema_and_store_enforce_owner_message_expiry_version_and_one_winner() 
 #[tokio::test]
 async fn expired_selection_never_advances() {
     let test = TestDatabase::create().await.expect("database");
-    let flow = test
+    let dialogue = test
         .database
-        .create_repository_preview_flow(BOT, OWNER, CHAT, &preview(), T0, T0 + 10)
+        .create_repository_preview_dialogue(BOT, OWNER, CHAT, &preview(), T0, T0 + 10)
         .await
-        .expect("flow");
+        .expect("dialogue");
     test.database
-        .stamp_callback_message(flow.flow_id, BOT, CHAT, 100, T0 + 1)
+        .stamp_callback_message(dialogue.dialogue_id, BOT, CHAT, 100, T0 + 1)
         .await
         .expect("stamp");
     let expired = test
         .database
-        .consume_repository_selection(&flow.selections[0].token, BOT, OWNER, CHAT, 100, T0 + 10)
+        .consume_repository_selection(
+            &dialogue.selections[0].token,
+            BOT,
+            OWNER,
+            CHAT,
+            100,
+            T0 + 10,
+        )
         .await
         .expect("expired");
     assert_eq!(expired, Err(CallbackRefusal::Expired));
@@ -124,16 +133,16 @@ async fn expired_selection_never_advances() {
 #[tokio::test]
 async fn confirmed_metadata_never_carries_the_star_account_reference() {
     let test = TestDatabase::create().await.expect("database");
-    let flow = test
+    let dialogue = test
         .database
-        .create_repository_preview_flow(BOT, OWNER, CHAT, &preview(), T0, T0 + 900)
+        .create_repository_preview_dialogue(BOT, OWNER, CHAT, &preview(), T0, T0 + 900)
         .await
-        .expect("flow");
+        .expect("dialogue");
     test.database
-        .stamp_callback_message(flow.flow_id, BOT, CHAT, 100, T0 + 1)
+        .stamp_callback_message(dialogue.dialogue_id, BOT, CHAT, 100, T0 + 1)
         .await
         .expect("stamp");
-    let metadata = flow
+    let metadata = dialogue
         .selections
         .iter()
         .find(|item| item.mode == RepositoryActionCapability::Metadata)
@@ -145,7 +154,7 @@ async fn confirmed_metadata_never_carries_the_star_account_reference() {
         .expect("selection")
         .expect("accepted");
     test.database
-        .stamp_callback_message(flow.flow_id, BOT, CHAT, 101, T0 + 3)
+        .stamp_callback_message(dialogue.dialogue_id, BOT, CHAT, 101, T0 + 3)
         .await
         .expect("stamp confirmation");
     let decision = test
