@@ -27,16 +27,36 @@ pub fn compose_terminal(
     let wants_button =
         intent.is_some() && username.is_some() && event.status != OperationStatus::Failed;
     if let Some(record) = intent {
-        if let Ok(source) = Url::parse(&record.source_url) {
-            let escaped = escape_html(source.as_str());
-            text.push_str("\n<a href=\"");
-            text.push_str(&escaped);
-            text.push_str("\">");
-            text.push_str(&escaped);
-            text.push_str("</a>");
+        let is_blob_capture = record
+            .metadata
+            .as_ref()
+            .is_some_and(|metadata| metadata.blob.is_some());
+        if let Some(source_url) = record.source_url.as_deref() {
+            if let Ok(source) = Url::parse(source_url) {
+                let escaped = escape_html(source.as_str());
+                text.push_str("\n<a href=\"");
+                text.push_str(&escaped);
+                text.push_str("\">");
+                text.push_str(&escaped);
+                text.push_str("</a>");
+            }
+        } else if let Some(blob) = record
+            .metadata
+            .as_ref()
+            .and_then(|metadata| metadata.blob.as_ref())
+        {
+            text.push_str("\nAttachment: ");
+            text.push_str(&escape_html(&blob.media_type));
+            text.push_str(" (");
+            text.push_str(&format_byte_count(blob.length_bytes));
+            text.push_str(" bytes)");
         }
         if event.status == OperationStatus::Failed {
-            text.push_str("\nResend the link to try again.");
+            text.push_str(if is_blob_capture {
+                "\nResend the attachment to try again."
+            } else {
+                "\nResend the link to try again."
+            });
         }
         if let (Some(username), true) = (username, wants_button) {
             let target = format!("https://t.me/{username}?startapp={}", record.id);
@@ -76,6 +96,19 @@ fn escape_html(text: &str) -> String {
         .replace('"', "&quot;")
 }
 
+/// Render an exact byte length with stable digit grouping for an attachment terminal message.
+fn format_byte_count(bytes: u64) -> String {
+    let raw = bytes.to_string();
+    let mut rendered = String::with_capacity(raw.len() + raw.len() / 3);
+    for (index, digit) in raw.chars().enumerate() {
+        if index > 0 && (raw.len() - index).is_multiple_of(3) {
+            rendered.push(',');
+        }
+        rendered.push(digit);
+    }
+    rendered
+}
+
 #[cfg(test)]
 #[allow(
     clippy::panic,
@@ -111,7 +144,25 @@ mod tests {
             bot_id: 42,
             chat_id: 900_700_601,
             operation_id: Uuid::now_v7(),
-            source_url: "https://example.test/article".to_owned(),
+            source_url: Some("https://example.test/article".to_owned()),
+            metadata: None,
+        }
+    }
+
+    fn an_attachment_intent() -> IntentRecord {
+        IntentRecord {
+            source_url: None,
+            metadata: Some(telegram_persistence::intents::IntentMetadata {
+                forward: None,
+                blob: Some(telegram_persistence::intents::BlobCapture {
+                    owner_service: "ratatoskr-telegram".to_owned(),
+                    algorithm: "sha256".to_owned(),
+                    digest_hex: "f".repeat(64),
+                    media_type: "application/pdf".to_owned(),
+                    length_bytes: 1_024,
+                }),
+            }),
+            ..an_intent()
         }
     }
 
@@ -179,6 +230,56 @@ mod tests {
             "no username, no button - but the fallback link stays"
         );
         assert!(without_username.text.contains("<a href="));
+    }
+
+    #[test]
+    fn blob_capture_terminal_keeps_the_opaque_button_without_an_invented_url() {
+        let intent = an_attachment_intent();
+        let event = an_event(OperationStatus::Succeeded);
+
+        let payload = compose_terminal(
+            "<b>Completed</b>".to_owned(),
+            &event,
+            Some(&intent),
+            Some(USERNAME),
+        );
+
+        assert!(
+            payload
+                .text
+                .contains("Attachment: application/pdf (1,024 bytes)"),
+            "blob captures describe their media without inventing an address: {}",
+            payload.text
+        );
+        assert!(
+            !payload.text.contains("<a href="),
+            "blob captures do not have a source URL to render: {}",
+            payload.text
+        );
+        let markup = payload
+            .reply_markup
+            .expect("the opaque Mini App button exists");
+        let expected = format!("https://t.me/{USERNAME}?startapp={}", intent.id);
+        assert_eq!(
+            markup["inline_keyboard"][0][0]["url"].as_str(),
+            Some(expected.as_str()),
+            "the button exposes only the opaque intent"
+        );
+    }
+
+    #[test]
+    fn blob_capture_failure_asks_for_the_attachment_not_a_link() {
+        let intent = an_attachment_intent();
+        let event = an_event(OperationStatus::Failed);
+
+        let payload = compose_terminal("<b>Failed</b>".to_owned(), &event, Some(&intent), None);
+
+        assert!(payload.text.contains("Resend the attachment to try again."));
+        assert!(
+            !payload.text.contains("Resend the link"),
+            "an attachment failure must not claim an address existed: {}",
+            payload.text
+        );
     }
 
     #[test]

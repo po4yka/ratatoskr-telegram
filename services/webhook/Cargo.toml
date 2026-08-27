@@ -22,6 +22,8 @@ ratatoskr-telegram-persistence.workspace = true
 ratatoskr-telegram-bot-api.workspace     = true
 ratatoskr-telegram-platform-api.workspace = true
 ratatoskr-telegram-telemetry.workspace   = true
+ratatoskr-telegram-blob-store.workspace  = true
+ratatoskr-identifiers.workspace = true
 axum.workspace    = true
 http.workspace    = true
 http-body-util.workspace = true
@@ -40,6 +42,7 @@ uuid.workspace    = true
 ratatoskr-telegram-persistence = { workspace = true, features = ["test-support"] }
 sqlx.workspace  = true
 tower.workspace = true
+tempfile.workspace = true
 tokio = { workspace = true, features = ["rt", "macros"] }
 
 [lints]

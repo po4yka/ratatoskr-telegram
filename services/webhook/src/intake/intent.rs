@@ -26,6 +26,18 @@ pub(crate) fn capture_key(telegram_user_id: i64, normalized_url: &str) -> String
     digest(&format!("capture.v1|{telegram_user_id}|{normalized_url}"))
 }
 
+/// The deterministic idempotency key for an attachment capture.
+///
+/// The source is the bytes' verified SHA-256 digest rather than a Bot API file identifier: those
+/// identifiers are provider-local and can change, whereas identical content must converge on one
+/// Platform operation for the sending Telegram user.
+#[must_use]
+pub(crate) fn blob_capture_key(telegram_user_id: i64, digest_hex: &str) -> String {
+    digest(&format!(
+        "capture.v1|{telegram_user_id}|sha256:{digest_hex}"
+    ))
+}
+
 /// The deterministic key for a deliberate retry of one FAILED operation: salted with that
 /// operation's identifier, so Platform creates a fresh operation instead of replaying it.
 /// The unit tests in this module pin the derivation; the production consumer arrives with the

@@ -23,7 +23,7 @@ use url::Url;
 
 pub use teloxide::types::{
     CallbackQuery, Chat, ChatAction, ChatId, ChatKind, File, MaybeInaccessibleMessage, Me, Message,
-    MessageId, Update, UpdateKind, User,
+    MessageId, MessageOrigin, Update, UpdateKind, User,
 };
 
 /// Presentation beyond plain text for one outgoing message.
@@ -333,30 +333,33 @@ impl Client {
         }
 
         let (sender, receiver) = tokio::sync::mpsc::channel(4);
-        tokio::spawn(async move {
-            let mut response = response;
-            loop {
-                match response.chunk().await {
-                    Ok(Some(chunk)) => {
-                        if sender.send(Ok(chunk.to_vec())).await.is_err() {
-                            break; // the consumer dropped the stream
-                        }
-                    }
-                    Ok(None) => break,
-                    Err(_) => {
-                        // Class, never the URL or provider error text.
-                        let _ = sender
-                            .send(Err(std::io::Error::other("the file transfer failed")))
-                            .await;
-                        break;
-                    }
-                }
-            }
-        });
+        tokio::spawn(stream_response_body(response, sender));
         Ok(DownloadStream {
             receiver,
             active: None,
         })
+    }
+}
+
+async fn stream_response_body(
+    mut response: reqwest::Response,
+    sender: tokio::sync::mpsc::Sender<std::io::Result<Vec<u8>>>,
+) {
+    loop {
+        let chunk = match response.chunk().await {
+            Ok(Some(chunk)) => chunk,
+            Ok(None) => return,
+            Err(_) => {
+                // Class, never the URL or provider error text.
+                let _ = sender
+                    .send(Err(std::io::Error::other("the file transfer failed")))
+                    .await;
+                return;
+            }
+        };
+        if sender.send(Ok(chunk.to_vec())).await.is_err() {
+            return; // the consumer dropped the stream
+        }
     }
 }
 
@@ -374,38 +377,22 @@ impl tokio::io::AsyncRead for DownloadStream {
         cx: &mut std::task::Context<'_>,
         buf: &mut tokio::io::ReadBuf<'_>,
     ) -> std::task::Poll<std::io::Result<()>> {
-        use tokio::sync::mpsc::error::TryRecvError;
-
         let this = self.get_mut();
-        loop {
-            if this.active.as_ref().is_none_or(Vec::is_empty) {
-                match this.receiver.try_recv() {
-                    Ok(Ok(chunk)) => this.active = Some(chunk),
-                    Ok(Err(error)) => return std::task::Poll::Ready(Err(error)),
-                    Err(TryRecvError::Empty) => {
-                        return match this.receiver.poll_recv(cx) {
-                            std::task::Poll::Ready(Some(Ok(chunk))) => {
-                                this.active = Some(chunk);
-                                continue;
-                            }
-                            std::task::Poll::Ready(Some(Err(error))) => {
-                                std::task::Poll::Ready(Err(error))
-                            }
-                            std::task::Poll::Ready(None) => std::task::Poll::Ready(Ok(())),
-                            std::task::Poll::Pending => std::task::Poll::Pending,
-                        };
-                    }
-                    Err(TryRecvError::Disconnected) => return std::task::Poll::Ready(Ok(())),
-                }
-            }
-            let Some(active) = this.active.as_mut() else {
-                continue;
+        if this.active.as_ref().is_none_or(Vec::is_empty) {
+            let next = std::task::ready!(this.receiver.poll_recv(cx));
+            let chunk = match next {
+                Some(Ok(chunk)) => chunk,
+                Some(Err(error)) => return std::task::Poll::Ready(Err(error)),
+                None => return std::task::Poll::Ready(Ok(())),
             };
+            this.active = Some(chunk);
+        }
+        if let Some(active) = this.active.as_mut() {
             let take = active.len().min(buf.remaining());
             let drained: Vec<u8> = active.drain(..take).collect();
             buf.put_slice(&drained);
-            return std::task::Poll::Ready(Ok(()));
         }
+        std::task::Poll::Ready(Ok(()))
     }
 }
 

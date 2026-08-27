@@ -1,6 +1,6 @@
 # Developing Ratatoskr Telegram
 
-> Status: Implemented for plan items 1 through 5; items 6 through 10 are Proposed.  
+> Status: Implemented for plan items 1 through 6; items 7 through 10 are Proposed.
 > Last reviewed: 2026-08-26
 
 ## Current stage
@@ -45,7 +45,15 @@ terminal), and terminal renders add the fallback hyperlink plus a Mini App butto
 intent record. Platform outages settle updates as failed after bounded retries; nothing is sent
 for an unaccepted capture.
 
-Not present yet, in plan order: file/forward ingestion (item 6), GitHub flows (item 7),
+Plan item 6 extends capture intake without moving extraction into Telegram: forwarded text or
+captions contribute their first external link together with bounded forward provenance, while PDFs
+and photos are resolved through the Bot API, streamed into this service's content-addressed blob
+store, hashed as SHA-256, and submitted to Platform as opaque `BlobRef` captures. The only
+accepted document type is `application/pdf`; video, voice, audio, and other document types receive
+one explicit unsupported reply. Declared and streamed byte limits are enforced before and during
+download, and a URL-less terminal render describes the attachment without inventing a link.
+
+Not present yet, in plan order: GitHub flows (item 7),
 callback tokens and dialogue state including retry buttons (item 8), Mini App initData validation
 (item 9), notifications and workspace integration (item 10). No test contacts Telegram or a live
 Platform: both clients run against local harness servers with synthetic bodies.
@@ -155,6 +163,7 @@ RATATOSKR__TELEMETRY__LOG_FORMAT=pretty \
 RATATOSKR__DATABASE__URL=postgres://telegram:telegram@127.0.0.1:5432/telegram \
 RATATOSKR__BOT_API__TOKEN='123456:your-bot-token' \
 RATATOSKR__WEBHOOK__SECRET_TOKEN='at-least-16-chars-of-entropy' \
+RATATOSKR__INGESTION__BLOB_ROOT="$PWD/.local/telegram-blobs" \
 cargo run -p ratatoskr-telegram-webhook
 # admin plane on 9467, public intake on 127.0.0.1:9469. Startup calls getMe once to learn the bot
 # identity deduplication keys on, so the token must work — point RATATOSKR__BOT_API__BASE_URL at a
@@ -187,6 +196,17 @@ Both roles demand their database URL **and** the `RATATOSKR__PLATFORM__` section
 refuses to start when any of these is missing, beside every other requirement the report names. The dispatcher's outbound
 workers start after database preparation and drain in-flight delivery on shutdown; a job left
 `sending` by a crashed process is reclaimed after `RATATOSKR__DISPATCHER__LEASE_TTL_SECS`.
+
+The webhook attachment path also owns `RATATOSKR__INGESTION__BLOB_ROOT`: an absolute, durable
+directory for Telegram's staged bytes before an opaque BlobRef handoff. Its default is
+`/var/lib/ratatoskr-telegram/blobs`; mount that path in production, or set an explicit durable
+local directory for development as above. A filesystem path is never sent to Platform, logged as
+capture provenance, or rendered to a user.
+
+`RATATOSKR__INGESTION__MAX_ATTACHMENT_BYTES` defaults to 18 MiB and accepts only positive values
+up to 20 MiB. It bounds both Telegram's declared file size and the bytes actually streamed, so a
+provider response that exceeds its declared size cannot publish a partial blob.
+
 Registering the webhook with Telegram (`setWebhook`) remains an explicit operational write done
 outside this process; the client method exists for the tooling that will own it.
 

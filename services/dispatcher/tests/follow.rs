@@ -42,8 +42,7 @@ async fn wait_for_opens(state: &HarnessState, expected: u64) {
     while state.opens.load(Ordering::SeqCst) < expected {
         assert!(
             tokio::time::Instant::now() < deadline,
-            "{} stream(s) did not open within ten seconds",
-            expected
+            "{expected} stream(s) did not open within ten seconds"
         );
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
@@ -72,7 +71,7 @@ struct HarnessState {
 
 /// One fake Platform serving both routes the follower needs. The events route answers every
 /// operation with an accepted frame then a terminal one.
-async fn platform_harness() -> (String, Arc<HarnessState>) {
+fn platform_harness() -> (String, Arc<HarnessState>) {
     let state = Arc::new(HarnessState::default());
     let shared = Arc::clone(&state);
     let app = axum::Router::new()
@@ -159,7 +158,8 @@ async fn seed_live(db: &TestDatabase, operation: Uuid) {
                 telegram_user_id: OWNER,
                 chat_id: CHAT,
                 operation_id: operation,
-                source_url: "https://example.test/a".to_owned(),
+                source_url: Some("https://example.test/a".to_owned()),
+                metadata: None,
                 expires_at_secs: 2_000_000_000,
             },
             1_800_000_000,
@@ -181,7 +181,7 @@ async fn seed_terminal(db: &TestDatabase, operation: Uuid) {
 /// and a second scan over the same set opens nothing new.
 #[tokio::test]
 async fn non_terminal_bindings_are_followed_once_each_after_restart() {
-    let (base_url, state) = platform_harness().await;
+    let (base_url, state) = platform_harness();
     let db = database().await;
     for tail in 1..=3u16 {
         seed_live(
@@ -230,7 +230,7 @@ async fn frames_map_dedupe_and_stop_at_terminal() {
         .expect("the registry installs once per process")
     });
 
-    let (base_url, state) = platform_harness().await;
+    let (base_url, state) = platform_harness();
     let db = database().await;
     let operation = Uuid::from_u128(0x018f_0000_0000_7000_8000_0000_0000_0005);
     seed_live(&db, operation).await;

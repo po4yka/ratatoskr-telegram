@@ -185,7 +185,7 @@ async fn submit_capture_posts_key_bearer_and_url_and_parses_operation() {
     );
 }
 
-/// A blob-source capture submits the stored-bytes reference — the BlobRef wire shape with the
+/// A blob-source capture submits the stored-bytes reference — the `BlobRef` wire shape with the
 /// algorithm fixed at sha256 — and never a fabricated URL member.
 #[tokio::test]
 async fn submit_capture_posts_blob_sources_without_a_url_member() {
@@ -282,9 +282,8 @@ async fn url_captures_carry_origin_additively_and_stay_byte_compatible() {
         "provenance is additive"
     );
     let without_origin = harness.requests()[1].body.clone().expect("body");
-    assert_eq!(
+    assert!(
         without_origin.get("origin").is_none(),
-        true,
         "no provenance means no origin member: {without_origin}"
     );
 }

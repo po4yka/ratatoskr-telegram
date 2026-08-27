@@ -136,6 +136,11 @@ fn the_webhook_boots_with_full_intake_configuration_and_reports_ready() {
     const PUBLIC_PORT: u16 = 9479;
 
     let harness = harness_bot_api();
+    let blob_root = tempfile::tempdir().expect("a temporary blob root");
+    let blob_root_path = blob_root
+        .path()
+        .to_str()
+        .expect("the temporary blob root is utf-8");
     let runtime = tokio::runtime::Runtime::new().expect("boot runtime");
     let database_url = runtime.block_on(async {
         let test = telegram_persistence::test_support::TestDatabase::create()
@@ -157,6 +162,7 @@ fn the_webhook_boots_with_full_intake_configuration_and_reports_ready() {
             ("RATATOSKR__BOT_API__BASE_URL", harness.url.as_str()),
             ("RATATOSKR__BOT_API__TOKEN", BOT_TOKEN),
             ("RATATOSKR__WEBHOOK__SECRET_TOKEN", SECRET_TOKEN),
+            ("RATATOSKR__INGESTION__BLOB_ROOT", blob_root_path),
             ("RATATOSKR__ACCESS__OWNER_TELEGRAM_USER_ID", "700100200"),
             ("RATATOSKR__PLATFORM__BASE_URL", "http://127.0.0.1:9463"),
             ("RATATOSKR__PLATFORM__AUDIENCE", "ratatoskr-edge-test"),
@@ -192,6 +198,11 @@ fn startup_provisions_owner_once_without_resurrection() {
     const PUBLIC_PORT: u16 = 9482;
 
     let harness = harness_bot_api();
+    let blob_root = tempfile::tempdir().expect("a temporary blob root");
+    let blob_root_path = blob_root
+        .path()
+        .to_str()
+        .expect("the temporary blob root is utf-8");
     let runtime = tokio::runtime::Runtime::new().expect("boot runtime");
     let test = runtime
         .block_on(async { telegram_persistence::test_support::TestDatabase::create().await })
@@ -216,6 +227,7 @@ fn startup_provisions_owner_once_without_resurrection() {
         ("RATATOSKR__BOT_API__BASE_URL", harness.url.as_str()),
         ("RATATOSKR__BOT_API__TOKEN", BOT_TOKEN),
         ("RATATOSKR__WEBHOOK__SECRET_TOKEN", SECRET_TOKEN),
+        ("RATATOSKR__INGESTION__BLOB_ROOT", blob_root_path),
         ("RATATOSKR__ACCESS__OWNER_TELEGRAM_USER_ID", "700100200"),
         ("RATATOSKR__PLATFORM__BASE_URL", "http://127.0.0.1:9463"),
         ("RATATOSKR__PLATFORM__AUDIENCE", "ratatoskr-edge-test"),
@@ -433,20 +445,17 @@ fn a_listener_that_cannot_bind_exits_one() {
     // Held open for the child's whole life; a second listener on the same port is `EADDRINUSE`.
     let taken = std::net::TcpListener::bind("127.0.0.1:0").expect("a port must be available");
     let port = taken.local_addr().expect("the port is known").port();
-
-    // A reachable database, so the process gets past preparation and reaches the bind that this
-    // test is about.
     let runtime = tokio::runtime::Runtime::new().expect("boot runtime");
-    let database_url = runtime.block_on(async {
-        let test = telegram_persistence::test_support::TestDatabase::create()
-            .await
-            .expect("a disposable database");
-        test.url()
-    });
+    let database = runtime
+        .block_on(async { telegram_persistence::test_support::TestDatabase::create().await })
+        .expect("a disposable database");
+    let database_url = database.url();
 
     let refused = Command::new(built_binary("ratatoskr-telegram-dispatcher"))
         .env("RATATOSKR__ADMIN__BIND", format!("127.0.0.1:{port}"))
-        .env("RATATOSKR__DATABASE__URL", database_url.as_str())
+        // A reachable database, so the process gets past preparation and reaches the bind that
+        // this test is about.
+        .env("RATATOSKR__DATABASE__URL", &database_url)
         .env("RATATOSKR__PLATFORM__BASE_URL", "http://127.0.0.1:9463")
         .env("RATATOSKR__PLATFORM__AUDIENCE", "ratatoskr-edge-test")
         .env(
@@ -455,6 +464,9 @@ fn a_listener_that_cannot_bind_exits_one() {
         )
         .output()
         .expect("the binary must run");
+    runtime
+        .block_on(async { database.cleanup().await })
+        .expect("the fixture database cleans up");
 
     assert_eq!(
         refused.status.code(),

@@ -5,6 +5,7 @@
 //! its deduplication table, so the failure refuses startup — spawns the processing worker, and
 //! hands back the admission router.
 
+use std::path::Path;
 use std::time::Duration;
 
 use axum::Router;
@@ -85,7 +86,12 @@ pub async fn build(context: PublicContext) -> Result<Router, TelegramError> {
         bot_id,
         queue_capacity: intake::QUEUE_CAPACITY,
     };
-    let capture = build_capture_context(&context.config.platform)?;
+    let capture = build_capture_context(
+        &context.config.platform,
+        client,
+        context.config.ingestion.max_attachment_bytes,
+        context.config.ingestion.blob_root.as_path(),
+    )?;
     let (intake, receiver) = Intake::new(settings, database);
     tokio::spawn(intake::run_worker(
         intake.database.clone(),
@@ -104,6 +110,9 @@ pub async fn build(context: PublicContext) -> Result<Router, TelegramError> {
 /// the configured signing key does not decode — both unreachable behind validation V16/V17.
 fn build_capture_context(
     platform: &telegram_core::PlatformConfig,
+    bot_api: bot_api::Client,
+    max_attachment_bytes: u64,
+    blob_root: &Path,
 ) -> Result<intake::worker::CaptureContext, TelegramError> {
     use secrecy::ExposeSecret as _;
 
@@ -120,9 +129,16 @@ fn build_capture_context(
         issuer,
         Box::new(platform_api::session::SystemClock),
     );
-    Ok(intake::worker::CaptureContext::new(std::sync::Arc::new(
-        sessions,
-    )))
+    // This service owns its bytes. Deployment mounts this durable root; inability to prepare it
+    // refuses startup rather than accepting attachments that cannot be handed off safely.
+    let blobs = ratatoskr_telegram_blob_store::BlobStore::open(blob_root)
+        .map_err(|error| TelegramError::internal(Subsystem::Http, error))?;
+    Ok(intake::worker::CaptureContext::new(
+        std::sync::Arc::new(sessions),
+        bot_api,
+        blobs,
+        max_attachment_bytes,
+    ))
 }
 
 /// Decode the configured 64-hex-character Ed25519 seed into its 32 bytes.

@@ -18,6 +18,7 @@ use telegram_core::role::RuntimeRole;
 /// The documented default budget: 18 MiB, under the Bot API's own 20 MiB download ceiling so
 /// refusal happens in this service before Telegram's does.
 const DEFAULT_BUDGET: u64 = 18 * 1_048_576;
+const DEFAULT_BLOB_ROOT: &str = "/var/lib/ratatoskr-telegram/blobs";
 
 /// The webhook role's minimal valid environment, minus the ingestion keys under test.
 fn seed_role(jail: &mut Jail) {
@@ -43,20 +44,30 @@ fn seed_role(jail: &mut Jail) {
     );
 }
 
-/// Absent means the documented default; an in-range value loads exactly.
+/// Absent means the documented defaults; the blob root and in-range budget load exactly.
 #[test]
-fn the_ingestion_budget_defaults_and_parses_exactly() {
+fn ingestion_defaults_and_parses_an_explicit_blob_root() {
     let defaults = telegram_core::config::TelegramConfig::defaults(RuntimeRole::Webhook);
     assert_eq!(
         defaults.ingestion.max_attachment_bytes, DEFAULT_BUDGET,
         "the default sits under the Bot API ceiling"
     );
+    assert_eq!(
+        defaults.ingestion.blob_root,
+        std::path::Path::new(DEFAULT_BLOB_ROOT),
+        "the default is the durable Telegram-owned blob root"
+    );
 
     Jail::expect_with(|jail| {
         seed_role(jail);
         jail.set_env("RATATOSKR__INGESTION__MAX_ATTACHMENT_BYTES", "1048576");
+        jail.set_env("RATATOSKR__INGESTION__BLOB_ROOT", "/srv/telegram/blobs");
         let config = config::load(RuntimeRole::Webhook).expect("the override parses");
         assert_eq!(config.ingestion.max_attachment_bytes, 1_048_576);
+        assert_eq!(
+            config.ingestion.blob_root,
+            std::path::Path::new("/srv/telegram/blobs")
+        );
         Ok(())
     });
 }
@@ -98,6 +109,31 @@ fn an_out_of_range_budget_is_refused_with_a_named_rule() {
         assert!(
             !report.contains("22020096"),
             "the report must not quote the supplied value"
+        );
+        Ok(())
+    });
+}
+
+/// A relative root would make durable attachment storage depend on the process working directory.
+#[test]
+fn a_relative_blob_root_is_refused_with_a_named_rule() {
+    Jail::expect_with(|jail| {
+        seed_role(jail);
+        jail.set_env("RATATOSKR__INGESTION__BLOB_ROOT", "var/lib/telegram/blobs");
+        let error = config::load(RuntimeRole::Webhook)
+            .expect_err("a relative blob root must refuse to start");
+        let ConfigError::Invalid(violations) = error else {
+            panic!("expected Invalid, got {error:?}");
+        };
+        let report = config::ConfigError::Invalid(violations).report(RuntimeRole::Webhook);
+        assert!(report.contains("ingestion.blob_root"), "{report}");
+        assert!(
+            report.contains("RATATOSKR__INGESTION__BLOB_ROOT"),
+            "{report}"
+        );
+        assert!(
+            !report.contains("var/lib/telegram/blobs"),
+            "the report must not quote the supplied path"
         );
         Ok(())
     });

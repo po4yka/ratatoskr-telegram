@@ -67,13 +67,17 @@ struct Harness {
 }
 
 impl Harness {
+    #[expect(
+        clippy::unused_async,
+        reason = "test call sites share an async harness API while port readiness is synchronised by a standard channel"
+    )]
     async fn spawn(respond: impl Fn(&Captured) -> Value + Send + Sync + 'static) -> Self {
-        Self::spawn_raw(move |captured| Json(respond(captured)).into_response()).await
+        Self::spawn_raw(move |captured| Json(respond(captured)).into_response())
     }
 
     /// Like [`Harness::spawn`], but the responder owns the whole response - raw byte bodies for
     /// the file-download routes that never carry JSON.
-    async fn spawn_raw(
+    fn spawn_raw(
         respond: impl Fn(&Captured) -> axum::response::Response + Send + Sync + 'static,
     ) -> Self {
         let captured: Arc<Mutex<Vec<Captured>>> = Arc::default();
@@ -457,8 +461,7 @@ async fn download_streams_exactly_the_served_bytes() {
         } else {
             Json(ok_result(&json!(true))).into_response()
         }
-    })
-    .await;
+    });
 
     let mut stream: DownloadStream = client(&harness.base_url)
         .download_file("documents/report.pdf")

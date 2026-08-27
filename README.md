@@ -2,7 +2,14 @@
 
 `ratatoskr-telegram` is the Telegram interaction bounded context for Ratatoskr. It provides a Bot API interface and will provide Telegram Mini App authentication for submitting articles, adding or tracking GitHub repositories, following long-running operations, and receiving notifications from a local Ratatoskr deployment.
 
-> **Status:** plan items 1–5 implemented — the Rust service scaffold (typed `RATATOSKR__` configuration, structured telemetry, typed errors, per-role operator plane, the first-version `telegram` schema, the CI gate), the Bot API client and the secure webhook intake: secret-verified admission before any parsing, method/content-type/body-size limits, durable `update_id` admission in `telegram.updates` before acknowledgment; PostgreSQL is the work authority; the in-process queue is only a wake-up hint, terminal settlement removes the processable payload while retaining deduplication evidence. Identity binding and the owner access gate are live: every update is resolved against `telegram.identities`/`telegram.chats` and refused updates settle as `denied` silently, while startup seeds exactly one owner from `RATATOSKR__ACCESS__OWNER_TELEGRAM_USER_ID`. Since item 4 the dispatcher is a real runtime: every send and edit is a durable job in `telegram.outbound_jobs`, claimed strictly FIFO per chat with one job in flight, gated by global/per-chat rate limits that honor `Retry-After`, retried transiently to a bounded dead-letter; `telegram.message_bindings` anchors one live chat message per Platform operation and operation snapshots render into it throttled, HTML-escaped, terminal-once. Since item 5 the first product slice is live: an authorized private message that is a bare URL or `/summarize <url>` becomes an idempotent Platform capture (deterministic per-sender keys, assertion-exchanged sessions), is acknowledged by one bound HTML message, and its Platform SSE progress streams into the existing throttled projection until a terminal render adds the fallback link and an opaque Mini App deep-link button. Callback buttons, cancel, and rich result text stay ahead. See `DEVELOPMENT.md` for what runs today and `docs/IMPLEMENTATION_PLAN.md` for what comes next.
+> **Status:** plan items 1–6 implemented. The service admits and deduplicates secure Bot API
+> updates, enforces the private owner access gate, submits URL captures to Platform, and projects
+> their progress through a durable outbound queue. Item 6 also captures forwarded external links
+> with minimized provenance and accepts bounded PDFs/photos: they stream through the Bot API into
+> a Telegram-owned content-addressed blob store, are SHA-256 hashed, and reach Platform as opaque
+> `BlobRef` references. Unsupported video, voice, audio, and document types receive one truthful
+> response; extraction and transcription remain outside this repository. See `DEVELOPMENT.md` for
+> operational configuration and `docs/IMPLEMENTATION_PLAN.md` for later items.
 
 > [!IMPORTANT]
 > **Ratatoskr is in development.** No database holds data that has to survive a schema change.
@@ -68,6 +75,14 @@ Identity and access resolution are live since item 3: the worker resolves sender
 and settles refusals as `denied` before any domain action. Command/message/callback/file parsing,
 interaction creation, and Platform operation submission remain planned for items 5 and later.
 
+#### Attachment blob root
+
+`RATATOSKR__INGESTION__BLOB_ROOT` is the absolute, durable Telegram-owned directory used to stage
+downloaded attachment bytes before their BlobRef handoff. It defaults to
+`/var/lib/ratatoskr-telegram/blobs`; production mounts persistent storage there or sets another
+absolute service-owned path. The local path is not a Platform contract and is never included in an
+intent, log, or Telegram message.
+
 ### `ratatoskr-telegram-dispatcher`
 
 The dispatcher, live since item 4:
@@ -104,7 +119,7 @@ The bot accepts several explicit article inputs:
 - `/article <url>`;
 - a forwarded channel message containing a URL;
 - several URLs in one interaction;
-- a PDF or supported document;
+- a PDF document or photo;
 - forwarded or pasted text saved as a note/source.
 
 Typical flow:

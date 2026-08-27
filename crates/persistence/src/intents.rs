@@ -52,7 +52,7 @@ pub enum CaptureOrigin {
 }
 
 /// The stored-bytes facts an attachment capture presents instead of an address. Field-for-field
-/// the fleet BlobRef wire shape, kept local so persistence does not depend on the contracts crate;
+/// the fleet `BlobRef` wire shape, kept local so persistence does not depend on the contracts crate;
 /// conversion happens at the submission boundary.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -120,6 +120,15 @@ pub struct IntentRecord {
     /// Bounded provenance facts, when the row carries them.
     pub metadata: Option<IntentMetadata>,
 }
+
+type IntentRow = (
+    Uuid,
+    i64,
+    i64,
+    Uuid,
+    Option<String>,
+    Option<serde_json::Value>,
+);
 
 impl IntentRecord {
     fn from_parts(
@@ -215,14 +224,7 @@ impl Database {
         telegram_user_id: i64,
         now: i64,
     ) -> Result<Option<IntentRecord>, PersistenceError> {
-        let row: Option<(
-            Uuid,
-            i64,
-            i64,
-            Uuid,
-            Option<String>,
-            Option<serde_json::Value>,
-        )> = sqlx::query_as(
+        let row: Option<IntentRow> = sqlx::query_as(
             "select id, bot_id, chat_id, operation_id, source_url, metadata
              from telegram.interaction_intents
              where id = $1
@@ -255,14 +257,7 @@ impl Database {
         operation_id: Uuid,
         now: i64,
     ) -> Result<Option<IntentRecord>, PersistenceError> {
-        let row: Option<(
-            Uuid,
-            i64,
-            i64,
-            Uuid,
-            Option<String>,
-            Option<serde_json::Value>,
-        )> = sqlx::query_as(
+        let row: Option<IntentRow> = sqlx::query_as(
             "select id, bot_id, chat_id, operation_id, source_url, metadata
              from telegram.interaction_intents
              where operation_id = $1

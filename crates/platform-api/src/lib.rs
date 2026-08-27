@@ -17,7 +17,7 @@ pub use session::{Clock, SessionSource};
 use std::str::FromStr as _;
 use std::time::Duration;
 
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use url::Url;
 use uuid::Uuid;
 
@@ -468,7 +468,7 @@ impl Client {
 pub enum CaptureSource {
     /// A submitted address.
     Url(String),
-    /// Stored bytes in this deployment's own blob store. Field-for-field the fleet BlobRef wire
+    /// Stored bytes in this deployment's own blob store. Field-for-field the fleet `BlobRef` wire
     /// shape with the digest algorithm fixed at `sha256`.
     Blob {
         /// The owner service whose store holds the bytes.

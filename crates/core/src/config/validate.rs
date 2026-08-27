@@ -439,20 +439,29 @@ fn dispatcher_violations(role: RuntimeRole, config: &TelegramConfig) -> Vec<Viol
     found
 }
 
-/// V18 — the attachment ingestion budget. Zero reads as "refuse every attachment", which no
+/// V18 — the attachment ingestion settings. Zero reads as "refuse every attachment", which no
 /// operator could have meant, and anything past the Bot API's own download ceiling for bots
 /// could never be honoured: Telegram refuses to serve such a file before this service is asked.
+/// The blob root is absolute so attachment custody cannot depend on a process working directory.
 fn ingestion_violations(config: &TelegramConfig) -> Vec<Violation> {
     let budget = config.ingestion.max_attachment_bytes;
+    let mut found = Vec::new();
     if budget == 0 || budget > model::BOT_API_DOWNLOAD_CEILING_BYTES {
-        return vec![Violation {
+        found.push(Violation {
             key: "ingestion.max_attachment_bytes",
             env_var: "RATATOSKR__INGESTION__MAX_ATTACHMENT_BYTES",
             rule: "must be greater than 0 and at most the Bot API's 20 MiB file-download \
                    ceiling for bots; zero would refuse every attachment",
-        }];
+        });
     }
-    Vec::new()
+    if !config.ingestion.blob_root.is_absolute() {
+        found.push(Violation {
+            key: "ingestion.blob_root",
+            env_var: "RATATOSKR__INGESTION__BLOB_ROOT",
+            rule: "must be an absolute Telegram-owned durable storage path",
+        });
+    }
+    found
 }
 
 /// The operator-facing report for a set of violations. One block per problem, stable order, no

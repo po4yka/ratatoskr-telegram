@@ -52,7 +52,8 @@ pub(crate) async fn submit(
     bot_id: i64,
     chat_id: i64,
     telegram_user_id: i64,
-    url: &str,
+    source: platform_api::CaptureSource,
+    metadata: Option<telegram_persistence::intents::IntentMetadata>,
 ) -> Result<AcceptedCapture, SubmitClass> {
     let subject = telegram_user_id.to_string();
     let session = sessions
@@ -64,14 +65,22 @@ pub(crate) async fn submit(
     // Resending a link whose operation is already tracked must not duplicate the message:
     // Platform replays the original operation, and an existing live binding means the chat
     // already holds the acknowledgment for it.
-    let key = intent::capture_key(telegram_user_id, url);
+    let key = key_for_source(telegram_user_id, &source);
+    // Blob facts are the capture source itself, not provenance. Only a forwarded origin crosses
+    // the Platform boundary; attachment metadata remains in Telegram-owned intent persistence.
+    let origin = metadata
+        .as_ref()
+        .filter(|metadata| metadata.forward.is_some())
+        .map(serde_json::to_value)
+        .transpose()
+        .map_err(|_| SubmitClass::TransientExhausted)?;
     let accepted: platform_api::OperationAccepted = submit_with_retries(
         client,
         &session,
         &platform_api::CaptureSubmission {
             idempotency_key: key,
-            source: platform_api::CaptureSource::Url(url.to_owned()),
-            origin: None,
+            source: source.clone(),
+            origin,
         },
     )
     .await?;
@@ -95,8 +104,8 @@ pub(crate) async fn submit(
                     telegram_user_id,
                     chat_id,
                     operation_id,
-                    source_url: Some(url.to_owned()),
-                    metadata: None,
+                    source_url: source_url(&source),
+                    metadata,
                     expires_at_secs: now_secs() + INTENT_TTL_SECS,
                 },
                 now_secs(),
@@ -104,7 +113,7 @@ pub(crate) async fn submit(
             .await
             .map_err(|_| SubmitClass::TransientExhausted)?;
         let payload = telegram_persistence::outbound_jobs::MessagePayload {
-            text: ack_body(url),
+            text: ack_body(&source),
             parse_mode: Some(HTML.to_owned()),
             reply_markup: None,
         };
@@ -131,6 +140,25 @@ pub(crate) async fn submit(
     }
 
     Ok(AcceptedCapture { operation_id })
+}
+
+/// Derive the idempotency source without letting a Bot API file identifier escape this boundary.
+fn key_for_source(telegram_user_id: i64, source: &platform_api::CaptureSource) -> String {
+    match source {
+        platform_api::CaptureSource::Url(url) => intent::capture_key(telegram_user_id, url),
+        platform_api::CaptureSource::Blob { digest_hex, .. } => {
+            intent::blob_capture_key(telegram_user_id, digest_hex)
+        }
+    }
+}
+
+/// An attachment has no address; persisting one would make an opaque Bot API detail look like a
+/// user-visible source URL and would violate the intent schema's pairing constraint.
+fn source_url(source: &platform_api::CaptureSource) -> Option<String> {
+    match source {
+        platform_api::CaptureSource::Url(url) => Some(url.clone()),
+        platform_api::CaptureSource::Blob { .. } => None,
+    }
 }
 
 /// One submission with the transient-class retry bound around it.
@@ -177,12 +205,23 @@ fn now_secs() -> i64 {
 }
 
 /// The acknowledgment body: the status lead, then the captured address as the fallback link.
-fn ack_body(url: &str) -> String {
-    format!(
-        "<b>Capturing</b>\n<a href=\"{}\">{}</a>",
-        escape(url),
-        escape(url)
-    )
+fn ack_body(source: &platform_api::CaptureSource) -> String {
+    match source {
+        platform_api::CaptureSource::Url(url) => format!(
+            "<b>Capturing</b>\n<a href=\"{}\">{}</a>",
+            escape(url),
+            escape(url)
+        ),
+        platform_api::CaptureSource::Blob {
+            media_type,
+            length_bytes,
+            ..
+        } => format!(
+            "<b>Capturing attachment</b>\n{} ({} bytes)",
+            escape(media_type),
+            length_bytes
+        ),
+    }
 }
 
 /// Escape the five characters Telegram's HTML parse mode treats specially.

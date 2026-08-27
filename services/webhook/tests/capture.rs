@@ -26,6 +26,7 @@ use ratatoskr_telegram_webhook::intake;
 use ratatoskr_telegram_webhook::intake::{CaptureContext, Intake, IntakeSettings};
 use secrecy::SecretString;
 use serde_json::{Value, json};
+use sha2::{Digest as _, Sha256};
 use sqlx::Row;
 use telegram_persistence::IdentityProfile;
 use telegram_persistence::test_support::TestDatabase;
@@ -55,11 +56,20 @@ enum CaptureAnswer {
 struct PlatformState {
     exchange_calls: AtomicU64,
     capture_calls: AtomicU64,
+    get_file_calls: AtomicU64,
+    download_calls: AtomicU64,
+    last_get_file_id: std::sync::Mutex<Option<String>>,
     last_idempotency_key: std::sync::Mutex<Option<String>>,
+    /// The most recent capture request body, for wire-shape assertions.
+    last_capture_body: std::sync::Mutex<Option<Value>>,
+    attachment_bytes: std::sync::Mutex<Vec<u8>>,
 }
 
 async fn platform_harness(answer: CaptureAnswer) -> (String, Arc<PlatformState>) {
-    let state = Arc::new(PlatformState::default());
+    let state = Arc::new(PlatformState {
+        attachment_bytes: std::sync::Mutex::new(b"synthetic attachment".to_vec()),
+        ..PlatformState::default()
+    });
     let app_state = Arc::clone(&state);
     let app = axum::Router::new()
         .route(
@@ -88,7 +98,9 @@ async fn platform_harness(answer: CaptureAnswer) -> (String, Arc<PlatformState>)
                         *state.last_idempotency_key.lock().expect("key lock") =
                             Some(key.to_owned());
                     }
-                    let _ = serde_json::from_slice::<Value>(&body).expect("a capture body parses");
+                    let parsed =
+                        serde_json::from_slice::<Value>(&body).expect("a capture body parses");
+                    *state.last_capture_body.lock().expect("body lock") = Some(parsed);
                     match answer {
                         CaptureAnswer::Accept => (
                             StatusCode::ACCEPTED,
@@ -102,17 +114,53 @@ async fn platform_harness(answer: CaptureAnswer) -> (String, Arc<PlatformState>)
                 },
             ),
         )
+        .route(
+            "/botsynthetic-bot-token/GetFile",
+            post(
+                move |State(state): State<Arc<PlatformState>>, Json(body): Json<Value>| async move {
+                    state.get_file_calls.fetch_add(1, Ordering::SeqCst);
+                    *state.last_get_file_id.lock().expect("file id lock") = body
+                        .get("file_id")
+                        .and_then(Value::as_str)
+                        .map(ToOwned::to_owned);
+                    let size = state
+                        .attachment_bytes
+                        .lock()
+                        .expect("attachment lock")
+                        .len();
+                    (
+                        StatusCode::OK,
+                        Json(json!({
+                            "ok": true,
+                            "result": {
+                                "file_id": "synthetic-file",
+                                "file_unique_id": "synthetic-unique",
+                                "file_size": size,
+                                "file_path": "attachments/synthetic"
+                            }
+                        })),
+                    )
+                },
+            ),
+        )
+        .route(
+            "/file/botsynthetic-bot-token/attachments/synthetic",
+            axum::routing::get(move |State(state): State<Arc<PlatformState>>| async move {
+                state.download_calls.fetch_add(1, Ordering::SeqCst);
+                state
+                    .attachment_bytes
+                    .lock()
+                    .expect("attachment lock")
+                    .clone()
+            }),
+        )
         .with_state(app_state);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
         .expect("bind");
     let bound = listener.local_addr().expect("addr");
-    std::thread::spawn(move || {
-        let runtime = tokio::runtime::Builder::new_multi_thread()
-            .enable_all()
-            .build()
-            .expect("harness runtime");
-        let _ = runtime.block_on(axum::serve(listener, app).into_future());
+    tokio::spawn(async move {
+        let _ = axum::serve(listener, app).into_future().await;
     });
     (format!("http://{bound}"), state)
 }
@@ -125,6 +173,7 @@ fn dead_platform_url() -> String {
 struct Fixture {
     database: TestDatabase,
     app: axum::Router,
+    blob_root: tempfile::TempDir,
 }
 
 impl Fixture {
@@ -149,6 +198,15 @@ impl Fixture {
             issuer,
             Box::new(platform_api::session::SystemClock),
         ));
+        let bot_api = bot_api::Client::new(
+            &SecretString::new("synthetic-bot-token".into()),
+            &platform_api_url(base_url),
+            Duration::from_secs(5),
+        )
+        .expect("the synthetic Bot API client builds");
+        let blob_root = tempfile::tempdir().expect("blob root");
+        let blobs =
+            ratatoskr_telegram_blob_store::BlobStore::open(blob_root.path()).expect("blob store");
 
         let settings = IntakeSettings {
             secret: SecretString::new(SECRET.into()),
@@ -157,7 +215,7 @@ impl Fixture {
             queue_capacity: 32,
         };
         let (intake, receiver) = Intake::new(settings, database.database.clone());
-        let context = CaptureContext::new(Arc::clone(&sessions));
+        let context = CaptureContext::new(Arc::clone(&sessions), bot_api, blobs, 1024);
         tokio::spawn(intake::run_worker(
             intake.database.clone(),
             receiver,
@@ -167,6 +225,7 @@ impl Fixture {
         Self {
             database,
             app: intake.router(),
+            blob_root,
         }
     }
 
@@ -207,6 +266,11 @@ impl Fixture {
         }
         panic!("update {update_id} never settled");
     }
+
+    /// A successful store creates a digest-named content tree. A failed stream must not.
+    fn has_published_blob(&self) -> bool {
+        self.blob_root.path().join("sha256").exists()
+    }
 }
 
 fn platform_api_url(base: &str) -> url::Url {
@@ -224,6 +288,94 @@ fn message_update(update_id: i64, text: &str) -> Value {
                      "first_name": "Synthetic"},
             "text": text,
         },
+    })
+}
+
+/// A private message forwarding a channel post; `text` is the forwarded post's text.
+fn forwarded_update(update_id: i64, text: &str) -> Value {
+    json!({
+        "update_id": update_id,
+        "message": {
+            "message_id": 56,
+            "from": {"id": OWNER_TELEGRAM_USER_ID, "is_bot": false, "first_name": "Synthetic"},
+            "date": 1_760_000_100_i64,
+            "chat": {"id": OWNER_TELEGRAM_USER_ID, "type": "private",
+                     "first_name": "Synthetic"},
+            "forward_origin": {
+                "type": "channel",
+                "chat": {"id": -100_200_300, "type": "channel", "title": "Synthetic Channel"},
+                "message_id": 77,
+                "date": 1_700_000_000_i64,
+            },
+            "text": text,
+        },
+    })
+}
+
+/// A document update with only the Bot API metadata the intake must trust before download.
+fn document_update(update_id: i64, file_id: &str, file_size: u64, mime_type: &str) -> Value {
+    json!({
+        "update_id": update_id,
+        "message": {
+            "message_id": 57,
+            "from": {"id": OWNER_TELEGRAM_USER_ID, "is_bot": false, "first_name": "Synthetic"},
+            "date": 1_760_000_200_i64,
+            "chat": {"id": OWNER_TELEGRAM_USER_ID, "type": "private",
+                     "first_name": "Synthetic"},
+            "document": {
+                "file_id": file_id,
+                "file_unique_id": "document-unique-id",
+                "file_size": file_size,
+                "file_name": "sample.pdf",
+                "thumbnail": null,
+                "mime_type": mime_type
+            }
+        }
+    })
+}
+
+fn pdf_document_update(update_id: i64, file_id: &str, file_size: u64) -> Value {
+    document_update(update_id, file_id, file_size, "application/pdf")
+}
+
+fn photo_update(update_id: i64) -> Value {
+    json!({
+        "update_id": update_id,
+        "message": {
+            "message_id": 58,
+            "from": {"id": OWNER_TELEGRAM_USER_ID, "is_bot": false, "first_name": "Synthetic"},
+            "date": 1_760_000_300_i64,
+            "chat": {"id": OWNER_TELEGRAM_USER_ID, "type": "private", "first_name": "Synthetic"},
+            "photo": [
+                {"file_id": "photo-small", "file_unique_id": "photo-small-unique", "width": 16, "height": 16, "file_size": 128},
+                {"file_id": "photo-largest-eligible", "file_unique_id": "photo-largest-eligible-unique", "width": 64, "height": 64, "file_size": 768},
+                {"file_id": "photo-over-limit", "file_unique_id": "photo-over-limit-unique", "width": 128, "height": 128, "file_size": 1025}
+            ]
+        }
+    })
+}
+
+fn unsupported_media_update(update_id: i64, field: &str) -> Value {
+    let media = match field {
+        "voice" => json!({
+            "file_id": "voice-file", "file_unique_id": "voice-unique", "duration": 1,
+            "mime_type": "audio/ogg", "file_size": 12
+        }),
+        "video" => json!({
+            "file_id": "video-file", "file_unique_id": "video-unique", "duration": 1,
+            "width": 16, "height": 16, "mime_type": "video/mp4", "file_size": 12
+        }),
+        _ => unreachable!("only voice and video synthetic updates are supported"),
+    };
+    json!({
+        "update_id": update_id,
+        "message": {
+            "message_id": 59,
+            "from": {"id": OWNER_TELEGRAM_USER_ID, "is_bot": false, "first_name": "Synthetic"},
+            "date": 1_760_000_400_i64,
+            "chat": {"id": OWNER_TELEGRAM_USER_ID, "type": "private", "first_name": "Synthetic"},
+            field: media,
+        }
     })
 }
 
@@ -382,4 +534,293 @@ async fn permanent_refusal_settles_immediately() {
         "a permanent class must not retry"
     );
     assert_eq!(outbound_job_count(&fixture).await, 0);
+}
+
+/// An allowlisted PDF is fetched only through the synthetic Bot API, stored under its SHA-256,
+/// then presented to Platform as the fleet `BlobRef` rather than a Telegram URL.
+#[tokio::test]
+async fn pdf_document_within_limits_stores_and_submits_a_blob_capture() {
+    let (base_url, state) = platform_harness(CaptureAnswer::Accept).await;
+    let fixture = Fixture::create(&base_url, CaptureAnswer::Accept, Arc::clone(&state)).await;
+
+    fixture
+        .deliver(pdf_document_update(9_801, "pdf-small", 128))
+        .await;
+
+    assert_eq!(
+        fixture.settled_state(9_801).await,
+        "processed",
+        "get_file={} download={} platform={}",
+        state.get_file_calls.load(Ordering::SeqCst),
+        state.download_calls.load(Ordering::SeqCst),
+        state.capture_calls.load(Ordering::SeqCst),
+    );
+    assert_eq!(
+        state.capture_calls.load(Ordering::SeqCst),
+        1,
+        "an allowlisted PDF must reach the capture flow"
+    );
+    assert_eq!(state.get_file_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(state.download_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        state
+            .last_get_file_id
+            .lock()
+            .expect("file id lock")
+            .as_deref(),
+        Some("pdf-small")
+    );
+
+    let attachment = state
+        .attachment_bytes
+        .lock()
+        .expect("attachment lock")
+        .clone();
+    let digest = format!("{:x}", Sha256::digest(&attachment));
+    let body = state
+        .last_capture_body
+        .lock()
+        .expect("body lock")
+        .clone()
+        .expect("a capture body was posted");
+    assert_eq!(
+        body,
+        json!({
+            "blob": {
+                "owner_service": "ratatoskr-telegram",
+                "digest": {"algorithm": "sha256", "hex": digest},
+                "media_type": "application/pdf",
+                "length_bytes": attachment.len(),
+            }
+        }),
+        "the Platform contract contains the exact fleet BlobRef and no URL: {body}"
+    );
+    assert!(
+        fixture.has_published_blob(),
+        "the completed blob was published"
+    );
+
+    let intent = sqlx::query(
+        "select source_url, metadata from telegram.interaction_intents where operation_id = $1",
+    )
+    .bind(OPERATION_ID.parse::<uuid::Uuid>().expect("synthetic uuid"))
+    .fetch_one(fixture.database.pool())
+    .await
+    .expect("an attachment intent row");
+    let source_url: Option<String> = intent.get("source_url");
+    let metadata: Value = intent.get("metadata");
+    assert_eq!(source_url, None, "an attachment must not invent an address");
+    assert_eq!(
+        metadata,
+        json!({
+            "blob": {
+                "owner_service": "ratatoskr-telegram",
+                "algorithm": "sha256",
+                "digest_hex": digest,
+                "media_type": "application/pdf",
+                "length_bytes": attachment.len(),
+            }
+        })
+    );
+    let body_text: String =
+        sqlx::query_scalar("select payload->>'text' from telegram.outbound_jobs limit 1")
+            .fetch_one(fixture.database.pool())
+            .await
+            .expect("attachment acknowledgment");
+    assert!(body_text.contains("Capturing attachment"));
+    assert!(!body_text.contains("<a href="), "no fabricated source link");
+}
+
+/// Telegram sends several photo renditions. Only the largest rendition that remains inside the
+/// declared budget is requested; its capture is otherwise indistinguishable from a document.
+#[tokio::test]
+async fn photo_attachments_ingest_like_documents_with_largest_size_within_budget() {
+    let (base_url, state) = platform_harness(CaptureAnswer::Accept).await;
+    let fixture = Fixture::create(&base_url, CaptureAnswer::Accept, Arc::clone(&state)).await;
+
+    fixture.deliver(photo_update(9_811)).await;
+
+    assert_eq!(fixture.settled_state(9_811).await, "processed");
+    assert_eq!(state.get_file_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(state.download_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(state.capture_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        state
+            .last_get_file_id
+            .lock()
+            .expect("file id lock")
+            .as_deref(),
+        Some("photo-largest-eligible"),
+        "the larger over-budget rendition is never requested"
+    );
+    let body = state
+        .last_capture_body
+        .lock()
+        .expect("body lock")
+        .clone()
+        .expect("a capture body was posted");
+    assert_eq!(body["blob"]["media_type"], "image/jpeg");
+}
+
+/// An oversized declared size is rejected before the service resolves or downloads a Bot API
+/// file, and before it asks Platform for a session or operation.
+#[tokio::test]
+async fn oversized_declared_size_is_refused_before_any_download() {
+    let (base_url, state) = platform_harness(CaptureAnswer::Accept).await;
+    let fixture = Fixture::create(&base_url, CaptureAnswer::Accept, Arc::clone(&state)).await;
+
+    fixture
+        .deliver(pdf_document_update(9_821, "declared-oversize", 1_025))
+        .await;
+
+    assert_eq!(fixture.settled_state(9_821).await, "processed");
+    assert_eq!(state.get_file_calls.load(Ordering::SeqCst), 0);
+    assert_eq!(state.download_calls.load(Ordering::SeqCst), 0);
+    assert_eq!(state.exchange_calls.load(Ordering::SeqCst), 0);
+    assert_eq!(state.capture_calls.load(Ordering::SeqCst), 0);
+    assert_eq!(outbound_job_count(&fixture).await, 1);
+    let body: String = sqlx::query_scalar("select payload->>'text' from telegram.outbound_jobs")
+        .fetch_one(fixture.database.pool())
+        .await
+        .expect("the safe limit reply");
+    assert!(body.contains("Attachment too large"));
+    assert!(body.contains("1024 bytes"));
+}
+
+/// Declared metadata can be wrong. The streaming store is the final byte-budget authority: once
+/// it observes an overrun, it publishes no content and the worker never submits a capture.
+#[tokio::test]
+async fn a_stream_overrunning_the_budget_fails_the_update_without_publishing_a_blob() {
+    let (base_url, state) = platform_harness(CaptureAnswer::Accept).await;
+    *state.attachment_bytes.lock().expect("attachment lock") = vec![42; 1_025];
+    let fixture = Fixture::create(&base_url, CaptureAnswer::Accept, Arc::clone(&state)).await;
+
+    fixture
+        .deliver(pdf_document_update(9_831, "stream-oversize", 1_024))
+        .await;
+
+    assert_eq!(fixture.settled_state(9_831).await, "failed");
+    assert_eq!(state.get_file_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(state.download_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(state.exchange_calls.load(Ordering::SeqCst), 0);
+    assert_eq!(state.capture_calls.load(Ordering::SeqCst), 0);
+    assert!(
+        !fixture.has_published_blob(),
+        "partial bytes were never published"
+    );
+    assert_eq!(outbound_job_count(&fixture).await, 0);
+}
+
+/// Voice, video, and non-PDF documents get one explicit reply each. None are downloaded, sent to
+/// Platform, or misrepresented as a capture success; transcription belongs to another service.
+#[tokio::test]
+async fn unsupported_media_gets_one_explicit_truthful_reply() {
+    let (base_url, state) = platform_harness(CaptureAnswer::Accept).await;
+    let fixture = Fixture::create(&base_url, CaptureAnswer::Accept, Arc::clone(&state)).await;
+
+    fixture
+        .deliver(unsupported_media_update(9_841, "voice"))
+        .await;
+    fixture
+        .deliver(unsupported_media_update(9_842, "video"))
+        .await;
+    fixture
+        .deliver(document_update(9_843, "plain-document", 12, "text/plain"))
+        .await;
+
+    for update_id in [9_841, 9_842, 9_843] {
+        assert_eq!(fixture.settled_state(update_id).await, "processed");
+    }
+    assert_eq!(state.get_file_calls.load(Ordering::SeqCst), 0);
+    assert_eq!(state.download_calls.load(Ordering::SeqCst), 0);
+    assert_eq!(state.exchange_calls.load(Ordering::SeqCst), 0);
+    assert_eq!(state.capture_calls.load(Ordering::SeqCst), 0);
+    assert_eq!(outbound_job_count(&fixture).await, 3);
+    let replies: Vec<String> =
+        sqlx::query_scalar("select payload->>'text' from telegram.outbound_jobs order by id")
+            .fetch_all(fixture.database.pool())
+            .await
+            .expect("truthful replies");
+    assert!(replies.iter().all(|reply| {
+        reply.contains("Unsupported attachment")
+            && reply.contains("video, voice, and audio are not supported yet")
+    }));
+}
+
+/// A forwarded channel post carrying a link submits the ordinary URL capture with the forward
+/// origin preserved - in the submission body and on the persisted intent record.
+#[tokio::test]
+async fn forwarded_message_with_link_submits_capture_with_origin() {
+    let (base_url, state) = platform_harness(CaptureAnswer::Accept).await;
+    let fixture = Fixture::create(&base_url, CaptureAnswer::Accept, Arc::clone(&state)).await;
+    fixture
+        .deliver(forwarded_update(9_601, "https://example.test/story"))
+        .await;
+    assert_eq!(fixture.settled_state(9_601).await, "processed");
+
+    assert_eq!(state.capture_calls.load(Ordering::SeqCst), 1);
+    let body = state
+        .last_capture_body
+        .lock()
+        .expect("body lock")
+        .clone()
+        .expect("a capture body was posted");
+    assert_eq!(body["url"], "https://example.test/story");
+    assert_eq!(
+        body["origin"]["forward"],
+        json!({"kind": "channel", "chat_id": -100_200_300, "message_id": 77,
+               "sent_at_secs": 1_700_000_000}),
+        "the submission carries the minimized origin: {body}"
+    );
+
+    // The intent record persists the same provenance beside the address.
+    let origin_kind: Option<String> = sqlx::query_scalar(
+        "select metadata->'forward'->>'kind' from telegram.interaction_intents
+         where source_url = 'https://example.test/story'",
+    )
+    .fetch_one(fixture.database.pool())
+    .await
+    .expect("the forwarded intent row");
+    assert_eq!(origin_kind.as_deref(), Some("channel"));
+
+    let operation: uuid::Uuid = OPERATION_ID.parse().expect("synthetic uuid");
+    assert_eq!(binding_count(&fixture, operation).await, 1);
+    assert_eq!(outbound_job_count(&fixture).await, 1);
+}
+
+/// The first link in a forward wins; a forward without any link settles unsupported.
+#[tokio::test]
+async fn first_forwarded_link_wins_and_linkless_forwards_stay_unsupported() {
+    let (base_url, state) = platform_harness(CaptureAnswer::Accept).await;
+    let fixture = Fixture::create(&base_url, CaptureAnswer::Accept, Arc::clone(&state)).await;
+
+    fixture
+        .deliver(forwarded_update(
+            9_701,
+            "read https://a.test/first and also https://b.test/second",
+        ))
+        .await;
+    assert_eq!(fixture.settled_state(9_701).await, "processed");
+    assert_eq!(state.capture_calls.load(Ordering::SeqCst), 1);
+    let body = state
+        .last_capture_body
+        .lock()
+        .expect("body lock")
+        .clone()
+        .expect("a capture body was posted");
+    assert_eq!(
+        body["url"], "https://a.test/first",
+        "exactly one capture, for the first link"
+    );
+
+    fixture
+        .deliver(forwarded_update(9_702, "just a note, nothing to capture"))
+        .await;
+    assert_eq!(fixture.settled_state(9_702).await, "unsupported");
+    assert_eq!(
+        state.capture_calls.load(Ordering::SeqCst),
+        1,
+        "the linkless forward never reached Platform"
+    );
+    assert_eq!(outbound_job_count(&fixture).await, 1);
 }

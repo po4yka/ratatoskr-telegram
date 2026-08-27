@@ -136,8 +136,11 @@ impl BlobStore {
                         limit: budget.unwrap_or_default(),
                     });
                 }
-                hasher.update(&chunk[..read]);
-                file.write_all(&chunk[..read])
+                let bytes = chunk
+                    .get(..read)
+                    .ok_or(BlobStoreError::Mismatch("reader exceeded its buffer"))?;
+                hasher.update(bytes);
+                file.write_all(bytes)
                     .await
                     .map_err(|error| BlobStoreError::Io(Arc::new(error)))?;
             }
@@ -155,7 +158,9 @@ impl BlobStore {
         let Some(final_path) = self.content_path(&hex) else {
             return Err(BlobStoreError::Mismatch("digest hex has no split point"));
         };
-        if !final_path.exists() {
+        if final_path.exists() {
+            let _ = tokio::fs::remove_file(&staging).await;
+        } else {
             if let Some(parent) = final_path.parent() {
                 std::fs::create_dir_all(parent)
                     .map_err(|error| BlobStoreError::Io(Arc::new(error)))?;
@@ -179,8 +184,6 @@ impl BlobStore {
             tokio::fs::write(Self::meta_path(&final_path), meta_bytes)
                 .await
                 .map_err(|error| BlobStoreError::Io(Arc::new(error)))?;
-        } else {
-            let _ = tokio::fs::remove_file(&staging).await;
         }
 
         Ok(BlobRef {
@@ -247,7 +250,7 @@ mod store_tests {
     )]
 
     use super::*;
-    use sha2::{Digest as _, Sha256};
+    use sha2::Sha256;
 
     const SAMPLE: &[u8] = b"ratatoskr telegram blob-store sample payload\n";
 
@@ -255,7 +258,7 @@ mod store_tests {
         format!("{:x}", Sha256::digest(SAMPLE))
     }
 
-    async fn sample_source() -> std::io::Cursor<&'static [u8]> {
+    fn sample_source() -> std::io::Cursor<&'static [u8]> {
         std::io::Cursor::new(SAMPLE)
     }
 
@@ -268,7 +271,7 @@ mod store_tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let store = BlobStore::open(dir.path()).expect("store opens");
 
-        let mut source = sample_source().await;
+        let mut source = sample_source();
         let blob = store
             .store(&pdf_media(), &mut source, None)
             .await
@@ -298,8 +301,8 @@ mod store_tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let store = BlobStore::open(dir.path()).expect("store opens");
 
-        let mut first = sample_source().await;
-        let mut second = sample_source().await;
+        let mut first = sample_source();
+        let mut second = sample_source();
         let one = store
             .store(&pdf_media(), &mut first, None)
             .await
@@ -326,7 +329,7 @@ mod store_tests {
     async fn verify_accepts_its_own_store_and_rejects_tampering() {
         let dir = tempfile::tempdir().expect("tempdir");
         let store = BlobStore::open(dir.path()).expect("store opens");
-        let mut source = sample_source().await;
+        let mut source = sample_source();
         let blob = store
             .store(&pdf_media(), &mut source, None)
             .await
@@ -369,7 +372,7 @@ mod store_tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let store = BlobStore::open(dir.path()).expect("store opens");
 
-        let mut source = sample_source().await;
+        let mut source = sample_source();
         let outcome = store
             .store(&pdf_media(), &mut source, Some(8))
             .await
@@ -393,7 +396,7 @@ mod store_tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let store = BlobStore::open(dir.path()).expect("store opens");
 
-        let mut source = sample_source().await;
+        let mut source = sample_source();
         let blob = store
             .store(&pdf_media(), &mut source, Some(SAMPLE.len() as u64))
             .await

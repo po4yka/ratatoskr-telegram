@@ -15,6 +15,10 @@ use ratatoskr_telegram_dispatcher::outbound::DeliveryLimiter;
 use ratatoskr_telegram_dispatcher::outbound::sender::{
     BotApiSink, OutboundSender, SendFuture, SenderLimits, SentMessage,
 };
+use ratatoskr_telegram_dispatcher::projection::{
+    AcceptOutcome, OperationEvent, OperationStatus, ProjectionConsumer,
+};
+use telegram_persistence::intents::{BlobCapture, IntentMetadata, NewIntent};
 use telegram_persistence::outbound_jobs::{MessagePayload, NewOutboundJob, OutboundJobKind};
 use telegram_persistence::test_support::TestDatabase;
 use uuid::Uuid;
@@ -127,5 +131,83 @@ async fn structured_payloads_reach_the_sink_verbatim_and_hash_distinguishes_mark
     assert_ne!(
         with_markup.canonical().expect("canonical"),
         plain.canonical().expect("canonical")
+    );
+}
+
+/// Terminal attachment renders name the received media and retain only the opaque Mini App
+/// target; blob-backed captures never fabricate an address that Platform did not provide.
+#[tokio::test]
+async fn attachment_terminal_describes_media_without_fabricating_a_link() {
+    let db = database().await;
+    let operation = Uuid::now_v7();
+    let intent_id = Uuid::now_v7();
+    let chat_id = 900_700_600;
+    db.database
+        .ensure_operation_binding(BOT_ID, operation, chat_id)
+        .await
+        .expect("binding");
+    db.database
+        .insert_intent(
+            &NewIntent {
+                id: intent_id,
+                bot_id: BOT_ID,
+                telegram_user_id: 900_700_601,
+                chat_id,
+                operation_id: operation,
+                source_url: None,
+                metadata: Some(IntentMetadata {
+                    forward: None,
+                    blob: Some(BlobCapture {
+                        owner_service: "ratatoskr-telegram".to_owned(),
+                        algorithm: "sha256".to_owned(),
+                        digest_hex: "a".repeat(64),
+                        media_type: "application/pdf".to_owned(),
+                        length_bytes: 1_024,
+                    }),
+                }),
+                expires_at_secs: T0 + 60,
+            },
+            T0,
+        )
+        .await
+        .expect("attachment intent");
+    let consumer = ProjectionConsumer::new(
+        db.database.clone(),
+        FakeClock::at(T0),
+        4,
+        Some("ratatoskr_test_bot".to_owned()),
+    );
+    let event = OperationEvent {
+        event_id: Uuid::now_v7(),
+        occurred_at_secs: T0 + 1,
+        correlation_id: format!("operation:{operation}"),
+        operation_id: operation,
+        status: OperationStatus::Succeeded,
+        stage: None,
+        progress_percent: None,
+        errors: Vec::new(),
+        warnings: Vec::new(),
+        message: None,
+    };
+
+    assert_eq!(
+        consumer.accept(&event).await.expect("terminal accepted"),
+        AcceptOutcome::Recorded
+    );
+
+    let payload: serde_json::Value =
+        sqlx::query_scalar("select payload from telegram.outbound_jobs where operation_id = $1")
+            .bind(operation)
+            .fetch_one(db.pool())
+            .await
+            .expect("terminal payload");
+    let text = payload["text"].as_str().expect("payload text");
+    assert!(text.contains("Attachment: application/pdf (1,024 bytes)"));
+    assert!(!text.contains("<a href="), "no blob URL exists: {text}");
+    let expected_deep_link = format!("https://t.me/ratatoskr_test_bot?startapp={intent_id}");
+    assert_eq!(
+        payload["reply_markup"]["inline_keyboard"][0][0]["url"].as_str(),
+        Some(expected_deep_link.as_str()),
+        "the Mini App receives only the opaque intent"
     );
 }

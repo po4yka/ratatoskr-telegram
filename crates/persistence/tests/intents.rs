@@ -275,7 +275,7 @@ async fn outbound_payload_round_trips_with_markup() {
 /// present neither.
 #[tokio::test]
 async fn intents_carry_bounded_metadata_and_optional_source_address() {
-    use telegram_persistence::intents::{BlobCapture, CaptureOrigin, IntentMetadata, NewIntent};
+    use telegram_persistence::intents::{BlobCapture, IntentMetadata, NewIntent};
 
     let test = database().await;
 

@@ -5,6 +5,7 @@
 
 use std::collections::BTreeMap;
 use std::net::SocketAddr;
+use std::path::PathBuf;
 
 use secrecy::SecretString;
 use url::Url;
@@ -291,16 +292,22 @@ pub struct AdminConfig {
     pub bind: SocketAddr,
 }
 
-/// Attachment ingestion limits: how many bytes one Bot API file transfer may cost.
+/// Attachment ingestion limits: the Bot API transfer budget and Telegram-owned blob staging root.
 ///
 /// The budget gates twice - against the declared size before any download starts, and against
-/// the streamed byte count while the transfer runs (rule V18 bounds both).
-#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
+/// the streamed byte count while the transfer runs (rule V18 bounds both). The root is deliberately
+/// local to Telegram: the `BlobRef` contract, not this process, gives the extractor access to bytes.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct IngestionConfig {
     /// `RATATOSKR__INGESTION__MAX_ATTACHMENT_BYTES`. The per-attachment byte ceiling.
     #[serde(default = "default_max_attachment_bytes")]
     pub max_attachment_bytes: u64,
+
+    /// `RATATOSKR__INGESTION__BLOB_ROOT`. The durable local staging root for Telegram-owned
+    /// attachment bytes before their `BlobRef` handoff.
+    #[serde(default = "default_blob_root")]
+    pub blob_root: PathBuf,
 }
 
 /// The Bot API refuses `getFile` downloads past 20 MiB for bots, so a larger budget could never
@@ -311,10 +318,15 @@ fn default_max_attachment_bytes() -> u64 {
     18 * 1_048_576
 }
 
+fn default_blob_root() -> PathBuf {
+    PathBuf::from("/var/lib/ratatoskr-telegram/blobs")
+}
+
 impl Default for IngestionConfig {
     fn default() -> Self {
         Self {
             max_attachment_bytes: default_max_attachment_bytes(),
+            blob_root: default_blob_root(),
         }
     }
 }

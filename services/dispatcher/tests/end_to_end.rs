@@ -63,7 +63,7 @@ struct Harness {
 impl Harness {
     /// Spawn on an ephemeral port. Serving runs on a dedicated runtime in its own thread, so the
     /// harness never nests a `block_on` inside the test's runtime.
-    async fn spawn(script: Arc<Mutex<Vec<(usize, Value)>>>) -> Self {
+    fn spawn(script: Arc<Mutex<Vec<(usize, Value)>>>) -> Self {
         let captured: Arc<Mutex<Vec<Captured>>> = Arc::default();
         let state = Arc::clone(&captured);
         let app = Router::new().route(
@@ -234,7 +234,7 @@ async fn operation_lifecycle_renders_progress_then_terminal_once_through_fake_bo
         (1, too_many_requests(1)),
         (3, not_modified()),
     ]));
-    let harness = Harness::spawn(script).await;
+    let harness = Harness::spawn(script);
     let fake_clock = FakeClock::at(T0);
     let clock: Arc<dyn Clock> = fake_clock.clone();
     let (consumer, sender) = composed(&db, &harness, &clock);
@@ -409,7 +409,7 @@ async fn a_job_enqueued_but_undelivered_survives_process_restart() {
 
     // No sender runs. A NEW process equivalent: fresh components over the same database.
     let script: Arc<Mutex<Vec<(usize, Value)>>> = Arc::new(Mutex::new(Vec::new()));
-    let harness = Harness::spawn(script).await;
+    let harness = Harness::spawn(script);
     let client = Client::new(
         &SecretString::new(TOKEN.to_owned().into()),
         &harness.base_url,

@@ -32,31 +32,31 @@
 
 ## 6. Forward provenance propagation
 
-- [ ] 6.1 RED: add `services/webhook/tests/capture.rs::forwarded_message_with_link_submits_capture_with_origin`: a synthetic forwarded-channel update carrying a link produces a Platform submission whose body carries the URL plus origin facts (kind, identifiers, original date), persists the intent row with the same metadata, derives the ordinary URL idempotency key, and sends exactly one acknowledgment; confirm it fails because forwards settle unsupported today
-- [ ] 6.2 GREEN: extend message classification (`MessageParts` origin extraction from text/caption) and thread provenance into intent + submission; rerun until 6.1 passes
-- [ ] 6.3 RED: add `first_forwarded_link_wins_and_linkless_forwards_stay_unsupported`: two links in a caption submit only the first; a forward with no link settles unsupported with no outbound traffic; confirm it fails before the grammar covers captions
-- [ ] 6.4 GREEN: implement first-link selection and linkless-forward settlement; rerun until 6.3 passes
+- [x] 6.1 RED: add `services/webhook/tests/capture.rs::forwarded_message_with_link_submits_capture_with_origin`: a synthetic forwarded-channel update carrying a link produces a Platform submission whose body carries the URL plus origin facts (kind, identifiers, original date), persists the intent row with the same metadata, derives the ordinary URL idempotency key, and sends exactly one acknowledgment; confirm it fails because forwards settle unsupported today
+- [x] 6.2 GREEN: extend message classification (`MessageParts` origin extraction from text/caption) and thread provenance into intent + submission; rerun until 6.1 passes
+- [x] 6.3 RED: add `first_forwarded_link_wins_and_linkless_forwards_stay_unsupported`: two links in a caption submit only the first; a forward with no link settles unsupported with no outbound traffic; confirm it fails before the grammar covers captions
+- [x] 6.4 GREEN: implement first-link selection and linkless-forward settlement; rerun until 6.3 passes
 
 ## 7. Attachment ingestion end-to-end
 
-- [ ] 7.1 RED: add `services/webhook/tests/capture.rs::pdf_document_within_limits_stores_and_submits_a_blob_capture`: a synthetic document update drives getFile + raw-byte harness routes, stores into a tempdir-rooted blob store, and asserts the submitted body references the stored BlobRef (owner, digest of the served bytes, media type, length) with no fabricated URL, the intent row carries blob metadata with null address, and one bound ack job exists; confirm it fails because documents are unsupported today
-- [ ] 7.2 GREEN: wire the attachment branch - allowlist gate, budget gate on declared size, download into the store via the bot-api seam, blob capture submission, binding/intent/ack identical to URLs; rerun until 7.1 passes
-- [ ] 7.3 RED: add `photo_attachments_ingest_like_documents_with_largest_size_within_budget` and `oversized_declared_size_is_refused_before_any_download`: the photo case picks the largest size and completes a blob capture; the oversized case enqueues exactly one refusal reply and records zero file-transfer requests at the harness; confirm both fail before the gates exist
-- [ ] 7.4 GREEN: implement photo selection and the declared-size refusal reply; rerun until 7.3 passes
-- [ ] 7.5 RED: add `a_stream_overrunning_the_budget_fails_the_update_without_publishing_a_blob`: declared size within limits but served bytes beyond the budget settle failed with the safe class and leave no published blob or capture submission; confirm it fails before the reader counter guards the pipeline
-- [ ] 7.6 GREEN: connect the budget abort to settlement and skip publication of partial bytes; rerun until 7.5 passes
+- [x] 7.1 RED: add `services/webhook/tests/capture.rs::pdf_document_within_limits_stores_and_submits_a_blob_capture`: a synthetic document update drives getFile + raw-byte harness routes, stores into a tempdir-rooted blob store, and asserts the submitted body references the stored BlobRef (owner, digest of the served bytes, media type, length) with no fabricated URL, the intent row carries blob metadata with null address, and one bound ack job exists; confirm it fails because documents are unsupported today
+- [x] 7.2 GREEN: wire the attachment branch - allowlist gate, budget gate on declared size, download into the store via the bot-api seam, blob capture submission, binding/intent/ack identical to URLs; rerun until 7.1 passes
+- [x] 7.3 RED: add `photo_attachments_ingest_like_documents_with_largest_size_within_budget` and `oversized_declared_size_is_refused_before_any_download`: the photo case picks the largest size and completes a blob capture; the oversized case enqueues exactly one refusal reply and records zero file-transfer requests at the harness; confirm both fail before the gates exist
+- [x] 7.4 GREEN: implement photo selection and the declared-size refusal reply; rerun until 7.3 passes
+- [x] 7.5 RED: add `a_stream_overrunning_the_budget_fails_the_update_without_publishing_a_blob`: declared size within limits but served bytes beyond the budget settle failed with the safe class and leave no published blob or capture submission; confirm it fails before the reader counter guards the pipeline
+- [x] 7.6 GREEN: connect the budget abort to settlement and skip publication of partial bytes; rerun until 7.5 passes
 
 ## 8. Unsupported-type truthfulness
 
-- [ ] 8.1 RED: add `services/webhook/tests/capture.rs::unsupported_media_gets_one_explicit_truthful_reply`: synthetic voice, video, and unlisted-MIME document updates each produce exactly one HTML reply stating the type is not supported yet, with no session exchange or capture call recorded at the fake Platform, and the update settling without a fabricated success; confirm it fails because such updates currently vanish silently
-- [ ] 8.2 GREEN: implement the explicit-reply branch for unsupported media kinds and MIME types; rerun until 8.1 passes
+- [x] 8.1 RED: add `services/webhook/tests/capture.rs::unsupported_media_gets_one_explicit_truthful_reply`: synthetic voice, video, and unlisted-MIME document updates each produce exactly one HTML reply stating the type is not supported yet, with no session exchange or capture call recorded at the fake Platform, and the update settling without a fabricated success; confirm it fails because such updates currently vanish silently
+- [x] 8.2 GREEN: implement the explicit-reply branch for unsupported media kinds and MIME types; rerun until 8.1 passes
 
 ## 9. Terminal renders for URL-less captures
 
-- [ ] 9.1 RED: add `services/dispatcher/tests/payload.rs::attachment_terminal_describes_media_without_fabricating_a_link`: a succeeded terminal event whose intent metadata carries blob facts composes status lead, media type and size description, the deep-link button, and no hyperlink; confirm it fails because composition requires a source address
-- [ ] 9.2 GREEN: branch terminal composition on metadata blob facts while leaving URL captures byte-identical; rerun until 9.1 passes
+- [x] 9.1 RED: add `services/dispatcher/tests/payload.rs::attachment_terminal_describes_media_without_fabricating_a_link`: a succeeded terminal event whose intent metadata carries blob facts composes status lead, media type and size description, the deep-link button, and no hyperlink; confirm it fails because composition requires a source address
+- [x] 9.2 GREEN: branch terminal composition on metadata blob facts while leaving URL captures byte-identical; rerun until 9.1 passes
 
 ## 10. Documentation and status
 
-- [ ] 10.1 Update `README.md` (status paragraph, article workflows, data ownership note), `DEVELOPMENT.md` (current-stage, new config keys, database-recreate reminder), and `docs/DATA_MODEL.md` intents description. Cannot start from a failing test: documentation.
-- [ ] 10.2 Run the full gate list from DEVELOPMENT.md against a recreated local database and record the evidence in this change before archive.
+- [x] 10.1 Update `README.md` (status paragraph, article workflows, data ownership note), `DEVELOPMENT.md` (current-stage, new config keys, database-recreate reminder), and `docs/DATA_MODEL.md` intents description. Cannot start from a failing test: documentation.
+- [x] 10.2 Run the full gate list from DEVELOPMENT.md against a recreated local database and record the evidence in this change before archive — 2026-08-27 green against an isolated PostgreSQL 17 instance.
