@@ -42,4 +42,4 @@
 
 - [x] 8.1 Update README plan status, commands/buttons, callback retention, `docs/INTERFACES.md`, architecture/security/telemetry notes, and current schema docs; documentation cannot start from a failing behavior test, so verify it names only implemented surfaces and keeps OAuth/list UI out of scope
 - [x] 8.2 Run the exact fenced gate from `DEVELOPMENT.md` through `build-gate`, run `openspec validate github-repository-preview-confirmation-flow --type change --strict`, inspect `git diff --check` and the complete diff, and rerun the live GitHub dependency test
-- [ ] 8.3 Fetch/rebase on current `origin/main`, rerun targeted/full/live gates, commit only this change, integrate it into Telegram `main`, push `main`, then remove the merged task worktree and delete the fully merged task branch with `git branch -d`
+- [x] 8.3 Fetch/rebase on current `origin/main`, rerun targeted/full/live gates, commit only this change, integrate it into Telegram `main`, push `main`, then remove the merged task worktree and delete the fully merged task branch with `git branch -d`

@@ -7,17 +7,27 @@ Turning an authorized private-message URL or `/summarize` command into an idempo
 
 ### Requirement: Authorized private messages parse into capture intents
 
-A processable message update from an authorized sender in a private chat SHALL be parsed into typed intents: a message whose text is a single http(s) URL SHALL become a capture intent, a `/summarize <url>` command with a well-formed URL argument SHALL become the same intent kind, and any other plain text - including a `/summarize` without a usable URL argument - SHALL leave the update settling as unsupported with class-only telemetry and no outbound traffic. A forwarded message whose text or caption contains an http(s) link SHALL become that same capture intent with its forward origin preserved as bounded metadata on the intent record and carried with the submission; when several links are present the first one is captured. A forwarded message carrying no link and no supported attachment settles unsupported.
+A processable message update from an authorized sender in a private chat SHALL be parsed into typed intents: a message whose text is a single http(s) URL SHALL become a capture intent except when it is a canonical GitHub repository URL handled by the GitHub repository preview flow; a `/summarize <url>` command with a well-formed URL argument SHALL become a capture intent even when its argument is a GitHub repository URL, because the explicit command names article/content capture; and any other plain text - including a `/summarize` without a usable URL argument - SHALL leave the update settling as unsupported with class-only telemetry and no outbound traffic. A forwarded message whose text or caption contains an http(s) link SHALL become that same capture intent with its forward origin preserved as bounded metadata on the intent record and carried with the submission; when several links are present the first one is captured. A forwarded message carrying no link and no supported attachment settles unsupported.
 
 #### Scenario: A bare URL becomes a capture intent
 
 - **WHEN** an enabled sender in a private chat sends a message whose text is `https://example.test/article`
 - **THEN** the update settles processed and one capture submission for that URL is attempted
 
+#### Scenario: A canonical GitHub repository URL routes to preview
+
+- **WHEN** an enabled sender sends `https://github.com/owner/repository`
+- **THEN** the GitHub repository preview flow handles it and no content capture submission is attempted
+
 #### Scenario: The summarize command form parses identically
 
 - **WHEN** an enabled sender sends `/summarize https://example.test/article`
 - **THEN** the update settles processed and the capture submission derives from the same intent kind and URL
+
+#### Scenario: Summarize explicitly captures a GitHub URL as content
+
+- **WHEN** an enabled sender sends `/summarize https://github.com/owner/repository`
+- **THEN** the explicit capture command submits that URL through the article flow rather than opening repository preview
 
 #### Scenario: Text without a usable URL is unsupported
 
