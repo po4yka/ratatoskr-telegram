@@ -161,7 +161,8 @@ A bare GitHub repository URL opens the safe metadata workflow by default:
 ```text
 https://github.com/owner/repository
   -> metadata preview
-  -> add to local GitHub catalog
+  -> choose an available action
+  -> explicit confirmation
 ```
 
 The user can then choose an explicit mode:
@@ -172,7 +173,7 @@ The user can then choose an explicit mode:
 | `track` | Yes | No | Yes |
 | `star` | Yes | Yes | Policy-dependent |
 
-External GitHub writes require:
+Every repository action (`metadata`, `track`, and `star`) requires:
 
 - a connected GitHub account;
 - the required provider scope;
@@ -185,12 +186,10 @@ Telegram never receives or stores the GitHub access token. The command path is:
 
 ```text
 ratatoskr-telegram
-  -> Platform operation
-  -> github.repository.add_requested.v1
-  -> ratatoskr-github
-  -> optional vault.target.desired.v1
-  -> operation events
-  -> Telegram message projection
+  -> authenticated Platform `/v1/gh` gateway
+  -> ratatoskr-github preview/action API
+  -> component result
+  -> durable Telegram message projection
 ```
 
 If starring succeeds but list filing or backup enrollment fails, the bot reports that partial result and does not undo the successful star.
@@ -474,7 +473,7 @@ Traces correlate Telegram update, interaction, Platform operation, downstream co
 4. Implement the dispatcher and operation projections.
 5. Add plain URL article submission.
 6. Add file/PDF and forwarded-message ingestion.
-7. Add GitHub repository `metadata`, `track`, and confirmed `star` flows.
+7. Add GitHub repository preview and confirmed `metadata`, `track`, and `star` flows. (done)
 8. Add callback tokens, dialogue state, and opaque deep-link intents.
 9. Add Mini App `initData` validation and Platform identity assertions.
 10. Add notifications, deployment and recovery runbooks, and workspace integration tests.
@@ -485,4 +484,6 @@ The planned workspace snapshot will pin Telegram with compatible Platform, Contr
 
 ## Project status
 
-Plan items 1 through 4 of `docs/IMPLEMENTATION_PLAN.md` are done: the workspace builds, both binaries run and answer the operator plane, configuration refuses unknown or invalid values, telemetry correlates, the `telegram` schema applies at startup, and CI gates all of it. The webhook role admits Bot API deliveries through a secret-verified, size- and schema-limited endpoint. It persists the parsed payload and deduplication identity in `telegram.updates` before acknowledgment, then a worker claims pending work from PostgreSQL; the bounded in-process queue is only a wake-up hint. Terminal settlement removes the payload while keeping deduplication evidence, and a dedicated `denied` state records access-policy refusals. The typed Bot API client exists behind `crates/bot-api`. The worker resolves every processable update against `telegram.identities` and `telegram.chats`: unknown or disabled senders and non-private chats settle `denied` silently — no reply, no outbound call, class-only telemetry — while startup seeds exactly one enabled owner row from `RATATOSKR__ACCESS__OWNER_TELEGRAM_USER_ID`, insert-if-absent. Since item 4 the dispatcher requires a database like the webhook and owns the outbound half: `telegram.outbound_jobs` is the durable queue every Bot API write passes through before any network call; claiming is strict FIFO per chat with one job in flight; global and per-chat rate limits honor Telegram's `Retry-After`; transient failures back off with jitter to a bounded dead-letter and permanent answers settle immediately, unbinding a dead message target so the next revision sends fresh. Edits are idempotent per revision — stale ones are superseded without reaching the wire — and `platform.operation.progressed.v1` snapshots render into the bound message throttled by durable reschedule arithmetic, HTML-escaped, with terminal states applied exactly once per binding over an event seam that NATS will plug into at workspace integration. Item 5 added the first product slice: URL and `/summarize` intents submit idempotent `content.capture.requested.v1` captures through Platform's authenticated API, a follower consumes Platform's per-operation SSE stream into the projection seam, and terminal renders carry the captured address plus a deep-link button backed by opaque intent records. The sections above describe the intended full integration architecture; retry/cancel affordances, callback/dialogue machinery, and Mini App authentication are still to be built, in `docs/IMPLEMENTATION_PLAN.md` order.
+Plan items 1 through 7 of `docs/IMPLEMENTATION_PLAN.md` are implemented: the workspace builds, both binaries run and answer the operator plane, configuration refuses unknown or invalid values, telemetry correlates, and the first-version `telegram` schema applies at startup. The webhook authenticates, bounds, deduplicates, authorizes, and durably processes private owner updates; the dispatcher owns ordered/rate-limited Bot API delivery and truthful operation projections. Article URLs, bounded attachments, and forwarded links submit through Platform without leaking provider or file credentials.
+
+An exact canonical GitHub repository URL now routes before generic article capture. Telegram reads the preview through Platform's authenticated GitHub gateway, renders only GitHub-reported fields and capabilities, and persists opaque owner/chat/message/version-bound callback authorities. Selecting any mode only produces a second confirmation prompt; exactly one live confirmed token may submit under its durable idempotency identity. The final message preserves GitHub's aggregate and metadata/star/desired-backup component states, including partial failures, and never upgrades desired-policy acceptance into backup completion or verification. The callback store here is the minimal item-7 authority; general dialogue state, Mini App authentication, OAuth, and star-list UI remain future work.

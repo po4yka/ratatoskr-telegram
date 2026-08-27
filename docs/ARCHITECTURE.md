@@ -346,23 +346,20 @@ star
 
 ### 12.1. Preview
 
-Telegram requests metadata resolution through Platform/GitHub and renders:
+Telegram posts a typed read-only preview request through Platform's authenticated `/v1/gh/repositories/preview` gateway and renders:
 
 - repository name/description;
-- visibility/access outcome;
-- current local catalog state;
-- available GitHub account/capabilities;
-- backup options.
+- exact available `metadata`, `track`, and `star` capabilities.
 
 ### 12.2. External write confirmation
 
-`star` requires an inline confirmation token describing:
+Every action mode requires a second inline confirmation token describing:
 
 - GitHub account;
 - repository;
 - external starring effect;
-- optional star-list selection;
-- optional backup policy.
+- catalog-only or desired-backup effect;
+- provider-star effect when mode is `star`.
 
 Callback payload contains an opaque token, not the full repository/policy JSON.
 
@@ -373,9 +370,7 @@ Final projection reports outcomes separately:
 ```text
 metadata added
 GitHub star succeeded/failed/skipped
-star-list filing succeeded/failed/skipped
 backup policy accepted/failed/skipped
-analysis accepted/failed/skipped
 ```
 
 Telegram never attempts compensating provider mutations itself.

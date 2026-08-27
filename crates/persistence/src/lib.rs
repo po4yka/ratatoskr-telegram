@@ -13,6 +13,7 @@
 pub mod test_support;
 
 pub mod bindings;
+pub mod callback_flows;
 pub mod inbox;
 pub mod intents;
 pub mod message_bindings;

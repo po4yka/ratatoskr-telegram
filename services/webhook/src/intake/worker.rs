@@ -22,13 +22,14 @@ use crate::intake::QueuedUpdate;
 use crate::intake::access;
 use crate::intake::capture;
 use crate::intake::classify::supported;
+use crate::intake::github;
 use crate::intake::intent;
 
 /// Everything the capture arm needs, built once at startup and shared across claims.
 #[derive(Clone)]
 pub struct CaptureContext {
-    sessions: Arc<platform_api::session::SessionSource>,
-    bot_api: bot_api::Client,
+    pub(super) sessions: Arc<platform_api::session::SessionSource>,
+    pub(super) bot_api: bot_api::Client,
     blobs: BlobStore,
     max_attachment_bytes: u64,
 }
@@ -219,6 +220,18 @@ async fn self_domain_action(
     item: &QueuedUpdate,
     capture_context: Option<&CaptureContext>,
 ) -> UpdateState {
+    if let bot_api::UpdateKind::CallbackQuery(callback) = &item.update.kind {
+        let Some(context) = capture_context else {
+            return UpdateState::Processed;
+        };
+        return if github::handle_callback(database, item.bot_id, callback, context, now_secs())
+            .await
+        {
+            UpdateState::Processed
+        } else {
+            UpdateState::Failed
+        };
+    }
     let Some(parts) = message_parts(&item.update.kind) else {
         return UpdateState::Processed;
     };
@@ -244,6 +257,24 @@ async fn self_domain_action(
                 .await
             }
             None => handle_attachment(database, item.bot_id, &parts, context).await,
+        };
+    }
+
+    if let Some(repository_url) = parts.text.and_then(github::parse_repository_url) {
+        return if github::preview(
+            database,
+            item.bot_id,
+            parts.chat_id,
+            parts.sender_id,
+            repository_url,
+            context,
+            now_secs(),
+        )
+        .await
+        {
+            UpdateState::Processed
+        } else {
+            UpdateState::Failed
         };
     }
 

@@ -275,3 +275,50 @@ comment on column telegram.interaction_intents.metadata is
 comment on column telegram.interaction_intents.expires_at is
     'When the intent stops resolving. Enforced by the lookup, which reports nothing for expired '
     'rows even to their owner; pruning aged rows is a stated retention duty.';
+
+-- `callback_flows` and `callback_tokens` are the minimal authority behind GitHub repository
+-- buttons. Telegram callback_data carries only the random token; target, owner, chat, expected
+-- provider message, stage/version, expiry and the stable action identity remain server-side.
+create table telegram.callback_flows (
+    id                           uuid        not null primary key,
+    bot_id                       bigint      not null,
+    telegram_user_id             bigint      not null,
+    chat_id                      bigint      not null,
+    expected_message_id          bigint,
+    github_repository_numeric_id bigint      not null check (github_repository_numeric_id > 0),
+    repository_full_name         text        not null,
+    canonical_url                text        not null,
+    account_ref                  text,
+    mode                         text        check (mode is null or mode in ('metadata', 'track', 'star')),
+    stage                        text        not null default 'preview'
+                                 check (stage in ('preview', 'confirming', 'submitting',
+                                                  'completed', 'cancelled')),
+    version                      bigint      not null default 0 check (version >= 0),
+    action_idempotency_key       text        not null unique,
+    result                       jsonb,
+    created_at                   timestamptz not null,
+    expires_at                   timestamptz not null,
+    updated_at                   timestamptz not null
+);
+
+create table telegram.callback_tokens (
+    token             text        not null primary key,
+    flow_id           uuid        not null references telegram.callback_flows(id) on delete cascade,
+    action            text        not null check (action in ('select_metadata', 'select_track',
+                                                              'select_star', 'confirm', 'cancel')),
+    expected_version  bigint      not null check (expected_version >= 0),
+    expires_at        timestamptz not null,
+    consumed_at       timestamptz,
+    consumed_by_user  bigint,
+    check ((consumed_at is null) = (consumed_by_user is null))
+);
+
+create index callback_tokens_flow_idx on telegram.callback_tokens (flow_id);
+
+comment on table telegram.callback_flows is
+    'Owner-bound GitHub repository confirmation state. It stores stable references and the exact '
+    'terminal result, never provider credentials, Platform sessions, callback payload JSON, or '
+    'private message bodies.';
+
+comment on table telegram.callback_tokens is
+    'Opaque one-time Telegram callback authorities. The token contains no business state.';

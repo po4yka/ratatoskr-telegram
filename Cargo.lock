@@ -2148,9 +2148,36 @@ dependencies = [
 ]
 
 [[package]]
+name = "ratatoskr-event-envelope"
+version = "0.1.0"
+source = "git+https://github.com/po4yka/ratatoskr-contracts.git?rev=5b8bbb4220375f6236066a23b19e9d6f8faaaf28#5b8bbb4220375f6236066a23b19e9d6f8faaaf28"
+dependencies = [
+ "jiff",
+ "ratatoskr-identifiers",
+ "regex",
+ "schemars 1.2.2",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "uuid",
+]
+
+[[package]]
+name = "ratatoskr-github-contracts"
+version = "0.1.0"
+source = "git+https://github.com/po4yka/ratatoskr-contracts.git?rev=5b8bbb4220375f6236066a23b19e9d6f8faaaf28#5b8bbb4220375f6236066a23b19e9d6f8faaaf28"
+dependencies = [
+ "ratatoskr-event-envelope",
+ "ratatoskr-identifiers",
+ "regex",
+ "schemars 1.2.2",
+ "serde",
+]
+
+[[package]]
 name = "ratatoskr-identifiers"
 version = "0.1.0"
-source = "git+https://github.com/po4yka/ratatoskr-contracts.git?rev=d56c6891ce9b4fca2c65d43205080d9a666ab5a0#d56c6891ce9b4fca2c65d43205080d9a666ab5a0"
+source = "git+https://github.com/po4yka/ratatoskr-contracts.git?rev=5b8bbb4220375f6236066a23b19e9d6f8faaaf28#5b8bbb4220375f6236066a23b19e9d6f8faaaf28"
 dependencies = [
  "jiff",
  "regex",
@@ -2252,6 +2279,8 @@ dependencies = [
 name = "ratatoskr-telegram-persistence"
 version = "0.1.0"
 dependencies = [
+ "base64",
+ "ratatoskr-github-contracts",
  "ratatoskr-telegram-core",
  "ratatoskr-telegram-persistence",
  "secrecy",
@@ -2272,6 +2301,7 @@ dependencies = [
  "base64",
  "ed25519-dalek",
  "jiff",
+ "ratatoskr-github-contracts",
  "reqwest",
  "secrecy",
  "serde",
@@ -2311,6 +2341,7 @@ dependencies = [
  "http-body-util",
  "jiff",
  "metrics",
+ "ratatoskr-github-contracts",
  "ratatoskr-identifiers",
  "ratatoskr-telegram-blob-store",
  "ratatoskr-telegram-bot-api",
@@ -3260,7 +3291,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.4.3",
+ "getrandom 0.3.4",
  "once_cell",
  "rustix",
  "windows-sys 0.61.2",

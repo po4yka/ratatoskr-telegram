@@ -23,6 +23,8 @@ tokio.workspace     = true
 # App-minted UUIDv7 primary keys for the tables this crate writes (message bindings, outbound
 # jobs): the schema deliberately carries no DEFAULT on id columns, so the database cannot mint.
 uuid.workspace = true
+base64.workspace = true
+ratatoskr-github-contracts.workspace = true
 # Message payloads cross as jsonb: serde derives the payload struct and serde_json does the
 # canonical serialization the content hash covers.
 serde.workspace      = true

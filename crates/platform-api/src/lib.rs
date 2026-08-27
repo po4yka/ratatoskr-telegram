@@ -21,6 +21,11 @@ use serde::Deserialize;
 use url::Url;
 use uuid::Uuid;
 
+pub use ratatoskr_github_contracts::{
+    RepositoryActionRequest, RepositoryActionResult, RepositoryPreviewRequest,
+    RepositoryPreviewResponse,
+};
+
 /// Why one call to Platform failed. Closed, safe to log, and free of credential material: no
 /// variant carries the presented bearer, the signing key, or a response body verbatim.
 #[derive(Debug, thiserror::Error)]
@@ -390,6 +395,55 @@ impl Client {
             errors: parsed.errors,
             warnings: parsed.warnings,
         })
+    }
+
+    /// Resolve one repository preview through Platform's authenticated GitHub gateway.
+    ///
+    /// This is read-only: it cannot catalog, track, star, or otherwise mutate repository state.
+    ///
+    /// # Errors
+    ///
+    /// [`PlatformError`] per the taxonomy above.
+    pub async fn preview_repository(
+        &self,
+        session: &str,
+        request: &RepositoryPreviewRequest,
+    ) -> Result<RepositoryPreviewResponse, PlatformError> {
+        let response = self
+            .send(
+                self.http
+                    .post(self.url("/v1/gh/repositories/preview"))
+                    .bearer_auth(session)
+                    .json(request),
+            )
+            .await?;
+        let body = response.bytes().await.map_err(PlatformError::Network)?;
+        serde_json::from_slice(&body).map_err(PlatformError::Json)
+    }
+
+    /// Submit one already-confirmed repository action through Platform's GitHub gateway.
+    ///
+    /// The request itself carries confirmation evidence and its stable idempotency identity;
+    /// callers must reuse the same value when a response is uncertain.
+    ///
+    /// # Errors
+    ///
+    /// [`PlatformError`] per the taxonomy above.
+    pub async fn apply_repository_action(
+        &self,
+        session: &str,
+        request: &RepositoryActionRequest,
+    ) -> Result<RepositoryActionResult, PlatformError> {
+        let response = self
+            .send(
+                self.http
+                    .post(self.url("/v1/gh/repositories/actions"))
+                    .bearer_auth(session)
+                    .json(request),
+            )
+            .await?;
+        let body = response.bytes().await.map_err(PlatformError::Network)?;
+        serde_json::from_slice(&body).map_err(PlatformError::Json)
     }
 
     fn url(&self, path: &str) -> Url {

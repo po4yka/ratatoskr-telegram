@@ -11,6 +11,7 @@ mod admit;
 mod build;
 mod capture;
 mod classify;
+mod github;
 mod intent;
 mod worker;
 

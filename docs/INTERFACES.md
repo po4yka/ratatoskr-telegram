@@ -10,7 +10,7 @@ Send/edit/delete/answer-callback/file operations through a dispatcher with per-c
 
 ## Platform/domain
 
-Identity assertion exchange; operation creation/status; article capture and GitHub repository preview/add/mode/star/list/policy commands through Platform or versioned NATS contracts; operation/domain events for projections.
+Identity assertion exchange; operation creation/status; article capture; and typed GitHub repository preview/action calls through Platform's authenticated `/v1/gh/repositories` gateway. Repository preview is read-only. Every `metadata`, `track`, or `star` action carries server-side confirmation evidence and one stable idempotency identity. GitHub returns its aggregate plus metadata/provider-star/desired-backup component facts; Telegram renders those facts without compensation or local success inference. Star-list selection remains outside this surface.
 
 ## Mini App
 

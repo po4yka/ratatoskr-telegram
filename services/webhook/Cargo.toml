@@ -24,6 +24,7 @@ ratatoskr-telegram-platform-api.workspace = true
 ratatoskr-telegram-telemetry.workspace   = true
 ratatoskr-telegram-blob-store.workspace  = true
 ratatoskr-identifiers.workspace = true
+ratatoskr-github-contracts.workspace = true
 axum.workspace    = true
 http.workspace    = true
 http-body-util.workspace = true
