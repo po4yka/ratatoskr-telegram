@@ -6,13 +6,50 @@ use telegram_persistence::dialogues::{
     DialogueLifecycle, DialogueScope, GitHubRepositoryDialogue, NewGitHubDialogue,
 };
 use telegram_persistence::interaction_tokens::{
-    NewOperationIntent, OperationIntentPayload, TokenPresentation, TokenScope, TokenSurface,
+    LibraryReadScope, NewLibraryReadIntent, NewOperationIntent, OperationIntentPayload,
+    TokenPresentation, TokenScope, TokenSurface,
 };
 use telegram_persistence::test_support::TestDatabase;
 
 const T0: i64 = 1_800_000_000;
 const BOT: i64 = 42;
 const OWNER: i64 = 900_700_601;
+
+#[tokio::test]
+async fn cleanup_removes_expired_library_read_authority() {
+    let test = TestDatabase::create().await.expect("database");
+    let token = test
+        .database
+        .issue_library_read_intent(
+            NewLibraryReadIntent {
+                scope: LibraryReadScope {
+                    bot_id: BOT,
+                    telegram_user_id: OWNER,
+                    internal_user_id: uuid::Uuid::now_v7(),
+                    chat_id: OWNER,
+                },
+                analysis_id: uuid::Uuid::now_v7(),
+                expires_at: T0 + 10,
+            },
+            T0,
+        )
+        .await
+        .expect("library read token");
+
+    let counts = test
+        .database
+        .cleanup_interactions(T0 + 10, T0, 10)
+        .await
+        .expect("cleanup");
+    assert_eq!(counts.tokens_deleted, 1);
+    let remaining: i64 =
+        sqlx::query_scalar("select count(*) from telegram.interaction_tokens where token = $1")
+            .bind(token)
+            .fetch_one(test.pool())
+            .await
+            .expect("remaining token count");
+    assert_eq!(remaining, 0);
+}
 
 fn dialogue_scope() -> DialogueScope {
     DialogueScope {

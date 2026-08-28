@@ -269,6 +269,8 @@ Representative commands:
 /article <url>
 /repository <url>
 /search <query>
+/unread
+/read <opaque-token>
 /status
 /settings
 /cancel
@@ -277,6 +279,13 @@ Representative commands:
 Bare supported URLs can route to article, GitHub, X, Instagram, or Threads handling.
 
 Commands are parsed deterministically. Ambiguous input creates a confirmation/selection dialogue rather than guessing a destructive action.
+
+Library commands remain an adapter over Platform's authenticated public API. Search never calls
+Knowledge directly: `/search` and `/unread` request offset zero and at most five minimized results.
+Unread results receive command-surface authority only while `library.read_state` is advertised.
+The 64-character value resolves server-side to one analysis reference, expires in 15 minutes, and
+is consumed under bot/Telegram actor/internal-user/chat scope before the idempotent Platform PUT.
+Telegram stores no title or snippet in the authority row and never infers success from request send.
 
 ## 11. Article and document flow
 
@@ -809,6 +818,7 @@ User/chat/message IDs are controlled trace fields, not unbounded metric labels.
 - launch Mini App through opaque intent and exchange session;
 - restart webhook/dispatcher without duplicate side effects;
 - deliver configured notification.
+- search and browse unread library summaries, then mark one read through an opaque action.
 
 ## 29. Deployment architecture
 

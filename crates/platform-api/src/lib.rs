@@ -21,6 +21,8 @@ use serde::Deserialize;
 use url::Url;
 use uuid::Uuid;
 
+const MAX_JSON_RESPONSE_BYTES: usize = 256 * 1024;
+
 pub use ratatoskr_github_contracts::{
     RepositoryActionRequest, RepositoryActionResult, RepositoryPreviewRequest,
     RepositoryPreviewResponse,
@@ -337,7 +339,70 @@ impl Client {
         Ok(SessionMinted {
             credential: secrecy::SecretString::new(wire.credential.into()),
             expires_at: wire.expires_at,
+            user_id: wire.user_id,
         })
+    }
+
+    /// Read the current closed capability document for one session.
+    ///
+    /// # Errors
+    ///
+    /// [`PlatformError`] per the taxonomy above.
+    pub async fn capabilities(&self, session: &str) -> Result<CapabilityDocument, PlatformError> {
+        let response = self
+            .send(
+                self.http
+                    .get(self.url("/v1/capabilities"))
+                    .bearer_auth(session),
+            )
+            .await?;
+        bounded_json(response).await
+    }
+
+    /// Search or browse the authenticated user's library.
+    ///
+    /// # Errors
+    ///
+    /// [`PlatformError`] per the taxonomy above.
+    pub async fn search_library(
+        &self,
+        session: &str,
+        query: &LibrarySearch,
+    ) -> Result<LibraryPage, PlatformError> {
+        let mut url = self.url("/v1/library/search");
+        {
+            let mut pairs = url.query_pairs_mut();
+            pairs.append_pair("q", &query.query);
+            if let Some(read_state) = query.read_state {
+                pairs.append_pair("read_state", read_state.as_str());
+            }
+            pairs.append_pair("limit", &query.limit.to_string());
+            pairs.append_pair("offset", &query.offset.to_string());
+        }
+        let response = self.send(self.http.get(url).bearer_auth(session)).await?;
+        bounded_json(response).await
+    }
+
+    /// Idempotently replace one caller-owned analysis read state.
+    ///
+    /// # Errors
+    ///
+    /// [`PlatformError`] per the taxonomy above.
+    pub async fn replace_library_read_state(
+        &self,
+        session: &str,
+        analysis_id: Uuid,
+        read_state: LibraryReadState,
+    ) -> Result<ReadStateResource, PlatformError> {
+        let response = self
+            .send(
+                self.http
+                    .put(self.url(&format!("/v1/library/items/{analysis_id}/read-state")))
+                    .bearer_auth(session)
+                    .json(&ReplaceReadState { read_state }),
+            )
+            .await?;
+        bounded_json(response).await
     }
 
     /// Follow one operation's progress over Server-Sent Events. The returned stream yields
@@ -606,6 +671,7 @@ struct ExchangeAssertionWire<'a> {
 struct SessionMintedWire {
     credential: String,
     expires_at: String,
+    user_id: Uuid,
 }
 
 /// What `POST /v1/sessions/telegram` returns on success.
@@ -615,6 +681,126 @@ pub struct SessionMinted {
     pub credential: secrecy::SecretString,
     /// When it stops working, as the upstream RFC 3339 string.
     pub expires_at: String,
+    /// Canonical Platform user authenticated by the assertion.
+    pub user_id: Uuid,
+}
+
+/// Current public capabilities visible to one authenticated caller.
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CapabilityDocument {
+    /// Public API version.
+    pub api_version: String,
+    /// Client-version floor object, retained only to enforce the exact response shape.
+    pub minimum_client_versions: serde_json::Value,
+    /// Closed feature names.
+    pub capabilities: Vec<String>,
+    /// Last-observed service documents, retained only to enforce the exact response shape.
+    pub services: Vec<serde_json::Value>,
+}
+
+impl CapabilityDocument {
+    /// Whether this response advertises one exact feature name.
+    #[must_use]
+    pub fn contains(&self, capability: &str) -> bool {
+        self.capabilities.iter().any(|name| name == capability)
+    }
+}
+
+/// Effective read state in the public library contract.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LibraryReadState {
+    /// Not yet read.
+    Unread,
+    /// Read.
+    Read,
+}
+
+impl LibraryReadState {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Unread => "unread",
+            Self::Read => "read",
+        }
+    }
+}
+
+/// One bounded public search request.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LibrarySearch {
+    /// Search text; blank means recency browse.
+    pub query: String,
+    /// Optional effective-state filter.
+    pub read_state: Option<LibraryReadState>,
+    /// Requested page size.
+    pub limit: u32,
+    /// Zero-based result offset.
+    pub offset: u64,
+}
+
+/// One minimized public library result.
+#[derive(Debug, Clone, PartialEq, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LibraryItem {
+    /// Accepted analysis identity.
+    pub analysis_id: Uuid,
+    /// Canonical document identity.
+    pub document_id: Uuid,
+    /// Bounded display title.
+    pub title: String,
+    /// Optional match snippet.
+    pub snippet: Option<String>,
+    /// Optional finite positive relevance score.
+    pub score: Option<f32>,
+    /// Effective read state.
+    pub read_state: LibraryReadState,
+}
+
+/// One bounded library page.
+#[derive(Debug, Clone, PartialEq, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LibraryPage {
+    /// Ordered summaries.
+    pub items: Vec<LibraryItem>,
+    /// Applied page size.
+    pub limit: u32,
+    /// Applied offset.
+    pub offset: u64,
+    /// Whether another item exists after this page.
+    pub has_more: bool,
+}
+
+#[derive(serde::Serialize)]
+struct ReplaceReadState {
+    read_state: LibraryReadState,
+}
+
+/// Authoritative state returned after replacement.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ReadStateResource {
+    /// Stored effective state.
+    pub read_state: LibraryReadState,
+}
+
+async fn bounded_json<T: serde::de::DeserializeOwned>(
+    mut response: reqwest::Response,
+) -> Result<T, PlatformError> {
+    if response
+        .content_length()
+        .is_some_and(|length| length > MAX_JSON_RESPONSE_BYTES as u64)
+    {
+        return Err(PlatformError::MalformedFrame);
+    }
+    let mut bytes = Vec::new();
+    while let Some(chunk) = response.chunk().await.map_err(PlatformError::Network)? {
+        if bytes.len().saturating_add(chunk.len()) > MAX_JSON_RESPONSE_BYTES {
+            return Err(PlatformError::MalformedFrame);
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    serde_json::from_slice(&bytes).map_err(PlatformError::Json)
 }
 
 #[derive(Deserialize)]

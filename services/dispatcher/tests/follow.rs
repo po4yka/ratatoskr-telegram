@@ -84,7 +84,7 @@ fn platform_harness() -> (String, Arc<HarnessState>) {
                     axum::Json(serde_json::json!({
                         "credential": "synthetic-session-credential",
                         "expires_at": "2030-01-01T00:00:00Z",
-                        "user_id": OWNER.to_string(),
+                        "user_id": "018f0000-0000-7000-8000-00000000abcd",
                     })),
                 )
             }),

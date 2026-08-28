@@ -91,6 +91,10 @@ pub const TELEGRAM_PROJECTION_EVENTS_TOTAL: &str = "telegram_projection_events_t
 /// outcomes. Both labels are closed: unknown future producer classes collapse to `other`.
 pub const TELEGRAM_NOTIFICATION_EVENTS_TOTAL: &str = "telegram_notification_events_total";
 
+/// `telegram_library_commands_total{command,outcome}` — library adapter outcomes using only the
+/// closed command (`search`, `unread`, `read`) and outcome vocabularies.
+pub const TELEGRAM_LIBRARY_COMMANDS_TOTAL: &str = "telegram_library_commands_total";
+
 /// `telegram_notification_backlog` — pending messages reported by the fixed durable.
 pub const TELEGRAM_NOTIFICATION_BACKLOG: &str = "telegram_notification_backlog";
 

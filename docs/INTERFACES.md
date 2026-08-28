@@ -9,6 +9,9 @@ expiry, one-time state, and expected dialogue version transactionally. An unusab
 callback is answered promptly with the same expired-state message and never releases another
 action. Exact `/start <64-character-token>` messages resolve the owner-scoped `operation_status`
 intent once; no URL, operation ID, or business payload is parsed from the command.
+Exact `/search <query>` (1–256 Unicode scalar values), `/unread`, and `/read <64-character-token>`
+forms are accepted only after the existing private-chat authorization gate. Invalid forms are
+answered locally and make no Platform library request.
 
 ## Bot API outbound
 
@@ -16,7 +19,13 @@ Send/edit/delete/answer-callback/file operations through a dispatcher with per-c
 
 ## Platform/domain
 
-Identity assertion exchange; operation creation/status; article capture; and typed GitHub repository preview/action calls through Platform's authenticated `/v1/gh/repositories` gateway. Repository preview is read-only. Every `metadata`, `track`, or `star` action carries server-side confirmation evidence and one stable idempotency identity. GitHub returns its aggregate plus metadata/provider-star/desired-backup component facts; Telegram renders those facts without compensation or local success inference. Star-list selection remains outside this surface.
+Identity assertion exchange; operation creation/status; article capture; typed library
+`GET /v1/library/search` and idempotent `PUT /v1/library/items/{analysis_id}/read-state`; and typed
+GitHub repository preview/action calls through Platform's authenticated `/v1/gh/repositories`
+gateway. Telegram checks `library.search` before querying and independently checks
+`library.read_state` before issuing or consuming read actions. It renders only the five minimized
+summaries returned by Platform, escapes bounded HTML fields, and treats Platform's returned read
+resource as authority. Repository preview is read-only. Every `metadata`, `track`, or `star` action carries server-side confirmation evidence and one stable idempotency identity. GitHub returns its aggregate plus metadata/provider-star/desired-backup component facts; Telegram renders those facts without compensation or local success inference. Star-list selection remains outside this surface.
 
 ## Mini App
 

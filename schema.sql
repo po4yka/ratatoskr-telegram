@@ -367,26 +367,29 @@ comment on table telegram.dialog_states is
     'Scoped, versioned Telegram dialogue state. Payloads contain bounded references only and are '
     'decoded through the closed type for the named dialogue kind.';
 
--- `interaction_tokens` is the shared client-presented authority for Telegram callback data and
--- `/start` deep links. The application mints the exact 64-byte random token; no business state is
--- encoded into it. Consumption evidence is paired and scope is checked before either this row or
--- its dialogue can change.
+-- `interaction_tokens` is the shared client-presented authority for Telegram callback data,
+-- `/start` deep links, and bounded command actions. The application mints the exact 64-byte random
+-- token; no business state is encoded into it. Consumption evidence is paired and scope is checked
+-- before either this row or its dialogue can change.
 create table telegram.interaction_tokens (
     token                     text        not null primary key
                                           check (octet_length(token) = 64)
                                           check (token ~ '^[A-Za-z0-9_-]{64}$'),
-    surface                   text        not null check (surface in ('callback', 'deep_link')),
+    surface                   text        not null
+                                          check (surface in ('callback', 'deep_link', 'command')),
     action                    text        not null
                                           check (action in ('select_metadata', 'select_track',
                                                              'select_star', 'confirm', 'cancel',
-                                                             'operation_status')),
+                                                             'operation_status', 'library_read')),
     bot_id                    bigint      not null,
     telegram_user_id          bigint      not null,
+    internal_user_id          uuid,
     chat_id                   bigint      not null,
     expected_message_id       bigint,
     dialogue_id               uuid references telegram.dialog_states(id) on delete cascade,
     expected_dialogue_version bigint check (expected_dialogue_version >= 0),
     operation_id              uuid,
+    analysis_id               uuid,
     payload                   jsonb check (payload is null or jsonb_typeof(payload) = 'object'),
     created_at                timestamptz not null,
     expires_at                timestamptz not null,
@@ -400,6 +403,8 @@ create table telegram.interaction_tokens (
          and dialogue_id is not null
          and expected_dialogue_version is not null
          and operation_id is null
+         and internal_user_id is null
+         and analysis_id is null
          and payload is null)
         or
         (surface = 'deep_link'
@@ -408,11 +413,23 @@ create table telegram.interaction_tokens (
          and dialogue_id is null
          and expected_dialogue_version is null
          and operation_id is not null
+         and internal_user_id is null
+         and analysis_id is null
          and payload is not null
          and (
              jsonb_exists(payload, 'source_url')
              or coalesce(jsonb_exists(payload->'metadata', 'blob'), false)
          ))
+        or
+        (surface = 'command'
+         and action = 'library_read'
+         and expected_message_id is null
+         and dialogue_id is null
+         and expected_dialogue_version is null
+         and operation_id is null
+         and internal_user_id is not null
+         and analysis_id is not null
+         and payload is null)
     )
 );
 
@@ -427,4 +444,4 @@ create index interaction_tokens_cleanup_idx
     on telegram.interaction_tokens (expires_at, token);
 
 comment on table telegram.interaction_tokens is
-    'Opaque, expiring, fully scoped callback and deep-link authorities with one-time consumption.';
+    'Opaque, expiring, fully scoped callback, deep-link, and command authorities with one-time consumption.';

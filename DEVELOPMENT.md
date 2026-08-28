@@ -1,11 +1,11 @@
 # Developing Ratatoskr Telegram
 
-> Status: Implemented for plan items 1 through 8 and 10; item 9 remains Proposed.
+> Status: Implemented for plan items 1 through 8 and 10–11; item 9 remains Proposed.
 > Last reviewed: 2026-08-28
 
 ## Current stage
 
-Plan items 1 through 8 and item 10 of `docs/IMPLEMENTATION_PLAN.md` are implemented and the commands marked **real**
+Plan items 1 through 8 and items 10–11 of `docs/IMPLEMENTATION_PLAN.md` are implemented and the commands marked **real**
 below are real. The Cargo workspace, its pinned toolchain and its committed `Cargo.lock`; the
 `ratatoskr-telegram-core`, `ratatoskr-telegram-telemetry`, `ratatoskr-telegram-http` and
 `ratatoskr-telegram-persistence` library crates; the `ratatoskr-telegram-webhook` and
@@ -64,6 +64,11 @@ Item 10 adds `/settings` notification policy management, the fixed
 notification delivery through the existing outbound queue, the two-unit single-host profile, and
 recovery runbooks. Mini App initData validation (item 9) remains proposed. No test contacts Telegram or a live
 Platform: both clients run against local harness servers with synthetic bodies.
+
+Item 11 adds exact `/search <query>`, `/unread`, and `/read <opaque-token>` commands over Platform's
+authenticated library API. Search and unread are capped at five escaped results; read authority is
+single-use, owner-scoped, and expires after 15 minutes. The worker reports a read only after the
+authoritative resource answers `read`, and directs uncertain timeout outcomes back to `/unread`.
 
 The database is REQUIRED for both roles since item 4: intake writes update deduplication through
 the pool, and the dispatcher delivers every send and edit through its durable outbound queue there,

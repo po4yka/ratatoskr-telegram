@@ -217,9 +217,17 @@ The command surface includes or reserves:
 /repository <url-or-owner/name>
 /status <operation-id>
 /search <query>
-/recent
+/unread
+/read <opaque-token>
 /settings
 ```
+
+`/search` accepts 1–256 Unicode scalar values and returns at most five escaped summaries from
+Platform. `/unread` is a five-item unread browse. When Platform advertises
+`library.read_state`, each rendered unread item receives a 15-minute, single-use `/read` token;
+the token contains no item identifier and is bound to the bot, Telegram actor, canonical user, and
+private chat. A read is reported successful only after Platform returns authoritative `read`.
+Timeout after a possibly applied PUT is reported as unknown with `/unread` reconciliation guidance.
 
 Most actions should also work through natural message routing so the user can simply send a supported URL.
 
@@ -495,6 +503,7 @@ Traces correlate Telegram update, interaction, Platform operation, downstream co
 8. Add callback tokens, dialogue state, and opaque deep-link intents. (done)
 9. Add Mini App `initData` validation and Platform identity assertions.
 10. Add notifications, deployment and recovery runbooks, and workspace integration tests. (done)
+11. Add bounded library search, unread browse, and replay-safe read-state commands. (done)
 
 ## Workspace integration
 
@@ -512,6 +521,6 @@ independently buildable and testable with the same synthetic boundary.
 
 ## Project status
 
-Plan items 1 through 8 and item 10 of `docs/IMPLEMENTATION_PLAN.md` are implemented: the workspace builds, both binaries run and answer the operator plane, configuration refuses unknown or invalid values, telemetry correlates, and the first-version `telegram` schema applies at startup. The webhook authenticates, bounds, deduplicates, authorizes, and durably processes private owner updates; the dispatcher owns ordered/rate-limited Bot API delivery, truthful operation projections, and preference-gated notification delivery. Article URLs, bounded attachments, and forwarded links submit through Platform without leaking provider or file credentials.
+Plan items 1 through 8 and items 10–11 of `docs/IMPLEMENTATION_PLAN.md` are implemented: the workspace builds, both binaries run and answer the operator plane, configuration refuses unknown or invalid values, telemetry correlates, and the first-version `telegram` schema applies at startup. The webhook authenticates, bounds, deduplicates, authorizes, and durably processes private owner updates; the dispatcher owns ordered/rate-limited Bot API delivery, truthful operation projections, and preference-gated notification delivery. Article URLs, bounded attachments, and forwarded links submit through Platform without leaking provider or file credentials.
 
-An exact canonical GitHub repository URL now routes before generic article capture. Telegram reads the preview through Platform's authenticated GitHub gateway, renders only GitHub-reported fields and capabilities, and persists the flow in `telegram.dialog_states`; every button is an opaque owner/bot/chat/message/version-bound row in `telegram.interaction_tokens`. Selecting any mode only produces a second confirmation prompt; exactly one live confirmed token may submit under its durable idempotency identity. Replays and stale or foreign presentations converge on the expired-state response without another action. The same registry backs one-time `/start` operation-status intents, and the webhook worker expires stale dialogue state and removes eligible tokens/retention-expired terminal rows in bounded startup and monotonic-interval passes. Mini App authentication, OAuth, and star-list UI remain future work.
+An exact canonical GitHub repository URL now routes before generic article capture. Telegram reads the preview through Platform's authenticated GitHub gateway, renders only GitHub-reported fields and capabilities, and persists the flow in `telegram.dialog_states`; every button is an opaque owner/bot/chat/message/version-bound row in `telegram.interaction_tokens`. Selecting any mode only produces a second confirmation prompt; exactly one live confirmed token may submit under its durable idempotency identity. Replays and stale or foreign presentations converge on the expired-state response without another action. The same registry backs one-time `/start` operation-status intents and 15-minute `/read` command authority. Platform-backed `/search` and `/unread` render at most five escaped summaries without placing library content in telemetry. The webhook worker expires stale dialogue state and removes eligible tokens/retention-expired terminal rows in bounded startup and monotonic-interval passes. Mini App authentication, OAuth, and star-list UI remain future work.

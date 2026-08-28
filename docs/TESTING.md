@@ -13,6 +13,8 @@ Required tests:
   fake Platform/GitHub server that counts action calls and proves preview and selection perform zero.
 - Message projection ordering, stale events, send/edit failure, deletion, retry-after, global/per-chat limits.
 - Notification preferences/privacy, safe escaping, no-secret/content logging.
+- Library command grammar/capability gating, bounded hostile-result rendering, read-token
+  scope/expiry/concurrency/cleanup, authoritative read outcomes, and content-free telemetry.
 - current-schema creation, outbox/inbox replay, mock Bot API, and workspace Telegram -> Platform -> domain flow.
 
 Fixtures use synthetic IDs/updates/files and a mock Bot API; no production bot token.

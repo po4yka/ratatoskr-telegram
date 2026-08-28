@@ -3,7 +3,8 @@
 #![allow(clippy::expect_used, clippy::panic, reason = "test assertions")]
 
 use telegram_persistence::interaction_tokens::{
-    NewOperationIntent, OperationIntentPayload, ReleasedAction, ReleasedToken, TokenPresentation,
+    LibraryReadPresentation, LibraryReadScope, NewLibraryReadIntent, NewOperationIntent,
+    OperationIntentPayload, ReleasedAction, ReleasedLibraryRead, ReleasedToken, TokenPresentation,
     TokenRefusal, TokenScope, TokenSurface,
 };
 use telegram_persistence::test_support::TestDatabase;
@@ -11,6 +12,104 @@ use telegram_persistence::test_support::TestDatabase;
 const T0: i64 = 1_800_000_000;
 const BOT: i64 = 42;
 const OWNER: i64 = 900_700_601;
+
+fn library_scope() -> LibraryReadScope {
+    LibraryReadScope {
+        bot_id: BOT,
+        telegram_user_id: OWNER,
+        internal_user_id: uuid::Uuid::from_u128(0x018f_0000_0000_7000_8000_0000_0000_abcd),
+        chat_id: OWNER,
+    }
+}
+
+async fn issue_library_read(
+    test: &TestDatabase,
+    analysis_id: uuid::Uuid,
+    expires_at: i64,
+) -> String {
+    test.database
+        .issue_library_read_intent(
+            NewLibraryReadIntent {
+                scope: library_scope(),
+                analysis_id,
+                expires_at,
+            },
+            T0,
+        )
+        .await
+        .expect("library read authority")
+}
+
+fn library_presentation(
+    token: &str,
+    scope: LibraryReadScope,
+    now: i64,
+) -> LibraryReadPresentation<'_> {
+    LibraryReadPresentation { token, scope, now }
+}
+
+#[tokio::test]
+async fn library_read_authority_is_scope_bound_single_use_and_expires_strictly() {
+    let test = TestDatabase::create().await.expect("database");
+    let analysis_id = uuid::Uuid::now_v7();
+
+    let expiring = issue_library_read(&test, analysis_id, T0 + 60).await;
+    assert_eq!(
+        test.database
+            .resolve_library_read_intent(library_presentation(&expiring, library_scope(), T0 + 60,))
+            .await
+            .expect("expiry result"),
+        Err(TokenRefusal::Expired),
+    );
+
+    let mut foreign_scopes = [library_scope(); 4];
+    foreign_scopes[0].bot_id += 1;
+    foreign_scopes[1].telegram_user_id += 1;
+    foreign_scopes[2].internal_user_id = uuid::Uuid::now_v7();
+    foreign_scopes[3].chat_id += 1;
+    for scope in foreign_scopes {
+        let token = issue_library_read(&test, analysis_id, T0 + 60).await;
+        assert_eq!(
+            test.database
+                .resolve_library_read_intent(library_presentation(&token, scope, T0 + 1))
+                .await
+                .expect("foreign scope"),
+            Err(TokenRefusal::ScopeMismatch),
+        );
+        assert_eq!(
+            test.database
+                .resolve_library_read_intent(library_presentation(&token, library_scope(), T0 + 2,))
+                .await
+                .expect("owner scope"),
+            Ok(ReleasedLibraryRead { analysis_id }),
+        );
+    }
+
+    let token = issue_library_read(&test, analysis_id, T0 + 60).await;
+    let first_database = test.database.clone();
+    let second_database = test.database.clone();
+    let (first, second) = tokio::join!(
+        first_database.resolve_library_read_intent(library_presentation(
+            &token,
+            library_scope(),
+            T0 + 1,
+        )),
+        second_database.resolve_library_read_intent(library_presentation(
+            &token,
+            library_scope(),
+            T0 + 1,
+        )),
+    );
+    let outcomes = [first.expect("first"), second.expect("second")];
+    assert_eq!(outcomes.iter().filter(|outcome| outcome.is_ok()).count(), 1);
+    assert_eq!(
+        outcomes
+            .iter()
+            .filter(|outcome| **outcome == Err(TokenRefusal::Consumed))
+            .count(),
+        1,
+    );
+}
 
 async fn issue_deep_link(test: &TestDatabase, operation_id: uuid::Uuid, expires_at: i64) -> String {
     test.database
