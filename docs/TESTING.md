@@ -17,6 +17,12 @@ Required tests:
 
 Fixtures use synthetic IDs/updates/files and a mock Bot API; no production bot token.
 
+The cross-repository acceptance run is the workspace-owned `TG-010` profile at
+`integration/run-telegram-notification.sh`. It pins clean child revisions, allocates ports through
+the workspace contract, creates runtime secrets outside Git, records a bounded evidence summary,
+and tears down only its task-namespaced Compose project. A passing profile does not claim hosted CI,
+a live Bot API call, or deployment on the target host.
+
 ## Test-first
 
 A change is planned before it is built, and the plan is a task list in which behaviour arrives in

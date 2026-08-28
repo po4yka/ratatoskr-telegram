@@ -498,7 +498,17 @@ Traces correlate Telegram update, interaction, Platform operation, downstream co
 
 ## Workspace integration
 
-The planned workspace snapshot will pin Telegram with compatible Platform, Contracts, Extractor, Knowledge, GitHub, Vault, and web/Mini App commits. No workspace pin or integration profile exists yet. This repository remains independently buildable and testable using recorded Bot API fixtures and a mock Telegram server.
+The workspace `TG-010` changeset pins compatible Contracts, Platform, and Telegram revisions and
+owns the executable `integration/run-telegram-notification.sh` composed profile. That profile drives
+the item-5 URL flow through this real webhook and dispatcher, Platform capture/outbox and operation
+projection, then proves an enabled notification is sent once while an opted-out notification is
+suppressed. It also removes and deliberately misconfigures the Platform-owned notification durable
+to prove dispatcher readiness fails closed before Platform restores the exact topology.
+
+The evidence is synthetic: the profile generates isolated credentials, uses a fake Bot API, and
+creates fresh task-namespaced PostgreSQL and NATS state. It is evidence of repository integration,
+not a live Telegram/provider delivery or a deployed-host check. This repository remains
+independently buildable and testable with the same synthetic boundary.
 
 ## Project status
 
