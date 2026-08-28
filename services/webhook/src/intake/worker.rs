@@ -28,6 +28,7 @@ use crate::intake::capture;
 use crate::intake::classify::supported;
 use crate::intake::github;
 use crate::intake::intent;
+use crate::intake::settings::{self, SettingsResult};
 
 const INTERACTION_CLEANUP_BATCH: u32 = 100;
 const INTERACTION_CLEANUP_INTERVAL: Duration = Duration::from_mins(1);
@@ -304,6 +305,13 @@ async fn self_domain_action(
     };
     if let Some(token) = parts.text.and_then(intent::parse_start_token) {
         return handle_start_token(database, item.bot_id, &parts, &token).await;
+    }
+    if let Some(text) = parts.text {
+        match settings::handle(database, item.bot_id, parts.sender_id, parts.chat_id, text).await {
+            SettingsResult::Processed => return UpdateState::Processed,
+            SettingsResult::Failed => return UpdateState::Failed,
+            SettingsResult::NotSettings => {}
+        }
     }
     let Some(context) = capture_context else {
         // Test-only arm: no Platform half wired, nothing to act on.
@@ -633,7 +641,7 @@ impl ReplyKind {
 }
 
 /// A worker timestamp only schedules a ready outbound job; no Telegram request occurs here.
-fn now_secs() -> i64 {
+pub(super) fn now_secs() -> i64 {
     jiff::Timestamp::now().as_second()
 }
 

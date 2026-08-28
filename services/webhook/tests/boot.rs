@@ -29,6 +29,10 @@ use std::time::{Duration, Instant};
 
 use sqlx::Row as _;
 
+#[path = "support/nats.rs"]
+mod nats;
+use nats::NatsFixture;
+
 /// How long a binary may take to answer `/health/ready` with `200`. Generous: a loaded CI runner
 /// starting a cold process is the slow case, and the cost of a too-short timeout is a flake.
 const READY_TIMEOUT: Duration = Duration::from_secs(30);
@@ -43,6 +47,13 @@ const REFUSAL_TIMEOUT: Duration = Duration::from_secs(15);
 /// Synthetic intake credentials for the webhook role's environment. Never real ones.
 const SECRET_TOKEN: &str = "webhook-secret-0123456789abcdef";
 const BOT_TOKEN: &str = "123456:TEST-boot-harness-token";
+
+fn synthetic_nats_seed() -> tempfile::NamedTempFile {
+    let key = nkeys::KeyPair::new_user();
+    let mut file = tempfile::NamedTempFile::new().expect("temporary NATS seed file");
+    writeln!(file, "{}", key.seed().expect("synthetic user seed")).expect("write NATS seed");
+    file
+}
 
 /// The dispatcher writes every projection through `PostgreSQL` since item 4: without a database
 /// URL it refuses to start with the `EX_CONFIG` report naming `DATABASE__URL`, never binding
@@ -87,6 +98,7 @@ fn the_dispatcher_requires_a_database_configuration_to_start() {
 /// told the database failed.
 #[test]
 fn a_dispatcher_with_an_unreachable_database_refuses_to_start() {
+    let nats_seed = synthetic_nats_seed();
     let mut child = Command::new(built_binary("ratatoskr-telegram-dispatcher"))
         .env("RATATOSKR__TELEMETRY__LOG_FORMAT", "pretty")
         // Port 5 on loopback: nothing listens there, so connect fails fast instead of timing out.
@@ -99,6 +111,10 @@ fn a_dispatcher_with_an_unreachable_database_refuses_to_start() {
         .env(
             "RATATOSKR__PLATFORM__ASSERTION_SIGNING_KEY",
             "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20",
+        )
+        .env(
+            "RATATOSKR__NOTIFICATION_BUS__CREDENTIALS_FILE",
+            nats_seed.path(),
         )
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -326,7 +342,12 @@ fn a_webhook_whose_database_is_unreachable_refuses_to_start() {
 /// `check-config` is the documented init-container and CI pre-flight, so its exit codes are an
 /// operational contract: `0` valid, `78` invalid, and the report never quotes a supplied value.
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one process-level test keeps valid and invalid check-config exit evidence together"
+)]
 fn check_config_exits_zero_when_valid_and_78_when_invalid() {
+    let nats_seed = synthetic_nats_seed();
     // The dispatcher requires its database since item 4, exactly like the webhook's intake set.
     let unconfigured_dispatcher = Command::new(built_binary("ratatoskr-telegram-dispatcher"))
         .arg("check-config")
@@ -356,6 +377,10 @@ fn check_config_exits_zero_when_valid_and_78_when_invalid() {
         .env(
             "RATATOSKR__PLATFORM__ASSERTION_SIGNING_KEY",
             "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20",
+        )
+        .env(
+            "RATATOSKR__NOTIFICATION_BUS__CREDENTIALS_FILE",
+            nats_seed.path(),
         )
         .output()
         .expect("check-config must run");
@@ -398,6 +423,10 @@ fn check_config_exits_zero_when_valid_and_78_when_invalid() {
         .env(
             "RATATOSKR__PLATFORM__ASSERTION_SIGNING_KEY",
             "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20",
+        )
+        .env(
+            "RATATOSKR__NOTIFICATION_BUS__CREDENTIALS_FILE",
+            nats_seed.path(),
         )
         .env("RATATOSKR__WEBHOOK__SECRET_TOKEN", SECRET_TOKEN)
         .env("RATATOSKR__ACCESS__OWNER_TELEGRAM_USER_ID", "700100200")
@@ -450,12 +479,21 @@ fn a_listener_that_cannot_bind_exits_one() {
         .block_on(async { telegram_persistence::test_support::TestDatabase::create().await })
         .expect("a disposable database");
     let database_url = database.url();
+    let harness = harness_bot_api();
+    let nats = NatsFixture::start();
 
     let refused = Command::new(built_binary("ratatoskr-telegram-dispatcher"))
         .env("RATATOSKR__ADMIN__BIND", format!("127.0.0.1:{port}"))
         // A reachable database, so the process gets past preparation and reaches the bind that
         // this test is about.
         .env("RATATOSKR__DATABASE__URL", &database_url)
+        .env("RATATOSKR__BOT_API__BASE_URL", &harness.url)
+        .env("RATATOSKR__BOT_API__TOKEN", BOT_TOKEN)
+        .env("RATATOSKR__NOTIFICATION_BUS__ENDPOINT", &nats.url)
+        .env(
+            "RATATOSKR__NOTIFICATION_BUS__CREDENTIALS_FILE",
+            nats.telegram_seed_path(),
+        )
         .env("RATATOSKR__PLATFORM__BASE_URL", "http://127.0.0.1:9463")
         .env("RATATOSKR__PLATFORM__AUDIENCE", "ratatoskr-edge-test")
         .env(
@@ -480,6 +518,45 @@ fn a_listener_that_cannot_bind_exits_one() {
             .contains("the admin listener could not bind"),
         "the operator was not told which listener failed",
     );
+}
+
+#[test]
+fn the_dispatcher_boots_only_with_the_matching_notification_dependency() {
+    const ADMIN_PORT: u16 = 9485;
+    let runtime = tokio::runtime::Runtime::new().expect("boot runtime");
+    let database = runtime
+        .block_on(async { telegram_persistence::test_support::TestDatabase::create().await })
+        .expect("a disposable database");
+    let database_url = database.url();
+    let harness = harness_bot_api();
+    let nats = NatsFixture::start();
+
+    let outcome = boots(
+        "ratatoskr-telegram-dispatcher",
+        &[
+            ("RATATOSKR__TELEMETRY__LOG_FORMAT", "pretty"),
+            ("RATATOSKR__ADMIN__BIND", &format!("127.0.0.1:{ADMIN_PORT}")),
+            ("RATATOSKR__DATABASE__URL", database_url.as_str()),
+            ("RATATOSKR__BOT_API__BASE_URL", harness.url.as_str()),
+            ("RATATOSKR__BOT_API__TOKEN", BOT_TOKEN),
+            ("RATATOSKR__NOTIFICATION_BUS__ENDPOINT", nats.url.as_str()),
+            (
+                "RATATOSKR__NOTIFICATION_BUS__CREDENTIALS_FILE",
+                nats.telegram_seed_path(),
+            ),
+            ("RATATOSKR__PLATFORM__BASE_URL", "http://127.0.0.1:9463"),
+            ("RATATOSKR__PLATFORM__AUDIENCE", "ratatoskr-edge-test"),
+            (
+                "RATATOSKR__PLATFORM__ASSERTION_SIGNING_KEY",
+                "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20",
+            ),
+        ],
+        ADMIN_PORT,
+    );
+    assert!(outcome.contains("dispatcher workers started"), "{outcome}");
+    runtime
+        .block_on(async { database.cleanup().await })
+        .expect("fixture cleanup");
 }
 
 /// An in-process harness Bot API server: answers every request with a recorded `getMe` body and

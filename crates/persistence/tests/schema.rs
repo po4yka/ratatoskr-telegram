@@ -141,3 +141,102 @@ async fn an_unreachable_database_fails_at_connect_without_leaking_the_url() {
         "the connect error echoed configuration: {rendered}",
     );
 }
+
+/// Notification delivery has explicit actor/chat authority, normalized preferences, and a
+/// notification identity independent from the transport envelope id.
+#[tokio::test]
+async fn notification_schema_enforces_bindings_preferences_and_decision_uniqueness() {
+    let (url, name) = create_database().await;
+    let database = Database::connect(&config(&url))
+        .await
+        .expect("a fresh database must be connectable");
+    database.apply_schema().await.expect("schema applies");
+
+    for table in [
+        "private_chat_bindings",
+        "notification_preferences",
+        "notification_class_preferences",
+        "notification_decisions",
+        "notification_transport_failures",
+    ] {
+        let present: bool =
+            sqlx::query_scalar("select to_regclass(format('telegram.%s', $1)) is not null")
+                .bind(table)
+                .fetch_one(database.pool())
+                .await
+                .expect("catalog query");
+        assert!(present, "telegram.{table} must exist");
+    }
+
+    sqlx::query(
+        "insert into telegram.identities (telegram_user_id, internal_user_id)
+         values (700100200, '018f65d8-25a1-7f59-aaf8-72941f37c031')",
+    )
+    .execute(database.pool())
+    .await
+    .expect("identity fixture");
+    sqlx::query("insert into telegram.chats (chat_id, type) values (900700600, 'private')")
+        .execute(database.pool())
+        .await
+        .expect("chat fixture");
+    sqlx::query(
+        "insert into telegram.private_chat_bindings
+             (telegram_user_id, chat_id, bound_at)
+         values (700100200, 900700600, to_timestamp(1800000000))",
+    )
+    .execute(database.pool())
+    .await
+    .expect("binding fixture");
+
+    let equal_window = sqlx::query(
+        "insert into telegram.notification_preferences
+             (telegram_user_id, chat_id, quiet_start_minute, quiet_end_minute)
+         values (700100200, 900700600, 120, 120)",
+    )
+    .execute(database.pool())
+    .await;
+    assert!(
+        equal_window.is_err(),
+        "equal quiet-hours endpoints are invalid"
+    );
+
+    sqlx::query(
+        "insert into telegram.notification_preferences
+             (telegram_user_id, chat_id, quiet_policy, quiet_start_minute, quiet_end_minute)
+         values (700100200, 900700600, 'custom', 1320, 420)",
+    )
+    .execute(database.pool())
+    .await
+    .expect("wrapping quiet window is valid");
+
+    let decision_id = uuid::Uuid::now_v7();
+    let notification_id = uuid::Uuid::now_v7();
+    sqlx::query(
+        "insert into telegram.notification_decisions
+             (id, notification_id, chat_id, class, outcome, decided_at)
+         values ($1, $2, 900700600, 'operation_completed', 'enqueued',
+                 to_timestamp(1800000000))",
+    )
+    .bind(decision_id)
+    .bind(notification_id)
+    .execute(database.pool())
+    .await
+    .expect("first decision");
+    let duplicate = sqlx::query(
+        "insert into telegram.notification_decisions
+             (id, notification_id, chat_id, class, outcome, decided_at)
+         values ($1, $2, 900700600, 'operation_completed', 'suppressed',
+                 to_timestamp(1800000001))",
+    )
+    .bind(uuid::Uuid::now_v7())
+    .bind(notification_id)
+    .execute(database.pool())
+    .await;
+    assert!(
+        duplicate.is_err(),
+        "(notification_id, chat_id) is the decision key"
+    );
+
+    database.close().await;
+    drop_database(&name).await;
+}

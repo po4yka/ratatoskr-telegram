@@ -300,6 +300,12 @@ impl OutboundSender {
         self.database
             .settle_outbound_job(job.id, self.clock.now_secs(), max_attempts, &outcome)
             .await?;
+        crate::notifications::record_delivery_outcome(
+            job.notification_class.as_deref(),
+            job.attempts,
+            max_attempts,
+            &outcome,
+        );
         Ok(())
     }
 

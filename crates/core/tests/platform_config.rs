@@ -158,6 +158,15 @@ fn a_configured_platform_section_validates() {
             jail.set_env("RATATOSKR__PLATFORM__BASE_URL", "http://127.0.0.1:9463");
             jail.set_env("RATATOSKR__PLATFORM__AUDIENCE", AUDIENCE_TEST);
             jail.set_env("RATATOSKR__PLATFORM__ASSERTION_SIGNING_KEY", VALID_KEY);
+            if role == RuntimeRole::Dispatcher {
+                jail.set_env(
+                    "RATATOSKR__NOTIFICATION_BUS__CREDENTIALS_FILE",
+                    std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                        .join("Cargo.toml")
+                        .to_string_lossy()
+                        .as_ref(),
+                );
+            }
             let config = config::load_from(role, config::figment(role))
                 .unwrap_or_else(|error| panic!("{role} must validate: {}", error.report(role)));
             assert_eq!(config.platform.audience, AUDIENCE_TEST);

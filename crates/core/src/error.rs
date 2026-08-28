@@ -64,6 +64,8 @@ pub enum Subsystem {
     BotApi,
     /// The Platform public-API client boundary and its assertions.
     Platform,
+    /// The fixed Platform-provisioned notification bus consumer.
+    NotificationBus,
 }
 
 impl core::fmt::Display for Subsystem {
@@ -75,6 +77,7 @@ impl core::fmt::Display for Subsystem {
             Self::Persistence => "persistence",
             Self::BotApi => "bot_api",
             Self::Platform => "platform",
+            Self::NotificationBus => "notification_bus",
         })
     }
 }

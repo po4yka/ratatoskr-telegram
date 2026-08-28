@@ -29,6 +29,7 @@ ratatoskr-github-contracts.workspace = true
 # canonical serialization the content hash covers.
 serde.workspace      = true
 serde_json.workspace = true
+sha2.workspace = true
 
 [features]
 # The disposable-database harness. Never enabled by a service binary.

@@ -27,7 +27,8 @@ use figment::providers::{Env, Serialized};
 
 pub use crate::config::model::{
     AccessConfig, AdminConfig, BotApiConfig, DatabaseConfig, DispatcherConfig, LogFormat,
-    OtlpConfig, PlatformConfig, ShutdownConfig, TelegramConfig, TelemetryConfig, WebhookConfig,
+    NotificationBusConfig, OtlpConfig, PlatformConfig, ShutdownConfig, TelegramConfig,
+    TelemetryConfig, WebhookConfig,
 };
 pub use crate::config::validate::{SHUTDOWN_CEILING_SECONDS, Violation};
 use crate::role::RuntimeRole;
@@ -79,8 +80,9 @@ pub fn figment(role: RuntimeRole) -> Figment {
               about two configurations in one process"
 )]
 pub fn load_from(role: RuntimeRole, figment: Figment) -> Result<TelegramConfig, ConfigError> {
-    let config: TelegramConfig = figment.extract()?;
-    let violations = validate::validate(role, &config);
+    let mut config: TelegramConfig = figment.extract()?;
+    let mut violations = resolve_secret_files(&mut config);
+    violations.extend(validate::validate(role, &config));
     if violations.is_empty() {
         Ok(config)
     } else {
@@ -106,6 +108,7 @@ impl TelegramConfig {
             bot_api: BotApiConfig::default(),
             dispatcher: model::DispatcherConfig::default(),
             ingestion: model::IngestionConfig::default(),
+            notification_bus: model::NotificationBusConfig::default(),
             platform: crate::config::model::PlatformConfig::default(),
             // The intake listener is webhook-role configuration; its requirements are enforced by
             // rule V13 per role, not by a default that would silently satisfy them.
@@ -122,6 +125,63 @@ impl TelegramConfig {
                 otlp: None,
             },
         }
+    }
+}
+
+fn resolve_secret_files(config: &mut TelegramConfig) -> Vec<Violation> {
+    let mut violations = Vec::new();
+    resolve_one_secret(
+        &mut config.bot_api.token,
+        config.bot_api.token_file.as_deref(),
+        "bot_api.token",
+        "RATATOSKR__BOT_API__TOKEN_FILE",
+        &mut violations,
+    );
+    resolve_one_secret(
+        &mut config.platform.assertion_signing_key,
+        config.platform.assertion_signing_key_file.as_deref(),
+        "platform.assertion_signing_key",
+        "RATATOSKR__PLATFORM__ASSERTION_SIGNING_KEY_FILE",
+        &mut violations,
+    );
+    if let Some(webhook) = config.webhook.as_mut() {
+        resolve_one_secret(
+            &mut webhook.secret_token,
+            webhook.secret_token_file.as_deref(),
+            "webhook.secret_token",
+            "RATATOSKR__WEBHOOK__SECRET_TOKEN_FILE",
+            &mut violations,
+        );
+    }
+    violations
+}
+
+fn resolve_one_secret(
+    destination: &mut secrecy::SecretString,
+    path: Option<&std::path::Path>,
+    key: &'static str,
+    env_var: &'static str,
+    violations: &mut Vec<Violation>,
+) {
+    use secrecy::ExposeSecret as _;
+    let Some(path) = path else { return };
+    if !destination.expose_secret().is_empty() {
+        violations.push(Violation {
+            key,
+            env_var,
+            rule: "must use exactly one secret source: inline value or readable file",
+        });
+        return;
+    }
+    match std::fs::read_to_string(path) {
+        Ok(value) if !value.trim().is_empty() => {
+            *destination = secrecy::SecretString::from(value.trim().to_owned());
+        }
+        _ => violations.push(Violation {
+            key,
+            env_var,
+            rule: "must name a readable, non-empty secret file",
+        }),
     }
 }
 

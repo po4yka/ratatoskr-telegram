@@ -25,6 +25,7 @@ ratatoskr-telegram-telemetry.workspace   = true
 ratatoskr-telegram-blob-store.workspace  = true
 ratatoskr-identifiers.workspace = true
 ratatoskr-github-contracts.workspace = true
+ratatoskr-notification-contracts.workspace = true
 axum.workspace    = true
 http.workspace    = true
 http-body-util.workspace = true
@@ -40,6 +41,8 @@ url.workspace     = true
 uuid.workspace    = true
 
 [dev-dependencies]
+async-nats.workspace = true
+nkeys = "0.4.5"
 ratatoskr-telegram-persistence = { workspace = true, features = ["test-support"] }
 sqlx.workspace  = true
 tower.workspace = true

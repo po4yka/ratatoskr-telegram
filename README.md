@@ -2,7 +2,8 @@
 
 `ratatoskr-telegram` is the Telegram interaction bounded context for Ratatoskr. It provides a Bot API interface and will provide Telegram Mini App authentication for submitting articles, adding or tracking GitHub repositories, following long-running operations, and receiving notifications from a local Ratatoskr deployment.
 
-> **Status:** plan items 1–8 implemented. The service admits and deduplicates secure Bot API
+> **Status:** plan items 1–8 and 10 implemented; Mini App authentication in item 9 remains gated.
+> The service admits and deduplicates secure Bot API
 > updates, enforces the private owner access gate, submits URL captures to Platform, and projects
 > their progress through a durable outbound queue. Item 6 also captures forwarded external links
 > with minimized provenance and accepts bounded PDFs/photos: they stream through the Bot API into
@@ -10,8 +11,10 @@
 > `BlobRef` references. Unsupported video, voice, audio, and document types receive one truthful
 > response; extraction and transcription remain outside this repository. GitHub confirmations now
 > use durable versioned dialogues and exact 64-character, scope-bound, single-use callback tokens;
-> `/start` carries only the same kind of opaque server-side intent. See `DEVELOPMENT.md` for
-> operational configuration and `docs/IMPLEMENTATION_PLAN.md` for later items.
+> `/start` carries only the same kind of opaque server-side intent. It also consumes the fixed
+> Platform notification subject, applies private-chat preferences and quiet hours, and dispatches
+> admitted messages through the same durable queue. See `DEVELOPMENT.md` for configuration,
+> `deploy/README.md` for the single-host profile, and `docs/runbooks/` for recovery.
 
 > [!IMPORTANT]
 > **Ratatoskr is in development.** No database holds data that has to survive a schema change.
@@ -96,6 +99,13 @@ The dispatcher, live since item 4:
 - resolves callback-token results;
 - retries transient Bot API failures;
 - records Telegram message bindings and notification state.
+
+Notification facts arrive only through the documented
+`evt.platform.notification.raised.v1` subject and the pre-provisioned
+`ratatoskr_telegram_notifications` durable. The dispatcher refuses a missing or incompatible
+consumer through readiness; it never creates transport authority itself. `/settings` controls the
+global switch, six known class overrides, UTC quiet-hours policy, and explicit high-priority
+bypass for the current verified private chat. Unknown future classes inherit the global policy.
 
 For a small self-hosted deployment these may be runtime roles of one binary, but their workload and failure responsibilities remain distinct.
 
@@ -198,7 +208,7 @@ If starring succeeds but list filing or backup enrollment fails, the bot reports
 
 ## Commands and interaction model
 
-The initial command surface may include:
+The command surface includes or reserves:
 
 ```text
 /start
@@ -388,18 +398,19 @@ Rules:
 
 ## Notifications
 
-User-configurable notifications may include:
+User-configurable notification classes are:
 
-- article processing completed;
-- GitHub repository added or partially added;
-- Git backup degraded;
-- restore drill failed;
-- provider reauthorization required;
-- ChatGPT/Claude export backup is stale;
-- archive import completed with missing assets;
-- manual operation needs confirmation.
+- operation completed;
+- operation failed;
+- analysis ready;
+- backup outcome;
+- watch triggered;
+- archive imported.
 
-Notifications contain minimal safe text and opaque links. Sensitive conversation or private repository content is not included unless the user explicitly configures that behavior.
+`/settings` controls the global switch, a per-class override, UTC quiet hours, and explicit
+high-priority bypass for the current authorized private chat. Notifications contain only escaped
+title/optional detail from the bounded contract. Raw domain references, recipient identifiers,
+conversation history, and provider credentials are never rendered.
 
 ## Commands and events
 
@@ -454,7 +465,9 @@ telegram_delivery_duration
 telegram_delivery_retries
 telegram_rate_limit_waits
 telegram_projection_lag
-telegram_operation_completion_notifications
+telegram_notification_events_total
+telegram_notification_backlog
+telegram_notification_lag
 ```
 
 Traces correlate Telegram update, interaction, Platform operation, downstream command, result event, and delivered message.
@@ -481,7 +494,7 @@ Traces correlate Telegram update, interaction, Platform operation, downstream co
 7. Add GitHub repository preview and confirmed `metadata`, `track`, and `star` flows. (done)
 8. Add callback tokens, dialogue state, and opaque deep-link intents. (done)
 9. Add Mini App `initData` validation and Platform identity assertions.
-10. Add notifications, deployment and recovery runbooks, and workspace integration tests.
+10. Add notifications, deployment and recovery runbooks, and workspace integration tests. (done)
 
 ## Workspace integration
 
@@ -489,6 +502,6 @@ The planned workspace snapshot will pin Telegram with compatible Platform, Contr
 
 ## Project status
 
-Plan items 1 through 8 of `docs/IMPLEMENTATION_PLAN.md` are implemented: the workspace builds, both binaries run and answer the operator plane, configuration refuses unknown or invalid values, telemetry correlates, and the first-version `telegram` schema applies at startup. The webhook authenticates, bounds, deduplicates, authorizes, and durably processes private owner updates; the dispatcher owns ordered/rate-limited Bot API delivery and truthful operation projections. Article URLs, bounded attachments, and forwarded links submit through Platform without leaking provider or file credentials.
+Plan items 1 through 8 and item 10 of `docs/IMPLEMENTATION_PLAN.md` are implemented: the workspace builds, both binaries run and answer the operator plane, configuration refuses unknown or invalid values, telemetry correlates, and the first-version `telegram` schema applies at startup. The webhook authenticates, bounds, deduplicates, authorizes, and durably processes private owner updates; the dispatcher owns ordered/rate-limited Bot API delivery, truthful operation projections, and preference-gated notification delivery. Article URLs, bounded attachments, and forwarded links submit through Platform without leaking provider or file credentials.
 
 An exact canonical GitHub repository URL now routes before generic article capture. Telegram reads the preview through Platform's authenticated GitHub gateway, renders only GitHub-reported fields and capabilities, and persists the flow in `telegram.dialog_states`; every button is an opaque owner/bot/chat/message/version-bound row in `telegram.interaction_tokens`. Selecting any mode only produces a second confirmation prompt; exactly one live confirmed token may submit under its durable idempotency identity. Replays and stale or foreign presentations converge on the expired-state response without another action. The same registry backs one-time `/start` operation-status intents, and the webhook worker expires stale dialogue state and removes eligible tokens/retention-expired terminal rows in bounded startup and monotonic-interval passes. Mini App authentication, OAuth, and star-list UI remain future work.

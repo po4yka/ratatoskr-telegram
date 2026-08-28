@@ -66,9 +66,7 @@ impl DispatcherRuntime {
 /// A [`TelegramError::Internal`] labelled `http` when the prepared database is somehow absent —
 /// unreachable behind validation V15 — or `bot_api` when the client stack cannot be built.
 ///
-/// Synchronous today because every worker spawns without awaiting; the NATS adapter may make it
-/// async again when the feed gains a real publisher.
-pub fn build(context: PublicContext) -> Result<(), TelegramError> {
+pub async fn build(context: PublicContext) -> Result<(), TelegramError> {
     let database = context.database.ok_or_else(|| {
         TelegramError::internal(
             Subsystem::Http,
@@ -86,6 +84,14 @@ pub fn build(context: PublicContext) -> Result<(), TelegramError> {
         Duration::from_secs(bot_api.timeout_seconds),
     )
     .map_err(|error| TelegramError::internal(Subsystem::BotApi, error))?;
+    let me = client
+        .get_me()
+        .await
+        .map_err(|error| TelegramError::internal(Subsystem::BotApi, error))?;
+    let bot_id = i64::try_from(me.user.id.0)
+        .map_err(|error| TelegramError::internal(Subsystem::BotApi, error))?;
+
+    context.runtime.mark_notification_configured();
 
     // The Platform half: sessions for the follower, built once. Startup performs no network call
     // here - the session exchange happens lazily on the first follow.
@@ -120,6 +126,12 @@ pub fn build(context: PublicContext) -> Result<(), TelegramError> {
     if let Some(follower) = runtime.follower() {
         tokio::spawn(follower.clone().run());
     }
+    tokio::spawn(crate::notifications::supervise(
+        context.config.notification_bus.clone(),
+        database.clone(),
+        bot_id,
+        Arc::clone(&context.runtime),
+    ));
     drop(runtime);
 
     tracing::info!(

@@ -111,6 +111,26 @@ async fn a_configured_database_appears_as_a_check_with_its_latest_state() {
     assert!(!body.contains("dependency_unavailable"), "{body}");
 }
 
+#[tokio::test]
+async fn notification_dependency_controls_dispatcher_readiness() {
+    let state = Arc::new(RuntimeState::new(RuntimeRole::Dispatcher));
+    state.mark_notification_configured();
+    state.mark_startup_complete();
+
+    let (status, _, body) = answer(router(Arc::clone(&state)), "/health/ready").await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    assert!(body.contains("\"name\":\"notification_bus\""), "{body}");
+    assert!(body.contains("dependency_unavailable"), "{body}");
+    for secret_or_target in ["nats://", "4222", ".creds", "telegram_user_id", "chat_id"] {
+        assert!(!body.contains(secret_or_target), "unsafe detail in {body}");
+    }
+
+    state.set_notification_reachable(true);
+    let (status, _, body) = answer(router(state), "/health/ready").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.contains("\"name\":\"notification_bus\""), "{body}");
+}
+
 /// Metrics renders Prometheus text from the installed recorder.
 #[tokio::test]
 async fn metrics_renders_prometheus_text() {

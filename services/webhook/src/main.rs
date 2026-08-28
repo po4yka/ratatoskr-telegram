@@ -13,8 +13,10 @@ const ROLE: RuntimeRole = RuntimeRole::Webhook;
 
 #[tokio::main]
 async fn main() -> ExitCode {
-    if std::env::args().nth(1).as_deref() == Some("check-config") {
-        return telegram_http::check_config(ROLE);
+    match std::env::args().nth(1).as_deref() {
+        Some("check-config") => return telegram_http::check_config(ROLE),
+        Some("check-schema") => return telegram_http::check_schema(ROLE).await,
+        _ => {}
     }
     telegram_http::run(
         ROLE,

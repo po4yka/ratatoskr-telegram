@@ -77,9 +77,80 @@ pub(crate) fn validate(role: RuntimeRole, config: &TelegramConfig) -> Vec<Violat
     found.extend(access_violations(config));
     found.extend(webhook_violations(role, config));
     found.extend(dispatcher_violations(role, config));
+    found.extend(notification_bus_violations(role, config));
     found.extend(platform_value_violations(config));
     found.extend(platform_role_violations(role, config));
 
+    found
+}
+
+fn notification_bus_violations(role: RuntimeRole, config: &TelegramConfig) -> Vec<Violation> {
+    let mut found = Vec::new();
+    let bus = &config.notification_bus;
+    let loopback = bus.endpoint.host_str().is_some_and(|host| {
+        host == "localhost"
+            || host
+                .parse::<std::net::IpAddr>()
+                .is_ok_and(|address| address.is_loopback())
+    });
+    if !matches!(bus.endpoint.scheme(), "nats" | "tls")
+        || (bus.endpoint.scheme() == "nats" && !loopback)
+    {
+        found.push(Violation {
+            key: "notification_bus.endpoint",
+            env_var: "RATATOSKR__NOTIFICATION_BUS__ENDPOINT",
+            rule: "must be a tls URL, or nats on loopback for a local composed profile",
+        });
+    }
+    for (actual, expected, key, env_var) in [
+        (
+            bus.stream.as_str(),
+            "ratatoskr_events",
+            "notification_bus.stream",
+            "RATATOSKR__NOTIFICATION_BUS__STREAM",
+        ),
+        (
+            bus.durable.as_str(),
+            "ratatoskr_telegram_notifications",
+            "notification_bus.durable",
+            "RATATOSKR__NOTIFICATION_BUS__DURABLE",
+        ),
+        (
+            bus.subject.as_str(),
+            "evt.platform.notification.raised.v1",
+            "notification_bus.subject",
+            "RATATOSKR__NOTIFICATION_BUS__SUBJECT",
+        ),
+    ] {
+        if actual != expected {
+            found.push(Violation { key, env_var, rule: "must equal the canonical fleet value; wildcards and alternate topology are refused" });
+        }
+    }
+    if bus.fetch_batch == 0 || bus.fetch_batch > 256 {
+        found.push(Violation {
+            key: "notification_bus.fetch_batch",
+            env_var: "RATATOSKR__NOTIFICATION_BUS__FETCH_BATCH",
+            rule: "must be 1..=256",
+        });
+    }
+    if bus.ack_wait_seconds == 0 || bus.ack_wait_seconds > 600 {
+        found.push(Violation {
+            key: "notification_bus.ack_wait_seconds",
+            env_var: "RATATOSKR__NOTIFICATION_BUS__ACK_WAIT_SECONDS",
+            rule: "must be 1..=600",
+        });
+    }
+    if role == RuntimeRole::Dispatcher {
+        match bus.credentials_file.as_ref() {
+            Some(path)
+                if path.is_absolute() && path.is_file() && std::fs::File::open(path).is_ok() => {}
+            _ => found.push(Violation {
+                key: "notification_bus.credentials_file",
+                env_var: "RATATOSKR__NOTIFICATION_BUS__CREDENTIALS_FILE",
+                rule: "is required and must name a readable absolute file for the dispatcher",
+            }),
+        }
+    }
     found
 }
 
@@ -678,6 +749,11 @@ mod access_owner_tests {
     /// assertion stays about access alone.
     #[test]
     fn the_dispatcher_validates_without_any_access_configuration() {
+        let credentials = std::env::temp_dir().join(format!(
+            "ratatoskr-telegram-dispatcher-access-{}.nkey",
+            std::process::id()
+        ));
+        std::fs::write(&credentials, "synthetic-nats-seed\n").expect("credential fixture");
         Jail::expect_with(|jail| {
             jail.clear_env();
             jail.set_env(
@@ -690,9 +766,14 @@ mod access_owner_tests {
                 "RATATOSKR__PLATFORM__ASSERTION_SIGNING_KEY",
                 "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20",
             );
+            jail.set_env(
+                "RATATOSKR__NOTIFICATION_BUS__CREDENTIALS_FILE",
+                credentials.to_string_lossy().as_ref(),
+            );
             let config = load_from(RuntimeRole::Dispatcher, figment(RuntimeRole::Dispatcher))
                 .expect("dispatcher defaults must validate");
             assert_eq!(config.access.owner_telegram_user_id, None);
+            std::fs::remove_file(&credentials).expect("credential fixture cleanup");
             Ok(())
         });
     }

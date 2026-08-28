@@ -13,6 +13,7 @@ mod capture;
 mod classify;
 mod github;
 mod intent;
+pub mod settings;
 mod worker;
 
 pub use crate::intake::build::build;

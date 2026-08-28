@@ -1,4 +1,5 @@
-# The local development dependencies, matching the defaults the test suite assumes:
+# The local development dependencies, matching the defaults the test suite assumes. PostgreSQL is
+# the disposable schema factory; NATS is a disposable JetStream fixture and carries no credentials.
 # `TELEGRAM_TEST_DATABASE_URL` below is both the suite's database factory and what `DEVELOPMENT.md`
 # documents. Start it with `docker compose up -d`, stop it with `docker compose down`.
 services:
@@ -18,3 +19,8 @@ services:
       interval: 1s
       timeout: 5s
       retries: 30
+  nats:
+    image: nats@sha256:d4ac35882ac65aff236cd65b9d3fa4d24332c681e1a85f94eedccd3cdd65b1da
+    command: ["--jetstream", "--store_dir=/data"]
+    ports:
+      - "4222:4222"

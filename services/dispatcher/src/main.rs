@@ -16,15 +16,13 @@ const ROLE: RuntimeRole = RuntimeRole::Dispatcher;
 
 #[tokio::main]
 async fn main() -> ExitCode {
-    if std::env::args().nth(1).as_deref() == Some("check-config") {
-        return telegram_http::check_config(ROLE);
+    match std::env::args().nth(1).as_deref() {
+        Some("check-config") => return telegram_http::check_config(ROLE),
+        Some("check-schema") => return telegram_http::check_schema(ROLE).await,
+        _ => {}
     }
     // No public listener: the dispatcher sends, it does not receive. Its workers start through
     // the background factory after validation and database preparation succeed.
-    telegram_http::run_with_background(
-        ROLE,
-        PublicRoutes::none(),
-        Background::new(|context| std::future::ready(build::build(context))),
-    )
-    .await
+    telegram_http::run_with_background(ROLE, PublicRoutes::none(), Background::new(build::build))
+        .await
 }

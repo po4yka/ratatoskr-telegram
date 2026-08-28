@@ -18,12 +18,17 @@ pub mod inbox;
 pub mod interaction_cleanup;
 pub mod interaction_tokens;
 pub mod message_bindings;
+pub mod notification_delivery;
+pub mod notification_preferences;
 pub mod outbound_jobs;
 pub mod projection_accept;
 pub mod updates;
 
 pub use bindings::{AccessState, ChatRecord, IdentityProfile, IdentityRecord};
 pub use message_bindings::MessageBindingRecord;
+pub use notification_preferences::{
+    NotificationPreferenceUpdate, NotificationPreferences, QuietPolicy,
+};
 pub use outbound_jobs::{
     DeliveryOutcome, NewOutboundJob, OutboundJobKind, OutboundJobState, QueuedOutboundJob,
 };
@@ -93,6 +98,18 @@ pub enum PersistenceError {
     /// work the queue promised to deliver.
     #[error("the outbound job was never enqueued")]
     UnknownOutboundJob,
+
+    /// An optimistic notification-preference update named an old version.
+    #[error("the notification preference version is stale")]
+    StalePreference,
+
+    /// A notification policy was invalid before it reached the database.
+    #[error("the notification preference is invalid")]
+    InvalidPreference,
+
+    /// The dispatcher reached a database before the webhook role applied the current schema.
+    #[error("the telegram schema is absent or incomplete")]
+    SchemaAbsent,
 }
 
 impl From<PersistenceError> for TelegramError {
@@ -158,6 +175,30 @@ impl Database {
             .await
             .map_err(PersistenceError::Schema)?;
         transaction.commit().await.map_err(PersistenceError::Schema)
+    }
+
+    /// Verify the current schema exists without applying or mutating it.
+    ///
+    /// # Errors
+    ///
+    /// [`PersistenceError::SchemaAbsent`] when any current-schema authority is absent, or
+    /// [`PersistenceError::Query`] when the catalog cannot be read.
+    pub async fn verify_schema(&self) -> Result<(), PersistenceError> {
+        let complete: bool = sqlx::query_scalar(
+            "select to_regclass('telegram.updates') is not null
+                 and to_regclass('telegram.private_chat_bindings') is not null
+                 and to_regclass('telegram.notification_preferences') is not null
+                 and to_regclass('telegram.notification_decisions') is not null
+                 and to_regclass('telegram.outbound_jobs') is not null",
+        )
+        .fetch_one(&self.pool)
+        .await
+        .map_err(PersistenceError::Query)?;
+        if complete {
+            Ok(())
+        } else {
+            Err(PersistenceError::SchemaAbsent)
+        }
     }
 
     /// Answer whether the database is usable right now.

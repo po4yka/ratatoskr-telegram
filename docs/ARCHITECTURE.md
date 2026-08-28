@@ -1,9 +1,9 @@
 # Ratatoskr Telegram Architecture
 
-> Status: target architecture. Plan items 1 through 8 are implemented, including secure durable
+> Status: target architecture. Plan items 1 through 8 and item 10 are implemented, including secure durable
 > intake, capture/GitHub flows, ordered delivery, generalized interaction tokens, versioned dialogue
-> state, opaque `/start` intents, and bounded cleanup. Mini App authentication, notifications, and
-> workspace integration remain planned.
+> state, opaque `/start` intents, bounded cleanup, preference-gated notifications, and the
+> single-host operational profile. Mini App authentication remains planned.
 
 ## 1. Purpose
 
@@ -587,18 +587,22 @@ Permanent projection failure updates interaction state but does not roll back do
 
 ## 20. Notifications
 
-Notification categories may include:
+The finite notification classes are:
 
-- operation completion or partial failure;
-- watched GitHub repository change;
-- backup failure/restore issue;
-- account reauthorization required;
-- overdue ChatGPT/Claude export backup;
-- digest or scheduled summary when explicitly enabled.
+- operation completed;
+- operation failed;
+- analysis ready;
+- backup outcome;
+- watch triggered;
+- archive imported.
 
-Preferences are per user/chat/category and include quiet hours, batching, and delivery target.
+Preferences are per explicit internal-user/private-chat binding and include a global switch,
+per-class overrides, UTC quiet hours, and opt-in high-priority bypass. Digest scheduling and a
+generic automation engine are not part of this subsystem.
 
-Domain services emit facts; Telegram decides whether/how to notify according to Telegram-owned preferences.
+Platform emits `platform.notification.raised.v1` on
+`evt.platform.notification.raised.v1`; Telegram decides whether and when to notify according to
+Telegram-owned preferences, then uses its existing durable outbound sender.
 
 ## 21. Platform interaction
 
@@ -628,7 +632,6 @@ Through Platform or the bus:
 content.capture.requested.v1
 github.repository.add_requested.v1
 platform.operation.cancel_requested.v1
-telegram.notification.test_requested.v1
 ```
 
 ### 22.2. Events consumed
@@ -636,6 +639,7 @@ telegram.notification.test_requested.v1
 ```text
 platform.operation.progressed.v1
 platform.operation.completed.v1
+platform.notification.raised.v1
 content.document.extracted.v1
 knowledge.analysis.completed.v1
 github.repository.added.v1

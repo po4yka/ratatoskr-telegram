@@ -1,0 +1,10 @@
+/mnt/nvme/ratatoskr/logs/telegram-*.log {
+    daily
+    rotate 14
+    compress
+    delaycompress
+    missingok
+    notifempty
+    copytruncate
+    create 0600 root root
+}

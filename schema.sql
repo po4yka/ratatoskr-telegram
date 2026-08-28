@@ -178,6 +178,10 @@ create table telegram.outbound_jobs (
     operation_id     uuid,
     revision         bigint,
     correlation_id   text,
+    delivery_class   text        not null default 'direct'
+                     check (delivery_class in ('direct', 'projection', 'notification')),
+    notification_id  uuid,
+    notification_created_at timestamptz,
     state            text        not null default 'ready'
                      check (state in ('planned', 'ready', 'sending', 'sent', 'retry_wait',
                                       'superseded', 'failed_permanent', 'cancelled')),
@@ -186,7 +190,9 @@ create table telegram.outbound_jobs (
     lease_expires_at timestamptz,
     last_error_class text,
     created_at       timestamptz not null default now(),
-    updated_at       timestamptz not null default now()
+    updated_at       timestamptz not null default now(),
+    check ((delivery_class = 'notification') = (notification_id is not null)),
+    check ((delivery_class = 'notification') = (notification_created_at is not null))
 );
 
 -- The due scan behind every claim: ready and waiting jobs ordered by their earliest attempt.
@@ -197,6 +203,9 @@ create index outbound_jobs_chat_idx on telegram.outbound_jobs (chat_id, id);
 -- The lease scan: rows in flight whose sender may have died.
 create index outbound_jobs_sending_idx on telegram.outbound_jobs (state)
     where state = 'sending';
+create unique index outbound_jobs_notification_idx
+    on telegram.outbound_jobs (notification_id, chat_id)
+    where notification_id is not null;
 
 comment on table telegram.outbound_jobs is
     'The durable Bot API write queue: one row per planned or attempted sendMessage / '
@@ -229,6 +238,98 @@ create table telegram.inbox (
 comment on table telegram.inbox is
     'Envelope event ids already consumed from at-least-once transports; the primary key is the '
     'deduplication decision.';
+
+-- `private_chat_bindings` is the explicit authority connecting an admitted Telegram actor to a
+-- private delivery venue. Telegram happens to make many private chat ids numerically equal to a
+-- user id; this relation deliberately does not rely on that provider coincidence.
+create table telegram.private_chat_bindings (
+    telegram_user_id bigint      not null references telegram.identities(telegram_user_id),
+    chat_id          bigint      not null references telegram.chats(chat_id),
+    bound_at         timestamptz not null,
+    primary key (telegram_user_id, chat_id),
+    unique (chat_id)
+);
+
+comment on table telegram.private_chat_bindings is
+    'Explicit admitted actor-to-private-chat delivery authority; numeric id equality is never '
+    'authorization.';
+
+-- One global Telegram notification policy per explicit private-chat binding. `inherit` accepts a
+-- producer quiet-hours hint, `custom` uses the two local minute offsets, and `disabled` has no
+-- quiet window. Equal endpoints are invalid rather than ambiguously meaning never or always.
+create table telegram.notification_preferences (
+    telegram_user_id     bigint      not null,
+    chat_id              bigint      not null,
+    enabled              boolean     not null default true,
+    quiet_policy         text        not null default 'inherit'
+                         check (quiet_policy in ('disabled', 'inherit', 'custom')),
+    quiet_start_minute   smallint    check (quiet_start_minute between 0 and 1439),
+    quiet_end_minute     smallint    check (quiet_end_minute between 0 and 1439),
+    high_priority_bypass boolean     not null default false,
+    version              bigint      not null default 0 check (version >= 0),
+    created_at           timestamptz not null default now(),
+    updated_at           timestamptz not null default now(),
+    primary key (telegram_user_id, chat_id),
+    foreign key (telegram_user_id, chat_id)
+        references telegram.private_chat_bindings(telegram_user_id, chat_id),
+    check (
+        (quiet_policy = 'custom'
+         and quiet_start_minute is not null
+         and quiet_end_minute is not null
+         and quiet_start_minute <> quiet_end_minute)
+        or
+        (quiet_policy in ('disabled', 'inherit')
+         and quiet_start_minute is null
+         and quiet_end_minute is null)
+    )
+);
+
+create table telegram.notification_class_preferences (
+    telegram_user_id bigint      not null,
+    chat_id          bigint      not null,
+    class            text        not null
+                     check (class ~ '^[a-z][a-z0-9_-]{0,31}$'),
+    enabled          boolean     not null,
+    updated_at       timestamptz not null default now(),
+    primary key (telegram_user_id, chat_id, class),
+    foreign key (telegram_user_id, chat_id)
+        references telegram.notification_preferences(telegram_user_id, chat_id)
+        on delete cascade
+);
+
+-- A decision is the notification dedupe authority. The carrying transport event id is optional
+-- evidence only; replaying the same notification under a different envelope cannot send twice.
+create table telegram.notification_decisions (
+    id                 uuid        not null primary key,
+    notification_id    uuid        not null,
+    transport_event_id uuid,
+    chat_id            bigint      not null references telegram.chats(chat_id),
+    class              text        not null
+                       check (class ~ '^[a-z][a-z0-9_-]{0,31}$'),
+    outcome            text        not null
+                       check (outcome in ('suppressed', 'deferred', 'enqueued', 'delivered',
+                                          'retry_wait', 'failed_permanent')),
+    outbound_job_id    uuid        references telegram.outbound_jobs(id),
+    release_at         timestamptz,
+    decided_at         timestamptz not null,
+    updated_at         timestamptz not null default now(),
+    unique (notification_id, chat_id),
+    unique (outbound_job_id),
+    check (outcome <> 'deferred' or release_at is not null)
+);
+
+create table telegram.notification_transport_failures (
+    id              uuid        not null primary key,
+    stream_sequence bigint      check (stream_sequence > 0),
+    event_id        uuid,
+    failure_class   text        not null
+                    check (failure_class in ('wrong_event_type', 'invalid_envelope',
+                                             'invalid_notification', 'database_unavailable')),
+    occurred_at     timestamptz not null
+);
+
+comment on table telegram.notification_transport_failures is
+    'Content-free poison/transient transport evidence: sequence, event id, safe class and time.';
 
 -- `dialog_states` is the durable, versioned state for finite Telegram interactions. The only
 -- dialogue implemented today is the GitHub repository confirmation flow. Its payload is decoded

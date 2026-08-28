@@ -1,0 +1,173 @@
+#!/usr/bin/env bash
+# Guarded Telegram operator actions. Read-only and dry-run are the default authority boundaries;
+# every local mutation requires both --execute and an exact acknowledgement string.
+set -euo pipefail
+
+usage() {
+    cat >&2 <<'USAGE'
+usage: telegram-ops COMMAND [OPTIONS]
+
+commands:
+  rotate-webhook-secret --candidate FILE [--destination FILE] (--dry-run | --execute --ack TEXT)
+  rotate-bot-token      --candidate FILE [--destination FILE] (--dry-run | --execute --ack TEXT)
+  inspect-session       --user-ref user:UUID [--dry-run]
+  recover-stuck-update  --bot-id ID --update-id ID --expected-state processing
+                        (--dry-run | --execute --ack TEXT)
+  inspect-dead          --kind updates|outbound|notifications|all [--limit 1..100] [--dry-run]
+
+Provider webhook registration/revocation and Platform session mutation are separate external
+authorities and are never performed by this tool.
+USAGE
+    exit 64
+}
+
+die() { printf 'telegram-ops: %s\n' "$1" >&2; exit "${2:-64}"; }
+is_uint() { [[ "$1" =~ ^[0-9]+$ ]]; }
+need_file() { [[ -f "$1" && -r "$1" && -s "$1" ]] || die 'candidate file must be readable and non-empty' 66; }
+
+rotate() {
+    local kind="$1"; shift
+    local candidate='' destination='' dry_run=false execute=false ack=''
+    while (($#)); do
+        case "$1" in
+            --candidate) (($# >= 2)) || usage; candidate="$2"; shift 2 ;;
+            --destination) (($# >= 2)) || usage; destination="$2"; shift 2 ;;
+            --dry-run) dry_run=true; shift ;;
+            --execute) execute=true; shift ;;
+            --ack) (($# >= 2)) || usage; ack="$2"; shift 2 ;;
+            *) usage ;;
+        esac
+    done
+    [[ -n "$candidate" ]] || usage
+    need_file "$candidate"
+    local candidate_value line_count
+    IFS= read -r candidate_value < "$candidate" || die 'candidate file is unreadable' 66
+    line_count="$(wc -l < "$candidate" | tr -d ' ')"
+    [[ "$line_count" == 1 ]] || die 'candidate file must contain exactly one line' 66
+    if [[ "$kind" == webhook-secret ]]; then
+        if ((${#candidate_value} < 16 || ${#candidate_value} > 256)) \
+            || [[ ! "$candidate_value" =~ ^[A-Za-z0-9_-]+$ ]]; then
+            die 'webhook-secret candidate has invalid shape' 66
+        fi
+    else
+        if [[ ! "$candidate_value" =~ ^[0-9]{5,20}:[A-Za-z0-9_-]{20,}$ ]]; then
+            die 'bot-token candidate has invalid shape' 66
+        fi
+    fi
+    unset candidate_value
+    local expected="rotate ${kind} credential"
+    if "$dry_run"; then
+        "$execute" && die '--dry-run and --execute are mutually exclusive'
+        printf 'DRY-RUN: validate candidate metadata; atomically replace local %s credential; restart affected role(s); verify readiness\n' "$kind"
+        printf 'EXTERNAL AUTHORITY: provider registration/revocation is not performed\n'
+        return
+    fi
+    "$execute" || die 'choose --dry-run or --execute'
+    [[ "$ack" == "$expected" ]] || die "--ack must equal: $expected"
+    [[ -n "$destination" && "$destination" == /* ]] || die '--destination must be an absolute path'
+    local parent temporary backup
+    parent="$(dirname "$destination")"
+    temporary="$(mktemp "$parent/.telegram-credential.XXXXXX")"
+    backup="${destination}.previous"
+    trap 'rm -f "$temporary"' RETURN
+    install -m 0600 "$candidate" "$temporary"
+    [[ ! -e "$destination" ]] || cp -p "$destination" "$backup"
+    mv -f "$temporary" "$destination"
+    if ! {
+        if [[ "$kind" == webhook-secret ]]; then
+            systemctl restart ratatoskr-telegram-webhook.service
+            curl --fail --silent --show-error http://127.0.0.1:9467/health/ready >/dev/null
+        else
+            systemctl restart ratatoskr-telegram-webhook.service ratatoskr-telegram-dispatcher.service
+            curl --fail --silent --show-error http://127.0.0.1:9467/health/ready >/dev/null
+            curl --fail --silent --show-error http://127.0.0.1:9468/health/ready >/dev/null
+        fi
+    }; then
+        if [[ -e "$backup" ]]; then
+            mv -f "$backup" "$destination"
+        else
+            rm -f "$destination"
+        fi
+        die 'readiness failed; local credential was rolled back' 1
+    fi
+    printf 'telegram-ops: local %s credential replaced; previous copy: %s\n' "$kind" "$backup"
+}
+
+inspect_session() {
+    local user_ref='' dry_run=false
+    while (($#)); do
+        case "$1" in
+            --user-ref) (($# >= 2)) || usage; user_ref="$2"; shift 2 ;;
+            --dry-run) dry_run=true; shift ;;
+            *) usage ;;
+        esac
+    done
+    [[ "$user_ref" =~ ^user:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]] || die 'invalid user reference'
+    printf '%s: inspect via the authenticated Platform operator surface; Telegram does not own sessions\n' "$([[ "$dry_run" == true ]] && printf DRY-RUN || printf READ-ONLY)"
+}
+
+recover_update() {
+    local bot_id='' update_id='' expected='' dry_run=false execute=false ack=''
+    while (($#)); do
+        case "$1" in
+            --bot-id) (($# >= 2)) || usage; bot_id="$2"; shift 2 ;;
+            --update-id) (($# >= 2)) || usage; update_id="$2"; shift 2 ;;
+            --expected-state) (($# >= 2)) || usage; expected="$2"; shift 2 ;;
+            --dry-run) dry_run=true; shift ;;
+            --execute) execute=true; shift ;;
+            --ack) (($# >= 2)) || usage; ack="$2"; shift 2 ;;
+            *) usage ;;
+        esac
+    done
+    if ! is_uint "$bot_id" || ! is_uint "$update_id"; then
+        die 'bot-id and update-id must be unsigned integers'
+    fi
+    [[ "$expected" == processing ]] || die 'expected-state must be processing'
+    if "$dry_run"; then
+        "$execute" && die '--dry-run and --execute are mutually exclusive'
+        printf 'DRY-RUN: recover Telegram update %s/%s; expected state: %s; conditional mutation affects at most one row\n' "$bot_id" "$update_id" "$expected"
+        return
+    fi
+    "$execute" || die 'recovery requires --dry-run or --execute'
+    local expected_ack="recover ${bot_id}/${update_id} from ${expected}"
+    [[ "$ack" == "$expected_ack" ]] || die "--ack must equal: $expected_ack"
+    [[ -n "${RATATOSKR_TELEGRAM_DATABASE_URL:-}" ]] || die 'RATATOSKR_TELEGRAM_DATABASE_URL is required' 78
+    psql "$RATATOSKR_TELEGRAM_DATABASE_URL" --no-psqlrc --set=ON_ERROR_STOP=1 --tuples-only \
+        --set=bot_id="$bot_id" --set=update_id="$update_id" --set=expected_state="$expected" \
+        --file="$(dirname "$0")/../sql/recover-stuck-update.sql"
+}
+
+inspect_dead() {
+    local kind='' limit=25 dry_run=false
+    while (($#)); do
+        case "$1" in
+            --kind) (($# >= 2)) || usage; kind="$2"; shift 2 ;;
+            --limit) (($# >= 2)) || usage; limit="$2"; shift 2 ;;
+            --dry-run) dry_run=true; shift ;;
+            *) usage ;;
+        esac
+    done
+    [[ "$kind" =~ ^(updates|outbound|notifications|all)$ ]] || die 'kind must be updates, outbound, notifications, or all'
+    if ! is_uint "$limit" || ((limit < 1 || limit > 100)); then
+        die 'limit must be 1..100'
+    fi
+    if "$dry_run"; then
+        printf 'DRY-RUN: bounded read-only dead-%s projection: identifiers,timestamps,attempts,safe_class,correlation_ref\n' "$kind"
+        return
+    fi
+    [[ -n "${RATATOSKR_TELEGRAM_DATABASE_URL:-}" ]] || die 'RATATOSKR_TELEGRAM_DATABASE_URL is required' 78
+    psql "$RATATOSKR_TELEGRAM_DATABASE_URL" --no-psqlrc --set=ON_ERROR_STOP=1 --set=kind="$kind" \
+        --set=limit="$limit" --file="$(dirname "$0")/../sql/inspect-dead.sql"
+}
+
+(($# >= 1)) || usage
+command="$1"; shift
+case "$command" in
+    rotate-webhook-secret) rotate webhook-secret "$@" ;;
+    rotate-bot-token) rotate bot-token "$@" ;;
+    inspect-session) inspect_session "$@" ;;
+    recover-stuck-update) recover_update "$@" ;;
+    inspect-dead) inspect_dead "$@" ;;
+    help|--help|-h) usage ;;
+    *) usage ;;
+esac

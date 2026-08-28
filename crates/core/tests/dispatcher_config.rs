@@ -34,6 +34,13 @@ fn admit_dispatcher_basics(jail: &mut Jail) {
         "RATATOSKR__PLATFORM__ASSERTION_SIGNING_KEY",
         "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20",
     );
+    jail.set_env(
+        "RATATOSKR__NOTIFICATION_BUS__CREDENTIALS_FILE",
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("Cargo.toml")
+            .to_string_lossy()
+            .as_ref(),
+    );
 }
 
 /// The dispatcher section parses with every default filled, and an unknown key inside it is an

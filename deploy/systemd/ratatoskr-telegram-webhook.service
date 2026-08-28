@@ -1,0 +1,57 @@
+[Unit]
+Description=Ratatoskr Telegram webhook receiver
+Documentation=https://github.com/po4yka/ratatoskr-telegram/blob/main/deploy/README.md
+After=network-online.target docker.service
+Wants=network-online.target docker.service
+StartLimitIntervalSec=0
+
+[Service]
+Type=exec
+User=ratatoskr-telegram-webhook
+Group=ratatoskr-telegram-webhook
+SupplementaryGroups=ratatoskr ratatoskr-telegram-secrets
+EnvironmentFile=/etc/ratatoskr/telegram-webhook.conf
+ExecStartPre=/usr/local/bin/ratatoskr-telegram-webhook check-config
+ExecStartPre=/usr/local/bin/ratatoskr-telegram-webhook check-schema
+ExecStart=/usr/local/bin/ratatoskr-telegram-webhook
+Restart=always
+RestartSec=10s
+KillSignal=SIGTERM
+TimeoutStopSec=130s
+
+StandardOutput=append:/mnt/nvme/ratatoskr/logs/telegram-webhook.log
+StandardError=append:/mnt/nvme/ratatoskr/logs/telegram-webhook.log
+MemoryHigh=384M
+MemoryMax=512M
+CPUQuota=100%
+TasksMax=128
+
+IPAddressDeny=any
+IPAddressAllow=localhost 172.16.0.0/12 100.64.0.0/10
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths=/var/lib/ratatoskr-telegram /mnt/nvme/ratatoskr/logs
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectProc=invisible
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+CapabilityBoundingSet=
+AmbientCapabilities=
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

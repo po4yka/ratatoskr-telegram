@@ -1,0 +1,14 @@
+# /etc/ratatoskr/telegram-dispatcher.conf -- root:ratatoskr-telegram-dispatcher 0640
+RATATOSKR__ADMIN__BIND=0.0.0.0:9468
+RATATOSKR__DATABASE__URL=postgres://ratatoskr_telegram:CHANGE-ME@127.0.0.1:5432/ratatoskr
+RATATOSKR__BOT_API__TOKEN_FILE=/etc/ratatoskr/secrets/telegram-bot-token
+RATATOSKR__PLATFORM__AUDIENCE=ratatoskr-platform
+RATATOSKR__PLATFORM__ASSERTION_SIGNING_KEY_FILE=/etc/ratatoskr/secrets/telegram-platform-signing-key
+RATATOSKR__NOTIFICATION_BUS__ENDPOINT=nats://127.0.0.1:4222
+RATATOSKR__NOTIFICATION_BUS__STREAM=ratatoskr_events
+RATATOSKR__NOTIFICATION_BUS__DURABLE=ratatoskr_telegram_notifications
+RATATOSKR__NOTIFICATION_BUS__SUBJECT=evt.platform.notification.raised.v1
+RATATOSKR__NOTIFICATION_BUS__FETCH_BATCH=32
+RATATOSKR__NOTIFICATION_BUS__ACK_WAIT_SECONDS=30
+RATATOSKR__NOTIFICATION_BUS__CREDENTIALS_FILE=/etc/ratatoskr/secrets/telegram.nkey
+RATATOSKR__TELEMETRY__LOG_FORMAT=json

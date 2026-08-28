@@ -46,6 +46,10 @@ pub struct TelegramConfig {
     #[serde(default)]
     pub ingestion: IngestionConfig,
 
+    /// The exact Platform-provisioned notification consumer the dispatcher opens.
+    #[serde(default)]
+    pub notification_bus: NotificationBusConfig,
+
     /// Outbound delivery tuning. Present for every role; only the dispatcher reads it.
     #[serde(default)]
     pub dispatcher: DispatcherConfig,
@@ -156,6 +160,10 @@ pub struct BotApiConfig {
     #[serde(default, skip_serializing)]
     pub token: SecretString,
 
+    /// `RATATOSKR__BOT_API__TOKEN_FILE`. Atomic file-backed alternative to `token`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token_file: Option<PathBuf>,
+
     /// `RATATOSKR__BOT_API__USERNAME`. The serving bot's `t.me` handle, without the @. Optional:
     /// the deep-link composer needs it, and a deployment that omits it simply gets text-only
     /// terminal renders rather than broken links.
@@ -169,6 +177,7 @@ impl Default for BotApiConfig {
             base_url: default_bot_api_base_url(),
             timeout_seconds: default_bot_api_timeout_seconds(),
             token: SecretString::default(),
+            token_file: None,
             username: None,
         }
     }
@@ -200,6 +209,11 @@ pub struct PlatformConfig {
     /// SECRET. Empty default refused where required; never rendered by check-config.
     #[serde(default, skip_serializing)]
     pub assertion_signing_key: SecretString,
+
+    /// `RATATOSKR__PLATFORM__ASSERTION_SIGNING_KEY_FILE`. File-backed alternative to the inline
+    /// seed; the resolved value remains a [`SecretString`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub assertion_signing_key_file: Option<PathBuf>,
 }
 
 impl Default for PlatformConfig {
@@ -209,6 +223,7 @@ impl Default for PlatformConfig {
             timeout_seconds: default_platform_timeout_seconds(),
             audience: String::default(),
             assertion_signing_key: SecretString::default(),
+            assertion_signing_key_file: None,
         }
     }
 }
@@ -233,8 +248,8 @@ const fn default_platform_timeout_seconds() -> u64 {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct WebhookConfig {
-    /// `RATATOSKR__WEBHOOK__BIND`. Default `127.0.0.1:9469`, continuing this service's allocation
-    /// block behind the admin ports.
+    /// `RATATOSKR__WEBHOOK__BIND`. Default `127.0.0.1:8182`, the workspace single-host allocation
+    /// behind cloudflared.
     ///
     /// Loopback by default (`SECURITY.md`: deny by default). A deployment sets its ingress-facing
     /// address explicitly; what terminates TLS in front of it is the deployment's trusted path.
@@ -249,6 +264,10 @@ pub struct WebhookConfig {
     #[serde(default, skip_serializing)]
     pub secret_token: SecretString,
 
+    /// `RATATOSKR__WEBHOOK__SECRET_TOKEN_FILE`. File-backed alternative to `secret_token`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub secret_token_file: Option<PathBuf>,
+
     /// `RATATOSKR__WEBHOOK__MAX_BODY_BYTES`. 1024..=1048576, default 262144.
     ///
     /// An admission ceiling, not a target: real updates are small, and the cap exists so a forged
@@ -257,12 +276,74 @@ pub struct WebhookConfig {
     pub max_body_bytes: u32,
 }
 
+/// Exact, finite notification bus topology. Platform owns the durable's creation; Telegram opens
+/// and verifies it without consumer-create authority.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NotificationBusConfig {
+    /// `RATATOSKR__NOTIFICATION_BUS__ENDPOINT`. TLS remotely; plain NATS only on loopback.
+    #[serde(default = "default_notification_bus_endpoint")]
+    pub endpoint: Url,
+    /// Canonical `JetStream` stream.
+    #[serde(default = "default_notification_stream")]
+    pub stream: String,
+    /// Canonical Platform-provisioned durable consumer.
+    #[serde(default = "default_notification_durable")]
+    pub durable: String,
+    /// Exact fleet subject; wildcards are refused.
+    #[serde(default = "default_notification_subject")]
+    pub subject: String,
+    /// Maximum messages fetched per pull.
+    #[serde(default = "default_notification_fetch_batch")]
+    pub fetch_batch: u32,
+    /// Consumer ack deadline used when verifying the Platform topology.
+    #[serde(default = "default_notification_ack_wait_seconds")]
+    pub ack_wait_seconds: u64,
+    /// NATS credentials file. Required and readable for the dispatcher role.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credentials_file: Option<PathBuf>,
+}
+
+impl Default for NotificationBusConfig {
+    fn default() -> Self {
+        Self {
+            endpoint: default_notification_bus_endpoint(),
+            stream: default_notification_stream(),
+            durable: default_notification_durable(),
+            subject: default_notification_subject(),
+            fetch_batch: default_notification_fetch_batch(),
+            ack_wait_seconds: default_notification_ack_wait_seconds(),
+            credentials_file: None,
+        }
+    }
+}
+
+fn default_notification_bus_endpoint() -> Url {
+    #[expect(clippy::expect_used, reason = "compile-time URL")]
+    Url::parse("nats://127.0.0.1:4222").expect("constant URL")
+}
+fn default_notification_stream() -> String {
+    "ratatoskr_events".to_owned()
+}
+fn default_notification_durable() -> String {
+    "ratatoskr_telegram_notifications".to_owned()
+}
+fn default_notification_subject() -> String {
+    "evt.platform.notification.raised.v1".to_owned()
+}
+const fn default_notification_fetch_batch() -> u32 {
+    32
+}
+const fn default_notification_ack_wait_seconds() -> u64 {
+    30
+}
+
 const fn default_max_body_bytes() -> u32 {
     262_144
 }
 
 fn default_webhook_bind() -> SocketAddr {
-    SocketAddr::new(std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST), 9469)
+    SocketAddr::new(std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST), 8182)
 }
 
 fn default_bot_api_base_url() -> Url {

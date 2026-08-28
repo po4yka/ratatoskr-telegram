@@ -30,6 +30,8 @@ pub struct PublicContext {
     /// The prepared database, when one is configured and reachable. A role whose factory needs one
     /// has already refused to start without it.
     pub database: Option<Database>,
+    /// Shared operator-plane state for role-specific dependencies.
+    pub runtime: Arc<crate::RuntimeState>,
 }
 
 /// The public-router factory, or the deliberate absence of one.

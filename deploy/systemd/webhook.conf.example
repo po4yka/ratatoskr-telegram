@@ -1,0 +1,10 @@
+# /etc/ratatoskr/telegram-webhook.conf -- root:ratatoskr-telegram-webhook 0640
+RATATOSKR__ADMIN__BIND=0.0.0.0:9467
+RATATOSKR__WEBHOOK__BIND=127.0.0.1:8182
+RATATOSKR__DATABASE__URL=postgres://ratatoskr_telegram:CHANGE-ME@127.0.0.1:5432/ratatoskr
+RATATOSKR__ACCESS__OWNER_TELEGRAM_USER_ID=CHANGE-ME
+RATATOSKR__BOT_API__TOKEN_FILE=/etc/ratatoskr/secrets/telegram-bot-token
+RATATOSKR__WEBHOOK__SECRET_TOKEN_FILE=/etc/ratatoskr/secrets/telegram-webhook
+RATATOSKR__PLATFORM__AUDIENCE=ratatoskr-platform
+RATATOSKR__PLATFORM__ASSERTION_SIGNING_KEY_FILE=/etc/ratatoskr/secrets/telegram-platform-signing-key
+RATATOSKR__TELEMETRY__LOG_FORMAT=json

@@ -1,11 +1,11 @@
 # Developing Ratatoskr Telegram
 
-> Status: Implemented for plan items 1 through 8; items 9 and 10 are Proposed.
-> Last reviewed: 2026-08-27
+> Status: Implemented for plan items 1 through 8 and 10; item 9 remains Proposed.
+> Last reviewed: 2026-08-28
 
 ## Current stage
 
-Plan items 1 through 8 of `docs/IMPLEMENTATION_PLAN.md` are implemented and the commands marked **real**
+Plan items 1 through 8 and item 10 of `docs/IMPLEMENTATION_PLAN.md` are implemented and the commands marked **real**
 below are real. The Cargo workspace, its pinned toolchain and its committed `Cargo.lock`; the
 `ratatoskr-telegram-core`, `ratatoskr-telegram-telemetry`, `ratatoskr-telegram-http` and
 `ratatoskr-telegram-persistence` library crates; the `ratatoskr-telegram-webhook` and
@@ -18,7 +18,7 @@ a configured database; and the CI gate in `.github/workflows/ci.yml`.
 
 Plan item 2 added the `ratatoskr-telegram-bot-api` crate — the typed Bot API client over `teloxide`
 (`get_me`, `set_webhook`, `send_message`, `edit_message_text`, `answer_callback_query`,
-`send_chat_action`) — and the secure webhook intake: the public listener on 9469 that verifies the
+`send_chat_action`) — and the secure webhook intake: the public listener on `8182` that verifies the
 secret header in constant time before reading anything, enforces method/content-type/body-size
 limits, parses updates against the Bot API schema, and persists the payload and deduplication key
 `(bot_id, update_id)` in `telegram.updates` before acknowledgment. A worker claims pending work from
@@ -59,13 +59,34 @@ authority: exact 64-character random tokens are one-time, expiring, and bound to
 message, dialogue step, and version. The same registry backs exact `/start <token>` operation-status
 intents. The worker runs bounded stale-state cleanup at startup and on a fixed monotonic interval.
 
-Not present yet, in plan order: Mini App initData validation (item 9), notifications and workspace
-integration (item 10). No test contacts Telegram or a live
+Item 10 adds `/settings` notification policy management, the fixed
+`evt.platform.notification.raised.v1` JetStream consumer, preference/quiet-hours enforcement,
+notification delivery through the existing outbound queue, the two-unit single-host profile, and
+recovery runbooks. Mini App initData validation (item 9) remains proposed. No test contacts Telegram or a live
 Platform: both clients run against local harness servers with synthetic bodies.
 
 The database is REQUIRED for both roles since item 4: intake writes update deduplication through
 the pool, and the dispatcher delivers every send and edit through its durable outbound queue there,
 so either role that cannot reach its database refuses to start.
+
+## Notification preferences
+
+An authorized private chat uses deterministic settings commands:
+
+```text
+/settings
+/settings notifications on|off
+/settings notification <class> on|off|inherit
+/settings quiet-hours inherit|disabled|HH:MM-HH:MM
+/settings high-priority-bypass on|off
+```
+
+The known class vocabulary is rendered by `/settings`; an unknown future contract class inherits
+only the global switch. Quiet hours are UTC. A custom user window overrides a producer hint,
+`disabled` ignores it, and `inherit` accepts it. A notification is admitted only through the
+explicit internal-user/private-chat binding written by the authorization gate. Telegram exposes
+no `/admin`, `/dbinfo`, `/dbverify`, or process-health bot command: operators use the private
+health and metrics listeners, while `/status <operation>` remains user-facing operation status.
 
 ## The dispatcher's delivery pipeline
 
@@ -83,12 +104,13 @@ through HTML-escaped, status-led text throttled by durable reschedule arithmetic
 states applied exactly once per binding. Limits live under `RATATOSKR__DISPATCHER__*` (rule V15):
 `GLOBAL_MESSAGES_PER_SECOND`, `PER_CHAT_MIN_INTERVAL_MS`, `RENDER_INTERVAL_SECS`, `MAX_ATTEMPTS`,
 `BACKOFF_BASE_SECS`, `BACKOFF_CAP_SECS`, `JITTER_FRACTION_MILLI`, `LEASE_TTL_SECS`,
-`POLL_IDLE_MS`. The NATS transport for operation events arrives with workspace integration; today
-the consumer is fed through its in-process seam.
+`POLL_IDLE_MS`. Operation progress still enters through the Platform SSE follower. Notification
+facts enter through the pre-provisioned `ratatoskr_telegram_notifications` pull consumer on
+`evt.platform.notification.raised.v1`; the dispatcher never creates or repairs that durable.
 
 ## Toolchain
 
-Rust/Tokio/Axum/SQLx, pinned by `rust-toolchain.toml`. The Telegram Bot API client is `teloxide`
+Rust/Tokio/Axum/SQLx and NATS JetStream, pinned by `rust-toolchain.toml`. The Telegram Bot API client is `teloxide`
 (pinned in the workspace manifest, rustls TLS); only `ratatoskr-telegram-bot-api` may depend on it,
 which keeps the token and the URL shapes that carry it in one boundary. PostgreSQL 17 locally through
 `compose.yaml`. There are no migrations by development-status rule: one schema file, applied fresh,
@@ -134,7 +156,7 @@ about branches and tags not pinning into an exit code.
 ### Test — real
 
 ```bash
-# everything, against the local database from compose.yaml
+# everything, against PostgreSQL and JetStream from compose.yaml
 docker compose up -d
 cargo build --workspace --locked
 cargo test --workspace --locked
@@ -146,7 +168,9 @@ cargo test -p ratatoskr-telegram-core
 cargo test -p ratatoskr-telegram-webhook --test boot
 ```
 
-The suite creates disposable databases named after each test and drops them afterwards.
+The suite creates disposable databases named after each test and drops them afterwards. The
+notification durable test also creates and removes its exact stream/consumer fixture on the
+configured disposable JetStream server.
 `TELEGRAM_TEST_DATABASE_URL` names the server they are created on; unset, it defaults to
 `postgres://telegram:telegram@127.0.0.1:5432/telegram`, which is what `compose.yaml` serves. A test
 that cannot reach a server FAILS rather than skips: a suite that silently passes without a database
@@ -155,7 +179,7 @@ proves nothing.
 ### Local run — real
 
 ```bash
-docker compose up -d          # the local PostgreSQL the integration tests use
+docker compose up -d          # local PostgreSQL and disposable JetStream for integration tests
 
 # dispatcher role, operator plane on 9468; needs its database and bot token before it will start
 RATATOSKR__TELEMETRY__LOG_FORMAT=pretty \
@@ -170,7 +194,7 @@ RATATOSKR__BOT_API__TOKEN='123456:your-bot-token' \
 RATATOSKR__WEBHOOK__SECRET_TOKEN='at-least-16-chars-of-entropy' \
 RATATOSKR__INGESTION__BLOB_ROOT="$PWD/.local/telegram-blobs" \
 cargo run -p ratatoskr-telegram-webhook
-# admin plane on 9467, public intake on 127.0.0.1:9469. Startup calls getMe once to learn the bot
+# admin plane on 9467, public intake on 127.0.0.1:8182. Startup calls getMe once to learn the bot
 # identity deduplication keys on, so the token must work — point RATATOSKR__BOT_API__BASE_URL at a
 # loopback harness for an offline play.
 
@@ -180,7 +204,7 @@ curl -s http://127.0.0.1:9467/metrics | head
 curl -s http://127.0.0.1:9467/version
 
 # deliver a synthetic update through the whole admission path
-curl -si http://127.0.0.1:9469/webhook \
+curl -si http://127.0.0.1:8182/webhook \
   -X POST \
   -H "X-Telegram-Bot-Api-Secret-Token: $RATATOSKR__WEBHOOK__SECRET_TOKEN" \
   -H 'Content-Type: application/json' \
@@ -212,8 +236,15 @@ capture provenance, or rendered to a user.
 up to 20 MiB. It bounds both Telegram's declared file size and the bytes actually streamed, so a
 provider response that exceeds its declared size cannot publish a partial blob.
 
+The dispatcher additionally requires the fixed notification-bus endpoint, stream, durable,
+subject, fetch/ack bounds, and an NKey seed file. Platform provisions that least-privilege durable;
+Telegram only verifies and consumes it. A missing or mismatched consumer keeps dispatcher
+readiness false and sends nothing. See `deploy/systemd/dispatcher.conf.example` for the exact
+keys and `deploy/README.md` for the single-host profile.
+
 Registering the webhook with Telegram (`setWebhook`) remains an explicit operational write done
-outside this process; the client method exists for the tooling that will own it.
+outside this process. Rotation and rollback are documented in
+`docs/runbooks/webhook-secret-rotation.md` and `docs/runbooks/bot-token-rotation.md`.
 
 ### Schema — real
 

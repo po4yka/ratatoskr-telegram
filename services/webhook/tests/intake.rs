@@ -356,6 +356,70 @@ async fn a_valid_update_is_accepted_once_and_queued_once() {
     fixture.cleanup().await;
 }
 
+/// An admitted private interaction creates the explicit actor-to-chat delivery authority used by
+/// notifications; provider id equality is not that authority.
+#[tokio::test]
+async fn admitted_private_chat_creates_explicit_actor_binding() {
+    const PRIVATE_CHAT: i64 = 900_700_699;
+    let mut fixture = Fixture::create().await;
+    assert_eq!(
+        fixture
+            .deliver(message_from(
+                4_101,
+                OWNER_TELEGRAM_USER_ID,
+                PRIVATE_CHAT,
+                "private",
+            ))
+            .await,
+        StatusCode::OK
+    );
+    let item = fixture.receiver.try_recv().expect("queued");
+    intake::process_one(&fixture.database.database, &item, None).await;
+
+    let bindings: i64 = sqlx::query_scalar(
+        "select count(*) from telegram.private_chat_bindings
+         where telegram_user_id = $1 and chat_id = $2",
+    )
+    .bind(OWNER_TELEGRAM_USER_ID)
+    .bind(PRIVATE_CHAT)
+    .fetch_one(fixture.database.pool())
+    .await
+    .expect("binding count");
+    assert_eq!(bindings, 1);
+    fixture.cleanup().await;
+}
+
+/// A numerically similar private chat gains no delivery authority by resemblance.
+#[tokio::test]
+async fn similar_numeric_chat_is_not_authorized() {
+    const EXACT_CHAT: i64 = 900_700_699;
+    const SIMILAR_CHAT: i64 = 900_700_698;
+    let mut fixture = Fixture::create().await;
+    assert_eq!(
+        fixture
+            .deliver(message_from(
+                4_102,
+                OWNER_TELEGRAM_USER_ID,
+                EXACT_CHAT,
+                "private",
+            ))
+            .await,
+        StatusCode::OK
+    );
+    let item = fixture.receiver.try_recv().expect("queued");
+    intake::process_one(&fixture.database.database, &item, None).await;
+
+    let similar: i64 = sqlx::query_scalar(
+        "select count(*) from telegram.private_chat_bindings where chat_id = $1",
+    )
+    .bind(SIMILAR_CHAT)
+    .fetch_one(fixture.database.pool())
+    .await
+    .expect("binding count");
+    assert_eq!(similar, 0);
+    fixture.cleanup().await;
+}
+
 /// A replacement worker recovers an acknowledged update without the process-local notification.
 #[tokio::test]
 async fn an_admitted_update_is_processed_after_worker_restart() {

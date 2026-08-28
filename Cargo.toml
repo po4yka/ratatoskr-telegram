@@ -33,8 +33,10 @@ ratatoskr-telegram-blob-store  = { version = "0.1.0", path = "crates/blob-store"
 # The published BlobRef wire types (`ratatoskr-identifiers`). Pinned by revision exactly like the
 # extractor pins the same crate, so every fleet member speaks one contract version; `deny.toml`'s
 # `required-git-spec = "rev"` enforces this form.
-ratatoskr-identifiers = { git = "https://github.com/po4yka/ratatoskr-contracts.git", rev = "5b8bbb4220375f6236066a23b19e9d6f8faaaf28" }
-ratatoskr-github-contracts = { git = "https://github.com/po4yka/ratatoskr-contracts.git", rev = "5b8bbb4220375f6236066a23b19e9d6f8faaaf28" }
+ratatoskr-identifiers = { git = "https://github.com/po4yka/ratatoskr-contracts.git", rev = "9a4df8126b495ffc3ad0647441da1690594f25bc" }
+ratatoskr-github-contracts = { git = "https://github.com/po4yka/ratatoskr-contracts.git", rev = "9a4df8126b495ffc3ad0647441da1690594f25bc" }
+ratatoskr-event-envelope = { git = "https://github.com/po4yka/ratatoskr-contracts.git", rev = "9a4df8126b495ffc3ad0647441da1690594f25bc" }
+ratatoskr-notification-contracts = { git = "https://github.com/po4yka/ratatoskr-contracts.git", rev = "9a4df8126b495ffc3ad0647441da1690594f25bc" }
 
 # ---- Telegram Bot API ----
 # The sanctioned client for every Telegram API call this service makes (plan item 2 onward:
@@ -56,6 +58,8 @@ subtle = { version = "2.6.1", default-features = false }
 
 # ---- async runtime and HTTP ----
 tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros", "signal", "net", "time", "sync"] }
+async-nats = { version = "0.50.0", default-features = false, features = ["ring", "jetstream", "nkeys"] }
+futures-util = { version = "0.3.31", default-features = false, features = ["std"] }
 axum  = { version = "0.8.9", default-features = false, features = ["http1", "json", "tokio", "tracing"] }
 http  = "1.5.0"
 

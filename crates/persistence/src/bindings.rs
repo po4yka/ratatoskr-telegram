@@ -237,4 +237,43 @@ impl Database {
         })
         .transpose()
     }
+
+    /// Persist the explicit authority that lets `telegram_user_id` receive private notifications
+    /// in `chat_id`. The caller invokes this only after the identity and chat access checks pass.
+    /// Replaying the same admitted interaction is idempotent; a chat already bound to another
+    /// actor is refused by the schema's unique constraint.
+    ///
+    /// # Errors
+    ///
+    /// [`PersistenceError::Query`] if the binding does not reference existing admitted records or
+    /// conflicts with another actor's binding.
+    pub async fn bind_private_chat(
+        &self,
+        telegram_user_id: i64,
+        chat_id: i64,
+    ) -> Result<(), PersistenceError> {
+        let mut transaction = self.pool.begin().await.map_err(PersistenceError::Query)?;
+        sqlx::query(
+            "insert into telegram.private_chat_bindings
+                 (telegram_user_id, chat_id, bound_at)
+             values ($1, $2, now())
+             on conflict (telegram_user_id, chat_id) do nothing",
+        )
+        .bind(telegram_user_id)
+        .bind(chat_id)
+        .execute(&mut *transaction)
+        .await
+        .map_err(PersistenceError::Query)?;
+        sqlx::query(
+            "insert into telegram.notification_preferences (telegram_user_id, chat_id)
+             values ($1, $2)
+             on conflict (telegram_user_id, chat_id) do nothing",
+        )
+        .bind(telegram_user_id)
+        .bind(chat_id)
+        .execute(&mut *transaction)
+        .await
+        .map_err(PersistenceError::Query)?;
+        transaction.commit().await.map_err(PersistenceError::Query)
+    }
 }

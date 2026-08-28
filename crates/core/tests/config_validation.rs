@@ -15,6 +15,16 @@ use figment::Jail;
 use telegram_core::config;
 use telegram_core::role::RuntimeRole;
 
+fn admit_notification_credentials(jail: &mut Jail) {
+    jail.set_env(
+        "RATATOSKR__NOTIFICATION_BUS__CREDENTIALS_FILE",
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("Cargo.toml")
+            .to_string_lossy()
+            .as_ref(),
+    );
+}
+
 /// Two invalid values produce two violations in ONE report — an operator editing an environment
 /// wants one round trip, not five. Uses the dispatcher role so the intake requirements (V13) stay
 /// out of the count; they are asserted in `webhook_config.rs`. The database URL satisfies the
@@ -23,6 +33,7 @@ use telegram_core::role::RuntimeRole;
 fn two_invalid_values_produce_two_violations_in_one_report() {
     Jail::expect_with(|jail| {
         jail.clear_env();
+        admit_notification_credentials(jail);
         jail.set_env(
             "RATATOSKR__DATABASE__URL",
             "postgres://telegram@127.0.0.1:5432/telegram",
@@ -60,6 +71,7 @@ fn two_invalid_values_produce_two_violations_in_one_report() {
 fn a_violation_report_never_quotes_the_supplied_value() {
     Jail::expect_with(|jail| {
         jail.clear_env();
+        admit_notification_credentials(jail);
         jail.set_env(
             "RATATOSKR__DATABASE__URL",
             "mysql://user:secret-password@db.example:3306/x",
@@ -77,12 +89,13 @@ fn a_violation_report_never_quotes_the_supplied_value() {
     });
 }
 
-/// The defaults are valid once each role's own requirement is met: the dispatcher needs only a
-/// database URL since item 4, the webhook's fuller set is asserted in `webhook_config.rs`.
+/// The defaults are valid once each role's own requirements are met: the dispatcher needs its
+/// database and notification credential source; the webhook's fuller set is in `webhook_config.rs`.
 #[test]
 fn the_defaults_are_valid_for_every_role() {
     Jail::expect_with(|jail| {
         jail.clear_env();
+        admit_notification_credentials(jail);
         jail.set_env(
             "RATATOSKR__DATABASE__URL",
             "postgres://telegram@127.0.0.1:5432/telegram",

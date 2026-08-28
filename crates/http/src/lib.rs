@@ -114,7 +114,7 @@ pub async fn run_with_background(
 
     let runtime = Arc::new(RuntimeState::new(role));
 
-    let database = prepare_database(&config, &runtime).await;
+    let database = prepare_database(role, &config, &runtime).await;
     if database.is_none() && role_requires_database(role) {
         tracing::error!(
             "the configured database could not be prepared; {} writes update deduplication \
@@ -131,6 +131,7 @@ pub async fn run_with_background(
         let context = PublicContext {
             config: Arc::clone(&config),
             database: database.clone(),
+            runtime: Arc::clone(&runtime),
         };
         if let Err(error) = start_background(&background, context, &startup).await {
             error.log();
@@ -148,6 +149,7 @@ pub async fn run_with_background(
             let context = PublicContext {
                 config: Arc::clone(&config),
                 database: database.clone(),
+                runtime: Arc::clone(&runtime),
             };
             match start_public(build, context, &startup, &config).await {
                 Ok(served) => served,
@@ -265,6 +267,44 @@ pub fn check_config(role: telegram_core::RuntimeRole) -> ExitCode {
     }
 }
 
+/// Validate configuration, connect to the owned database, and apply (webhook) or verify
+/// (dispatcher) the one current schema without binding listeners.
+pub async fn check_schema(role: telegram_core::RuntimeRole) -> ExitCode {
+    let config = match telegram_core::config::load(role) {
+        Ok(config) => config,
+        Err(error) => {
+            eprintln!("{}", error.report(role));
+            return ExitCode::from(error.exit_code());
+        }
+    };
+    let Some(database_config) = config.database.as_ref() else {
+        eprintln!("{}: database configuration is absent", role.binary_name());
+        return ExitCode::from(78);
+    };
+    let database = match telegram_persistence::Database::connect(database_config).await {
+        Ok(database) => database,
+        Err(error) => {
+            eprintln!(
+                "{}: database connection failed: {error}",
+                role.binary_name()
+            );
+            return ExitCode::FAILURE;
+        }
+    };
+    let result = match role {
+        telegram_core::RuntimeRole::Webhook => database.apply_schema().await,
+        telegram_core::RuntimeRole::Dispatcher => database.verify_schema().await,
+    };
+    database.close().await;
+    match result {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => {
+            eprintln!("{}: schema check failed: {error}", role.binary_name());
+            ExitCode::FAILURE
+        }
+    }
+}
+
 /// The single INFO line that says what the process actually believes, and the one non-fatal
 /// warning. Safe by type: `SecretString` has no `Display` and renders as `[REDACTED]`.
 ///
@@ -326,6 +366,7 @@ fn announce(config: &telegram_core::TelegramConfig) {
 /// webhook writes through the pool and refuses to start ([`role_requires_database`]); the
 /// dispatcher, with no such route yet, degrades to a failing readiness check while staying up.
 async fn prepare_database(
+    role: telegram_core::RuntimeRole,
     config: &telegram_core::TelegramConfig,
     runtime: &Arc<RuntimeState>,
 ) -> Option<telegram_persistence::Database> {
@@ -344,8 +385,12 @@ async fn prepare_database(
         }
     };
 
-    if let Err(error) = database.apply_schema().await {
-        tracing::warn!(error = %error, "the schema could not be applied");
+    let schema = match role {
+        telegram_core::RuntimeRole::Webhook => database.apply_schema().await,
+        telegram_core::RuntimeRole::Dispatcher => database.verify_schema().await,
+    };
+    if let Err(error) = schema {
+        tracing::warn!(error = %error, "the current schema could not be prepared");
         return None;
     }
 

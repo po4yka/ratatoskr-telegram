@@ -17,6 +17,8 @@ pub(super) enum DenialClass {
     UnknownSender,
     /// The sender's record is disabled; externally identical to unknown (design D6).
     DisabledIdentity,
+    /// A known private chat has been disabled by the access policy.
+    DisabledChat,
     /// The conversation is not a private chat, or no chat context is resolvable.
     NonPrivateChat,
 }
@@ -28,6 +30,7 @@ impl DenialClass {
         match self {
             Self::UnknownSender => "unknown_sender",
             Self::DisabledIdentity => "disabled_identity",
+            Self::DisabledChat => "disabled_chat",
             Self::NonPrivateChat => "non_private_chat",
         }
     }
@@ -86,7 +89,12 @@ pub(crate) async fn authorize(
         return Ok(Some(DenialClass::NonPrivateChat));
     }
 
-    database.ensure_chat(chat.id.0).await?;
+    let chat_id = chat.id.0;
+    let admitted_chat = database.ensure_chat(chat_id).await?;
+    if admitted_chat.access_state != AccessState::Enabled {
+        return Ok(Some(DenialClass::DisabledChat));
+    }
+    database.bind_private_chat(sender_id, chat_id).await?;
     Ok(None)
 }
 

@@ -7,6 +7,7 @@
 
 pub mod build;
 pub mod follow;
+pub mod notifications;
 pub mod outbound;
 pub mod projection;
 

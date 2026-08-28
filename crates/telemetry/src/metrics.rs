@@ -30,7 +30,7 @@ pub const TELEGRAM_UPDATES_RECEIVED_TOTAL: &str = "telegram_updates_received_tot
 
 /// `telegram_updates_denied_total{class}` — counter. One increment per update the authorization
 /// gate refuses, labelled by the closed outcome vocabulary: `unknown_sender`, `disabled_identity`,
-/// `non_private_chat`. Deliberately identifier-free: the three classes are externally
+/// `disabled_chat`, `non_private_chat`. Deliberately identifier-free: the classes are externally
 /// indistinguishable by design, and the labels must not become an enrollment oracle either.
 pub const TELEGRAM_UPDATES_DENIED_TOTAL: &str = "telegram_updates_denied_total";
 
@@ -86,6 +86,16 @@ pub const TELEGRAM_OUTBOUND_QUEUE_DEPTH: &str = "telegram_outbound_queue_depth";
 /// event, labelled by the closed accept vocabulary: `recorded`, `duplicate`, `post_terminal`,
 /// `stale`, `unbound`.
 pub const TELEGRAM_PROJECTION_EVENTS_TOTAL: &str = "telegram_projection_events_total";
+
+/// `telegram_notification_events_total{outcome,class}` — receipt, policy, queue, and sender
+/// outcomes. Both labels are closed: unknown future producer classes collapse to `other`.
+pub const TELEGRAM_NOTIFICATION_EVENTS_TOTAL: &str = "telegram_notification_events_total";
+
+/// `telegram_notification_backlog` — pending messages reported by the fixed durable.
+pub const TELEGRAM_NOTIFICATION_BACKLOG: &str = "telegram_notification_backlog";
+
+/// `telegram_notification_lag` — undelivered plus explicit-ack-pending messages.
+pub const TELEGRAM_NOTIFICATION_LAG: &str = "telegram_notification_lag";
 
 /// Latency buckets, in seconds. Shared by every duration histogram this workspace will emit, so
 /// graphs of different subsystems stay comparable.

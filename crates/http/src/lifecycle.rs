@@ -12,6 +12,12 @@ const DATABASE_ABSENT: u8 = 0;
 const DATABASE_UP: u8 = 1;
 /// The last probe did not answer.
 const DATABASE_DOWN: u8 = 2;
+/// No notification bus is configured for this role.
+const NOTIFICATION_ABSENT: u8 = 0;
+/// The fixed notification durable and consumer loop are healthy.
+const NOTIFICATION_UP: u8 = 1;
+/// The notification dependency is configured but unavailable or incompatible.
+const NOTIFICATION_DOWN: u8 = 2;
 
 /// The facts readiness is computed from.
 ///
@@ -27,6 +33,8 @@ pub struct RuntimeState {
     /// The database: 0 not configured, 1 answering, 2 not answering. Three states rather than a
     /// `bool`, because "no database" and "a database that is down" must not report the same thing.
     database: AtomicU8,
+    /// Notification bus: absent for webhook, up/down for dispatcher.
+    notification_bus: AtomicU8,
 }
 
 impl RuntimeState {
@@ -38,6 +46,7 @@ impl RuntimeState {
             startup_complete: AtomicBool::new(false),
             draining: AtomicBool::new(false),
             database: AtomicU8::new(DATABASE_ABSENT),
+            notification_bus: AtomicU8::new(NOTIFICATION_ABSENT),
         };
         state.publish_readiness();
         state
@@ -80,6 +89,27 @@ impl RuntimeState {
         self.publish_readiness();
     }
 
+    /// Record that the dispatcher has a configured notification dependency that has not yet been
+    /// verified.
+    pub fn mark_notification_configured(&self) {
+        self.notification_bus
+            .store(NOTIFICATION_DOWN, Ordering::Release);
+        self.publish_readiness();
+    }
+
+    /// Record whether the fixed durable and its consumer loop are currently usable.
+    pub fn set_notification_reachable(&self, reachable: bool) {
+        self.notification_bus.store(
+            if reachable {
+                NOTIFICATION_UP
+            } else {
+                NOTIFICATION_DOWN
+            },
+            Ordering::Release,
+        );
+        self.publish_readiness();
+    }
+
     /// A shutdown signal arrived. Readiness fails immediately; the listeners stay open.
     pub fn begin_draining(&self) {
         self.draining.store(true, Ordering::Release);
@@ -89,7 +119,10 @@ impl RuntimeState {
     /// Whether new work may be routed to this process.
     #[must_use]
     pub fn is_ready(&self) -> bool {
-        self.startup_complete.load(Ordering::Acquire) && !self.draining.load(Ordering::Acquire)
+        self.startup_complete.load(Ordering::Acquire)
+            && !self.draining.load(Ordering::Acquire)
+            && self.database.load(Ordering::Acquire) != DATABASE_DOWN
+            && self.notification_bus.load(Ordering::Acquire) != NOTIFICATION_DOWN
     }
 
     /// The readiness checks, sorted by name.
@@ -134,6 +167,15 @@ impl RuntimeState {
             }
         }
 
+        if self.notification_bus.load(Ordering::Acquire) != NOTIFICATION_ABSENT {
+            let up = self.notification_bus.load(Ordering::Acquire) == NOTIFICATION_UP;
+            checks.push(Check {
+                name: CheckName::NotificationBus,
+                state: CheckState::from_pass(up),
+                reason: (!up).then_some(CheckReason::DependencyUnavailable),
+            });
+        }
+
         // Alphabetical by name, so a probe body never depends on insertion order.
         checks.sort_unstable_by_key(|check| check.name);
         checks
@@ -169,6 +211,8 @@ pub enum CheckName {
     Database,
     /// No shutdown signal has arrived.
     Drain,
+    /// The exact pre-provisioned notification durable and consumer loop are usable.
+    NotificationBus,
     /// Configuration, telemetry and every configured listener are up.
     Startup,
 }

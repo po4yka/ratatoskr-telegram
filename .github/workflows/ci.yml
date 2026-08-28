@@ -1,8 +1,8 @@
 # The gate DEVELOPMENT.md documents, enforced. The command list here and the command list in
 # DEVELOPMENT.md are the same list; if they drift, DEVELOPMENT.md is wrong.
 #
-# The gate holds no secret at all: this workspace has no git dependencies yet, and crates.io
-# resolves anonymously.
+# The gate holds no secret at all. Contract git revisions are public and exact; crates.io resolves
+# anonymously, while PostgreSQL/NATS use only task-local synthetic credentials and state.
 name: ci
 
 on:
@@ -61,6 +61,7 @@ jobs:
       # Where the suite creates and drops its disposable databases. Matches compose.yaml, so the
       # same command works on a laptop and here.
       TELEGRAM_TEST_DATABASE_URL: postgres://telegram:telegram@127.0.0.1:5432/telegram
+      TELEGRAM_TEST_NATS_URL: nats://127.0.0.1:4222
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -74,6 +75,9 @@ jobs:
 
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
 
+      - name: Start disposable JetStream for notification-consumer tests
+        run: docker run --detach --rm --name telegram-ci-nats --publish 4222:4222 nats@sha256:d4ac35882ac65aff236cd65b9d3fa4d24332c681e1a85f94eedccd3cdd65b1da --jetstream --store_dir=/data
+
       - run: cargo fetch --locked
 
       # Reads RustSec, the licence set, duplicate versions and the source policy. Nothing else in
@@ -85,6 +89,12 @@ jobs:
       - run: cargo deny check
 
       - run: cargo fmt --all -- --check
+
+      - name: Validate executable operator runbooks
+        run: |
+          bash -n deploy/bin/telegram-ops deploy/tests/telegram_ops_test.sh
+          bash deploy/tests/telegram_ops_test.sh
+
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
 
       # The one size limit clippy cannot express. `clippy.toml` bounds a function, a signature and a
