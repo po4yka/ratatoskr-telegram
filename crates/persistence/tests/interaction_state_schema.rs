@@ -111,3 +111,68 @@ async fn legacy_item_specific_interaction_tables_are_absent() {
         "superseded interaction tables remain: {legacy:?}"
     );
 }
+
+#[tokio::test]
+async fn library_read_tokens_have_action_specific_command_scope() {
+    let test = TestDatabase::create().await.expect("database");
+    let internal_user = uuid::Uuid::now_v7();
+    let analysis = uuid::Uuid::now_v7();
+    let operation = uuid::Uuid::now_v7();
+
+    sqlx::query(
+        "insert into telegram.interaction_tokens
+         (token, surface, action, bot_id, telegram_user_id, internal_user_id, chat_id,
+          analysis_id, created_at, expires_at)
+         values ($1, 'command', 'library_read', 7, 11, $2, 11, $3,
+                 to_timestamp(100), to_timestamp(1000))",
+    )
+    .bind("A".repeat(64))
+    .bind(internal_user)
+    .bind(analysis)
+    .execute(test.pool())
+    .await
+    .expect("a command-scoped library read token");
+
+    let invalid = [
+        sqlx::query(
+            "insert into telegram.interaction_tokens
+             (token, surface, action, bot_id, telegram_user_id, chat_id, analysis_id,
+              created_at, expires_at)
+             values ($1, 'command', 'library_read', 7, 11, 11, $2,
+                     to_timestamp(100), to_timestamp(1000))",
+        )
+        .bind("B".repeat(64))
+        .bind(analysis)
+        .execute(test.pool())
+        .await,
+        sqlx::query(
+            "insert into telegram.interaction_tokens
+             (token, surface, action, bot_id, telegram_user_id, internal_user_id, chat_id,
+              analysis_id, operation_id, created_at, expires_at)
+             values ($1, 'command', 'library_read', 7, 11, $2, 11, $3, $4,
+                     to_timestamp(100), to_timestamp(1000))",
+        )
+        .bind("C".repeat(64))
+        .bind(internal_user)
+        .bind(analysis)
+        .bind(operation)
+        .execute(test.pool())
+        .await,
+        sqlx::query(
+            "insert into telegram.interaction_tokens
+             (token, surface, action, bot_id, telegram_user_id, internal_user_id, chat_id,
+              expected_message_id, analysis_id, created_at, expires_at)
+             values ($1, 'command', 'library_read', 7, 11, $2, 11, 99, $3,
+                     to_timestamp(100), to_timestamp(1000))",
+        )
+        .bind("D".repeat(64))
+        .bind(internal_user)
+        .bind(analysis)
+        .execute(test.pool())
+        .await,
+    ];
+    assert!(
+        invalid.iter().all(Result::is_err),
+        "every forbidden payload combination must be constrained"
+    );
+}

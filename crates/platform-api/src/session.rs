@@ -37,6 +37,16 @@ const REFRESH_MARGIN_SECS: i64 = 300;
 struct CachedSession {
     credential: String,
     expires_at: Timestamp,
+    user_id: uuid::Uuid,
+}
+
+/// Authenticated Platform session facts needed by Telegram adapters.
+#[derive(Debug, Clone)]
+pub struct UserSession {
+    /// Bearer credential, kept redacted by its secret wrapper.
+    pub credential: secrecy::SecretString,
+    /// Canonical Platform user identity.
+    pub user_id: uuid::Uuid,
 }
 
 /// Hands out a Platform bearer credential per Telegram sender.
@@ -88,11 +98,28 @@ impl SessionSource {
     ///
     /// [`PlatformError`] if issuance or the exchange fails.
     pub async fn credential(&self, subject: &str) -> Result<String, PlatformError> {
-        if let Some(hit) = self.fresh_entry(subject).await {
-            return Ok(hit.credential.clone());
-        }
-        let fresh = self.exchange(subject).await?;
-        Ok(fresh.credential)
+        Ok(self
+            .session(subject)
+            .await?
+            .credential
+            .expose_secret()
+            .to_owned())
+    }
+
+    /// Session credential plus the canonical internal user it authenticates.
+    ///
+    /// # Errors
+    ///
+    /// [`PlatformError`] if issuance or exchange fails.
+    pub async fn session(&self, subject: &str) -> Result<UserSession, PlatformError> {
+        let cached = match self.fresh_entry(subject).await {
+            Some(hit) => hit,
+            None => Arc::new(self.exchange(subject).await?),
+        };
+        Ok(UserSession {
+            credential: secrecy::SecretString::new(cached.credential.clone().into()),
+            user_id: cached.user_id,
+        })
     }
 
     /// The cached entry for `subject` when it is still inside its refresh margin.
@@ -120,6 +147,7 @@ impl SessionSource {
         let fresh = Arc::new(CachedSession {
             credential: minted.credential.expose_secret().to_owned(),
             expires_at,
+            user_id: minted.user_id,
         });
         self.cached
             .lock()

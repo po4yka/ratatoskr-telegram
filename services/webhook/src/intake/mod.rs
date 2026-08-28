@@ -13,6 +13,7 @@ mod capture;
 mod classify;
 mod github;
 mod intent;
+mod library;
 pub mod settings;
 mod worker;
 

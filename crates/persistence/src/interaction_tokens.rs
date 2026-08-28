@@ -76,6 +76,8 @@ pub enum TokenSurface {
     Callback,
     /// The payload of an exact `/start <token>` message.
     DeepLink,
+    /// An opaque argument to a deterministic bot command.
+    Command,
 }
 
 /// Complete Telegram presentation scope. A message binding exists only for callback buttons.
@@ -151,6 +153,72 @@ pub struct NewOperationIntent {
     pub expires_at: i64,
 }
 
+/// Complete owner scope for a command-scoped library read authority.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LibraryReadScope {
+    /// Bot identity that issued the authority.
+    pub bot_id: i64,
+    /// Telegram actor bound to the authority.
+    pub telegram_user_id: i64,
+    /// Canonical Ratatoskr user bound to the authority.
+    pub internal_user_id: Uuid,
+    /// Private Telegram chat bound to the authority.
+    pub chat_id: i64,
+}
+
+/// New single-use authority to mark one library analysis read.
+#[derive(Debug, Clone, Copy)]
+pub struct NewLibraryReadIntent {
+    /// Complete owner scope.
+    pub scope: LibraryReadScope,
+    /// Stable Knowledge analysis reference.
+    pub analysis_id: Uuid,
+    /// Strict expiry, in whole seconds since the Unix epoch.
+    pub expires_at: i64,
+}
+
+/// A freshly minted authority prepared for atomic persistence with its rendered outbound job.
+#[derive(Debug, Clone)]
+pub struct PreparedLibraryReadIntent {
+    token: String,
+    intent: NewLibraryReadIntent,
+}
+
+impl PreparedLibraryReadIntent {
+    /// Mint a client-visible token without storing authority yet.
+    #[must_use]
+    pub fn new(intent: NewLibraryReadIntent) -> Self {
+        Self {
+            token: mint_token(),
+            intent,
+        }
+    }
+
+    /// The opaque value to embed in the rendered command.
+    #[must_use]
+    pub fn token(&self) -> &str {
+        &self.token
+    }
+}
+
+/// One attempt to consume a library read authority.
+#[derive(Debug, Clone, Copy)]
+pub struct LibraryReadPresentation<'a> {
+    /// Opaque client-presented value.
+    pub token: &'a str,
+    /// Complete current actor scope.
+    pub scope: LibraryReadScope,
+    /// Wall-clock timestamp, in whole seconds since the Unix epoch.
+    pub now: i64,
+}
+
+/// Typed state released by a successful library read presentation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ReleasedLibraryRead {
+    /// Stable Knowledge analysis reference to mutate through Platform.
+    pub analysis_id: Uuid,
+}
+
 /// Typed server-side state released by a successful token presentation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReleasedToken {
@@ -190,10 +258,13 @@ type LockedTokenRow = (
     Option<i64>,
 );
 
+type LockedLibraryReadRow = (String, String, i64, i64, Uuid, i64, Uuid, i64, Option<i64>);
+
 const fn surface_name(surface: TokenSurface) -> &'static str {
     match surface {
         TokenSurface::Callback => "callback",
         TokenSurface::DeepLink => "deep_link",
+        TokenSurface::Command => "command",
     }
 }
 
@@ -229,6 +300,147 @@ fn query_decode_error(index: &str, message: impl Into<String>) -> PersistenceErr
 }
 
 impl Database {
+    /// Atomically store prepared library read authorities and their one outbound message.
+    ///
+    /// # Errors
+    ///
+    /// [`PersistenceError::Query`] if scopes disagree or storage fails. No authority or outbound
+    /// job remains when any insert fails.
+    pub async fn enqueue_library_read_delivery(
+        &self,
+        intents: &[PreparedLibraryReadIntent],
+        job: &crate::outbound_jobs::NewOutboundJob,
+        now: i64,
+    ) -> Result<Uuid, PersistenceError> {
+        if intents.iter().any(|prepared| {
+            prepared.intent.scope.bot_id != job.bot_id
+                || prepared.intent.scope.chat_id != job.chat_id
+        }) {
+            return Err(query_decode_error("scope", "outbound scope mismatch"));
+        }
+        let mut transaction = self.pool().begin().await.map_err(PersistenceError::Query)?;
+        for prepared in intents {
+            sqlx::query(
+                "insert into telegram.interaction_tokens
+                 (token, surface, action, bot_id, telegram_user_id, internal_user_id, chat_id,
+                  analysis_id, created_at, expires_at)
+                 values ($1, 'command', 'library_read', $2, $3, $4, $5, $6,
+                         to_timestamp($7), to_timestamp($8))",
+            )
+            .bind(&prepared.token)
+            .bind(prepared.intent.scope.bot_id)
+            .bind(prepared.intent.scope.telegram_user_id)
+            .bind(prepared.intent.scope.internal_user_id)
+            .bind(prepared.intent.scope.chat_id)
+            .bind(prepared.intent.analysis_id)
+            .bind(now)
+            .bind(prepared.intent.expires_at)
+            .execute(&mut *transaction)
+            .await
+            .map_err(PersistenceError::Query)?;
+        }
+        let id = crate::outbound_jobs::insert_outbound_job(&mut transaction, job, now).await?;
+        transaction
+            .commit()
+            .await
+            .map_err(PersistenceError::Query)?;
+        Ok(id)
+    }
+
+    /// Mint and store one owner-bound library read command authority.
+    ///
+    /// # Errors
+    ///
+    /// [`PersistenceError::Query`] if storage fails.
+    pub async fn issue_library_read_intent(
+        &self,
+        intent: NewLibraryReadIntent,
+        now: i64,
+    ) -> Result<String, PersistenceError> {
+        let token = mint_token();
+        sqlx::query(
+            "insert into telegram.interaction_tokens
+             (token, surface, action, bot_id, telegram_user_id, internal_user_id, chat_id,
+              analysis_id, created_at, expires_at)
+             values ($1, 'command', 'library_read', $2, $3, $4, $5, $6,
+                     to_timestamp($7), to_timestamp($8))",
+        )
+        .bind(&token)
+        .bind(intent.scope.bot_id)
+        .bind(intent.scope.telegram_user_id)
+        .bind(intent.scope.internal_user_id)
+        .bind(intent.scope.chat_id)
+        .bind(intent.analysis_id)
+        .bind(now)
+        .bind(intent.expires_at)
+        .execute(self.pool())
+        .await
+        .map_err(PersistenceError::Query)?;
+        Ok(token)
+    }
+
+    /// Resolve and consume one owner-bound library read command authority.
+    ///
+    /// # Errors
+    ///
+    /// [`PersistenceError::Query`] when storage cannot evaluate the authority.
+    pub async fn resolve_library_read_intent(
+        &self,
+        presentation: LibraryReadPresentation<'_>,
+    ) -> Result<Result<ReleasedLibraryRead, TokenRefusal>, PersistenceError> {
+        if !token_has_valid_grammar(presentation.token) {
+            return Ok(Err(TokenRefusal::Invalid));
+        }
+        let mut transaction = self.pool().begin().await.map_err(PersistenceError::Query)?;
+        let row: Option<LockedLibraryReadRow> = sqlx::query_as(
+            "select surface, action, bot_id, telegram_user_id, internal_user_id, chat_id,
+                        analysis_id, extract(epoch from expires_at)::bigint,
+                        extract(epoch from consumed_at)::bigint
+                 from telegram.interaction_tokens
+                 where token = $1
+                 for update",
+        )
+        .bind(presentation.token)
+        .fetch_optional(&mut *transaction)
+        .await
+        .map_err(PersistenceError::Query)?;
+        let Some(row) = row else {
+            return Ok(Err(TokenRefusal::Invalid));
+        };
+        if row.8.is_some() {
+            return Ok(Err(TokenRefusal::Consumed));
+        }
+        if row.7 <= presentation.now {
+            return Ok(Err(TokenRefusal::Expired));
+        }
+        let scope = presentation.scope;
+        if row.0 != "command"
+            || row.1 != "library_read"
+            || row.2 != scope.bot_id
+            || row.3 != scope.telegram_user_id
+            || row.4 != scope.internal_user_id
+            || row.5 != scope.chat_id
+        {
+            return Ok(Err(TokenRefusal::ScopeMismatch));
+        }
+        sqlx::query(
+            "update telegram.interaction_tokens
+             set consumed_at = to_timestamp($2), consumed_by_user = $3
+             where token = $1",
+        )
+        .bind(presentation.token)
+        .bind(presentation.now)
+        .bind(scope.telegram_user_id)
+        .execute(&mut *transaction)
+        .await
+        .map_err(PersistenceError::Query)?;
+        transaction
+            .commit()
+            .await
+            .map_err(PersistenceError::Query)?;
+        Ok(Ok(ReleasedLibraryRead { analysis_id: row.6 }))
+    }
+
     /// Mint and store one owner-bound operation-status deep-link authority.
     ///
     /// # Errors

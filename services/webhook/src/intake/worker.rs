@@ -28,6 +28,7 @@ use crate::intake::capture;
 use crate::intake::classify::supported;
 use crate::intake::github;
 use crate::intake::intent;
+use crate::intake::library;
 use crate::intake::settings::{self, SettingsResult};
 
 const INTERACTION_CLEANUP_BATCH: u32 = 100;
@@ -193,11 +194,7 @@ pub async fn process_one(
     item: &QueuedUpdate,
     capture_context: Option<&CaptureContext>,
 ) {
-    let span = tracing::info_span!(
-        "telegram.update.process",
-        update_id = item.update.id.0,
-        bot_id = item.bot_id,
-    );
+    let span = tracing::info_span!("telegram.update.process", update_id = item.update.id.0,);
 
     async {
         if let Err(error) = database
@@ -311,6 +308,18 @@ async fn self_domain_action(
             SettingsResult::Processed => return UpdateState::Processed,
             SettingsResult::Failed => return UpdateState::Failed,
             SettingsResult::NotSettings => {}
+        }
+        if let Some(state) = library::handle(
+            database,
+            item.bot_id,
+            parts.sender_id,
+            parts.chat_id,
+            text,
+            capture_context,
+        )
+        .await
+        {
+            return state;
         }
     }
     let Some(context) = capture_context else {
@@ -590,8 +599,18 @@ async fn enqueue_reply(
     chat_id: i64,
     reply: ReplyKind,
 ) -> UpdateState {
+    enqueue_text(database, bot_id, chat_id, &reply.body()).await
+}
+
+/// Persist one bounded HTML reply without touching Telegram directly.
+pub(super) async fn enqueue_text(
+    database: &Database,
+    bot_id: i64,
+    chat_id: i64,
+    text: &str,
+) -> UpdateState {
     let payload = telegram_persistence::outbound_jobs::MessagePayload {
-        text: reply.body(),
+        text: text.to_owned(),
         parse_mode: Some("HTML".to_owned()),
         reply_markup: None,
     };

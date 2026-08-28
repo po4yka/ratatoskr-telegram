@@ -14,6 +14,7 @@
 //! an injected clock; no query reads the database clock.
 
 use sqlx::types::Uuid;
+use sqlx::{Postgres, Transaction};
 
 use crate::{Database, PersistenceError};
 
@@ -283,79 +284,7 @@ impl Database {
         now: i64,
     ) -> Result<Uuid, PersistenceError> {
         let mut transaction = self.pool.begin().await.map_err(PersistenceError::Query)?;
-
-        // The supersede sweep runs before the insert so the due scan never sees both generations.
-        if let (Some(operation_id), Some(revision)) = (job.operation_id, job.revision) {
-            sqlx::query(
-                "update telegram.outbound_jobs
-                 set state = 'superseded',
-                     updated_at = to_timestamp($3)
-                 where operation_id = $1
-                   and chat_id = $2
-                   and kind = 'edit_message_text'
-                   and state in ('planned', 'ready', 'retry_wait')
-                   and revision < $4",
-            )
-            .bind(operation_id)
-            .bind(job.chat_id)
-            .bind(now)
-            .bind(revision)
-            .execute(&mut *transaction)
-            .await
-            .map_err(PersistenceError::Query)?;
-        }
-
-        let id = Uuid::now_v7();
-        let payload = job.payload.canonical()?;
-        match job.next_attempt_at {
-            Some(at) => {
-                sqlx::query(
-                    "insert into telegram.outbound_jobs
-                         (id, bot_id, chat_id, kind, payload, content_hash, operation_id,
-                          revision, correlation_id, next_attempt_at)
-                     values ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9, to_timestamp($10))",
-                )
-                .bind(id)
-                .bind(job.bot_id)
-                .bind(job.chat_id)
-                .bind(job.kind.as_str())
-                .bind(&payload)
-                .bind(&job.content_hash)
-                .bind(job.operation_id)
-                .bind(job.revision)
-                .bind(&job.correlation_id)
-                .bind(at)
-                .execute(&mut *transaction)
-                .await
-                .map_err(PersistenceError::Query)?;
-            }
-            None => {
-                // No caller schedule: due at the caller's `now`, the same clock every other
-                // scheduling comparison uses. The column DEFAULT exists as a schema-level
-                // backstop only — this repository deliberately does not mix the database clock
-                // into scheduling arithmetic, because a claim comparing against an injected
-                // instant would race whatever `now()` the server stamped.
-                sqlx::query(
-                    "insert into telegram.outbound_jobs
-                         (id, bot_id, chat_id, kind, payload, content_hash, operation_id,
-                          revision, correlation_id, next_attempt_at)
-                     values ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9, to_timestamp($10))",
-                )
-                .bind(id)
-                .bind(job.bot_id)
-                .bind(job.chat_id)
-                .bind(job.kind.as_str())
-                .bind(&payload)
-                .bind(&job.content_hash)
-                .bind(job.operation_id)
-                .bind(job.revision)
-                .bind(&job.correlation_id)
-                .bind(now)
-                .execute(&mut *transaction)
-                .await
-                .map_err(PersistenceError::Query)?;
-            }
-        }
+        let id = insert_outbound_job(&mut transaction, job, now).await?;
 
         transaction
             .commit()
@@ -584,6 +513,53 @@ impl Database {
         .await
         .map_err(PersistenceError::Query)
     }
+}
+
+/// Insert one outbound job inside a caller-owned atomic persistence operation.
+pub(crate) async fn insert_outbound_job(
+    transaction: &mut Transaction<'_, Postgres>,
+    job: &NewOutboundJob,
+    now: i64,
+) -> Result<Uuid, PersistenceError> {
+    if let (Some(operation_id), Some(revision)) = (job.operation_id, job.revision) {
+        sqlx::query(
+            "update telegram.outbound_jobs
+             set state = 'superseded', updated_at = to_timestamp($3)
+             where operation_id = $1 and chat_id = $2 and kind = 'edit_message_text'
+               and state in ('planned', 'ready', 'retry_wait') and revision < $4",
+        )
+        .bind(operation_id)
+        .bind(job.chat_id)
+        .bind(now)
+        .bind(revision)
+        .execute(&mut **transaction)
+        .await
+        .map_err(PersistenceError::Query)?;
+    }
+
+    let id = Uuid::now_v7();
+    let payload = job.payload.canonical()?;
+    let next_attempt_at = job.next_attempt_at.unwrap_or(now);
+    sqlx::query(
+        "insert into telegram.outbound_jobs
+             (id, bot_id, chat_id, kind, payload, content_hash, operation_id,
+              revision, correlation_id, next_attempt_at)
+         values ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9, to_timestamp($10))",
+    )
+    .bind(id)
+    .bind(job.bot_id)
+    .bind(job.chat_id)
+    .bind(job.kind.as_str())
+    .bind(payload)
+    .bind(&job.content_hash)
+    .bind(job.operation_id)
+    .bind(job.revision)
+    .bind(&job.correlation_id)
+    .bind(next_attempt_at)
+    .execute(&mut **transaction)
+    .await
+    .map_err(PersistenceError::Query)?;
+    Ok(id)
 }
 
 async fn settle_terminal(
