@@ -41,6 +41,19 @@ comment on schema telegram is
     'pair. Tables arrive with the features that own their first writer; nothing here is shared '
     'with or referenced by another service''s schema.';
 
+-- Exact evidence that this fresh database was created from the schema definition embedded in the
+-- running binary. The binary inserts the digest after executing this file, in the same transaction.
+-- Startup never adds or changes this row for an existing namespace: absent or different evidence
+-- means the disposable development database must be recreated rather than silently blessed.
+create table telegram.schema_fingerprint (
+    singleton   boolean     not null primary key default true check (singleton),
+    sha256      bytea       not null check (octet_length(sha256) = 32),
+    applied_at  timestamptz not null default now()
+);
+
+comment on table telegram.schema_fingerprint is
+    'Singleton SHA-256 evidence for the exact embedded schema.sql that created this database.';
+
 -- `identities` — one row per Telegram user this deployment has admitted or evaluated about
 -- access. Rows are created by the startup bootstrap from configuration (the owner) and later by
 -- explicit enrollment flows; the authorization gate only reads them and never enrolls on

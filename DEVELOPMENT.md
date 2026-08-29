@@ -253,17 +253,31 @@ outside this process. Rotation and rollback are documented in
 
 ### Schema — real
 
-```bash
-# `schema.sql` is embedded in the binary by `include_str!`, so there is no separate apply step in a
-# deployment: a role applies it at startup, under a PostgreSQL advisory lock, which is what makes a
-# restart overlapping the previous process's grace window safe. This raw form is for a database that
-# has no schema yet; the file opens with a bare `create schema`, so a second run fails on it.
-psql "$TELEGRAM_TEST_DATABASE_URL" -f schema.sql
-```
+The webhook binary embeds `schema.sql` and applies it at startup under a PostgreSQL advisory lock.
+The same transaction stores a SHA-256 fingerprint of those exact embedded bytes. The dispatcher
+verifies that fingerprint without applying or altering anything. A restart overlapping the previous
+process's grace window is therefore safe, while a namespace created by an older or unknown
+definition fails closed with `the telegram schema does not match the running binary`.
 
 A schema change edits `schema.sql` in place. There is no migration ledger and no second version;
 no database holds data that has to survive a schema change. Tables arrive with the features that
-own their first writer.
+own their first writer. Recreate a stale disposable development schema rather than modifying or
+blessing it:
+
+```bash
+# Destructive by design: telegram is the only schema this service owns, and development data is
+# disposable while the no-migration rule is active.
+psql "$TELEGRAM_TEST_DATABASE_URL" \
+  -v ON_ERROR_STOP=1 \
+  -c 'drop schema if exists telegram cascade'
+
+# Start the webhook normally, or run its existing preflight with the complete webhook environment.
+# Either path applies the one embedded current schema to the now-empty database.
+cargo run --locked -p ratatoskr-telegram-webhook -- check-schema
+```
+
+Running `psql -f schema.sql` directly is intentionally not a supported initialization path: it
+cannot write the binary-derived fingerprint and the next service startup will reject it.
 
 ## Workflow
 

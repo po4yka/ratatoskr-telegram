@@ -44,6 +44,7 @@ use std::time::Duration;
 const IDLE_TIMEOUT: Duration = Duration::from_mins(10);
 
 use secrecy::ExposeSecret as _;
+use sha2::{Digest as _, Sha256};
 use sqlx::postgres::{PgPool, PgPoolOptions};
 use telegram_core::{Subsystem, TelegramError};
 
@@ -110,6 +111,11 @@ pub enum PersistenceError {
     /// The dispatcher reached a database before the webhook role applied the current schema.
     #[error("the telegram schema is absent or incomplete")]
     SchemaAbsent,
+
+    /// The database contains a Telegram schema created from a different or unverifiable
+    /// definition. Development databases are recreated instead of migrated in place.
+    #[error("the telegram schema does not match the running binary")]
+    SchemaMismatch,
 }
 
 impl From<PersistenceError> for TelegramError {
@@ -153,27 +159,25 @@ impl Database {
         Ok(Self { pool })
     }
 
-    /// Apply [`SCHEMA`] to a database that does not have it yet.
+    /// Apply [`SCHEMA`] to a fresh database or verify an existing exact match.
     ///
     /// Idempotent, and safe to run while another process is still holding connections. One
-    /// transaction does three things: it takes a `PostgreSQL` advisory lock, asks whether
-    /// `telegram` exists, and applies the file only if it does not. The lock is transaction-scoped,
-    /// so it is released by the commit and by a panic alike, and a second process that arrives
-    /// during a restart waits for the first, then sees the schema and does nothing.
+    /// transaction takes a `PostgreSQL` advisory lock and either applies the file plus its exact
+    /// fingerprint to an empty database, or proves that an existing namespace carries the same
+    /// fingerprint. The lock is transaction-scoped, so it is released by the commit and by a panic
+    /// alike, and a second process that arrives during a restart waits for the first.
     ///
-    /// `PostgreSQL` DDL is transactional, so a file that fails halfway leaves the database exactly
-    /// as it was rather than half-applied. The presence check is therefore an honest question:
-    /// either every object in the file is there or none of it is.
+    /// `PostgreSQL` DDL is transactional, so a file or fingerprint insert that fails halfway leaves
+    /// the database exactly as it was rather than half-applied.
     ///
     /// # Errors
     ///
     /// [`PersistenceError::Schema`] if the lock cannot be taken, the catalogue cannot be read, or a
-    /// statement in the file fails.
+    /// statement in the file fails; [`PersistenceError::SchemaMismatch`] if an existing namespace
+    /// does not carry evidence for this binary's embedded definition.
     pub async fn apply_schema(&self) -> Result<(), PersistenceError> {
         let mut transaction = self.pool.begin().await.map_err(PersistenceError::Schema)?;
-        lock_and_apply(&mut transaction)
-            .await
-            .map_err(PersistenceError::Schema)?;
+        lock_and_apply(&mut transaction).await?;
         transaction.commit().await.map_err(PersistenceError::Schema)
     }
 
@@ -181,24 +185,25 @@ impl Database {
     ///
     /// # Errors
     ///
-    /// [`PersistenceError::SchemaAbsent`] when any current-schema authority is absent, or
-    /// [`PersistenceError::Query`] when the catalog cannot be read.
+    /// [`PersistenceError::SchemaAbsent`] when the owned namespace is absent,
+    /// [`PersistenceError::SchemaMismatch`] when its definition evidence is absent or different,
+    /// or [`PersistenceError::Query`] when the catalog cannot be read.
     pub async fn verify_schema(&self) -> Result<(), PersistenceError> {
-        let complete: bool = sqlx::query_scalar(
-            "select to_regclass('telegram.updates') is not null
-                 and to_regclass('telegram.private_chat_bindings') is not null
-                 and to_regclass('telegram.notification_preferences') is not null
-                 and to_regclass('telegram.notification_decisions') is not null
-                 and to_regclass('telegram.outbound_jobs') is not null",
-        )
-        .fetch_one(&self.pool)
-        .await
-        .map_err(PersistenceError::Query)?;
-        if complete {
-            Ok(())
-        } else {
-            Err(PersistenceError::SchemaAbsent)
+        let mut transaction = self.pool.begin().await.map_err(PersistenceError::Query)?;
+        lock_schema(&mut transaction)
+            .await
+            .map_err(PersistenceError::Query)?;
+        let present = namespace_present(&mut transaction)
+            .await
+            .map_err(PersistenceError::Query)?;
+        if !present {
+            return Err(PersistenceError::SchemaAbsent);
         }
+        let stored = read_schema_fingerprint(&mut transaction)
+            .await
+            .map_err(PersistenceError::Query)?;
+        ensure_schema_matches(stored.as_deref())?;
+        transaction.commit().await.map_err(PersistenceError::Query)
     }
 
     /// Answer whether the database is usable right now.
@@ -243,21 +248,71 @@ impl Database {
 /// The file goes through `Executor::execute` and NOT `sqlx::raw_sql`, which trips the same bound.
 /// Both send the string over the simple query protocol, which runs every statement in it; `execute`
 /// folds the per-statement results into one.
-async fn lock_and_apply(connection: &mut sqlx::PgConnection) -> Result<(), sqlx::Error> {
+async fn lock_and_apply(connection: &mut sqlx::PgConnection) -> Result<(), PersistenceError> {
+    lock_schema(connection)
+        .await
+        .map_err(PersistenceError::Schema)?;
+
+    if namespace_present(connection)
+        .await
+        .map_err(PersistenceError::Schema)?
+    {
+        let stored = read_schema_fingerprint(connection)
+            .await
+            .map_err(PersistenceError::Schema)?;
+        return ensure_schema_matches(stored.as_deref());
+    }
+
+    sqlx::Executor::execute(&mut *connection, SCHEMA)
+        .await
+        .map_err(PersistenceError::Schema)?;
+    sqlx::query("insert into telegram.schema_fingerprint (singleton, sha256) values (true, $1)")
+        .bind(schema_fingerprint().as_slice())
+        .execute(connection)
+        .await
+        .map_err(PersistenceError::Schema)?;
+    Ok(())
+}
+
+async fn lock_schema(connection: &mut sqlx::PgConnection) -> Result<(), sqlx::Error> {
     sqlx::query("select pg_advisory_xact_lock($1)")
         .bind(SCHEMA_LOCK)
         .execute(&mut *connection)
         .await?;
+    Ok(())
+}
 
-    // The schema the file creates. Under the lock, its absence means the file has never been
-    // applied to this database.
+async fn namespace_present(connection: &mut sqlx::PgConnection) -> Result<bool, sqlx::Error> {
     let present: Option<String> = sqlx::query_scalar("select to_regnamespace('telegram')::text")
         .fetch_one(&mut *connection)
         .await?;
+    Ok(present.is_some())
+}
 
-    if present.is_none() {
-        sqlx::Executor::execute(connection, SCHEMA).await?;
+async fn read_schema_fingerprint(
+    connection: &mut sqlx::PgConnection,
+) -> Result<Option<Vec<u8>>, sqlx::Error> {
+    let authority_present: bool =
+        sqlx::query_scalar("select to_regclass('telegram.schema_fingerprint') is not null")
+            .fetch_one(&mut *connection)
+            .await?;
+    if !authority_present {
+        return Ok(None);
     }
 
-    Ok(())
+    sqlx::query_scalar("select sha256 from telegram.schema_fingerprint where singleton = true")
+        .fetch_optional(connection)
+        .await
+}
+
+fn ensure_schema_matches(stored: Option<&[u8]>) -> Result<(), PersistenceError> {
+    if stored == Some(schema_fingerprint().as_slice()) {
+        Ok(())
+    } else {
+        Err(PersistenceError::SchemaMismatch)
+    }
+}
+
+fn schema_fingerprint() -> [u8; 32] {
+    Sha256::digest(SCHEMA.as_bytes()).into()
 }

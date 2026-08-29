@@ -17,7 +17,7 @@ use secrecy::SecretString;
 use sqlx::Executor as _;
 use sqlx::postgres::PgPoolOptions;
 use telegram_core::DatabaseConfig;
-use telegram_persistence::Database;
+use telegram_persistence::{Database, PersistenceError};
 
 /// Where the disposable database is created.
 ///
@@ -127,6 +127,61 @@ async fn the_schema_applies_once_and_tolerates_being_applied_again() {
 
     database.close().await;
     drop_database(&name).await;
+}
+
+/// An existing namespace without evidence for this binary's embedded definition is stale, not a
+/// schema that startup may silently bless.
+#[tokio::test]
+async fn existing_schema_without_current_fingerprint_is_rejected() {
+    let (url, name) = create_database().await;
+    let database = Database::connect(&config(&url))
+        .await
+        .expect("a fresh database must be connectable");
+
+    sqlx::query("create schema telegram")
+        .execute(database.pool())
+        .await
+        .expect("the stale namespace fixture must be creatable");
+
+    let result = database.apply_schema().await;
+
+    database.close().await;
+    drop_database(&name).await;
+
+    assert!(
+        matches!(result, Err(PersistenceError::SchemaMismatch)),
+        "startup accepted an existing schema without current-definition evidence"
+    );
+}
+
+/// Dispatcher verification must reject a database whose recorded definition differs from the
+/// schema embedded in the running binary.
+#[tokio::test]
+async fn different_schema_fingerprint_is_rejected_by_verify() {
+    let (url, name) = create_database().await;
+    let database = Database::connect(&config(&url))
+        .await
+        .expect("a fresh database must be connectable");
+    database
+        .apply_schema()
+        .await
+        .expect("the current schema must apply before its evidence is corrupted");
+
+    sqlx::query("update telegram.schema_fingerprint set sha256 = $1 where singleton = true")
+        .bind([0_u8; 32].as_slice())
+        .execute(database.pool())
+        .await
+        .expect("the mismatched fingerprint fixture must be writable");
+
+    let result = database.verify_schema().await;
+
+    database.close().await;
+    drop_database(&name).await;
+
+    assert!(
+        matches!(result, Err(PersistenceError::SchemaMismatch)),
+        "dispatcher verification accepted a different schema fingerprint"
+    );
 }
 
 /// A database whose URL is wrong fails at CONNECT, with an error that carries no credential.
