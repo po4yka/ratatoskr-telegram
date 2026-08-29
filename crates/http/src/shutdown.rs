@@ -12,6 +12,7 @@ use tracing::Instrument as _;
 use tracing::field::Empty;
 
 use crate::lifecycle::RuntimeState;
+use crate::public::BackgroundRuntime;
 
 /// One listener being served, and the trigger that stops it accepting.
 #[derive(Debug)]
@@ -29,6 +30,14 @@ impl Served {
     #[must_use]
     pub fn local_addr(&self) -> std::net::SocketAddr {
         self.local_addr
+    }
+
+    /// Abort this listener and reap its task during startup rollback.
+    pub async fn abort_and_wait(self) {
+        let Self { close, task, .. } = self;
+        drop(close);
+        task.abort();
+        let _ = task.await;
     }
 }
 
@@ -92,6 +101,7 @@ pub async fn drain_and_close(
     state: &RuntimeState,
     config: &ShutdownConfig,
     servers: Vec<Served>,
+    mut background: Option<BackgroundRuntime>,
     interrupt: impl Future<Output = ()> + Send,
 ) -> ShutdownOutcome {
     let span = tracing::info_span!(
@@ -104,6 +114,9 @@ pub async fn drain_and_close(
     async move {
         tracing::info!("a shutdown signal arrived; draining");
         state.begin_draining();
+        if let Some(background) = background.as_mut() {
+            background.request_shutdown();
+        }
 
         tokio::pin!(interrupt);
         let mut interrupted = tokio::select! {
@@ -127,7 +140,7 @@ pub async fn drain_and_close(
             tokio::select! {
                 closed = tokio::time::timeout(
                     Duration::from_secs(config.grace_seconds),
-                    wait_for_all(&mut tasks),
+                    wait_for_all(&mut tasks, background.as_mut()),
                 ) => closed.is_ok(),
                 () = &mut interrupt => {
                     interrupted = true;
@@ -135,12 +148,21 @@ pub async fn drain_and_close(
                 }
             }
         };
-        if !graceful && interrupted {
+        if !graceful {
             abort_all(&tasks);
-        } else if !graceful {
-            tracing::warn!(
-                "the grace window expired with requests still in flight; exiting anyway"
-            );
+            if let Some(background) = background.as_mut() {
+                background.abort_all();
+            }
+            wait_for_all(&mut tasks, background.as_mut()).await;
+            if interrupted {
+                tracing::warn!(
+                    "a second signal arrived; closing without waiting for in-flight work"
+                );
+            } else {
+                tracing::warn!(
+                    "the grace window expired with work still in flight; aborted every owned task"
+                );
+            }
         }
 
         tracing::Span::current().record("graceful", graceful);
@@ -161,15 +183,35 @@ fn abort_all(tasks: &[JoinHandle<std::io::Result<()>>]) {
     for task in tasks {
         task.abort();
     }
-    tracing::warn!("a second signal arrived; closing without waiting for in-flight work");
 }
 
 /// Completes when every server task has finished. Borrows rather than consumes, so the tasks are
 /// still there to abort if a second signal cancels this future.
-async fn wait_for_all(tasks: &mut [JoinHandle<std::io::Result<()>>]) {
+async fn wait_for_all(
+    tasks: &mut [JoinHandle<std::io::Result<()>>],
+    background: Option<&mut BackgroundRuntime>,
+) {
     for task in tasks {
         // A server task that failed has already logged; shutdown continues.
         let _ = task.await;
+    }
+    if let Some(background) = background {
+        background.join_all().await;
+    }
+}
+
+/// Stop startup-created tasks when a later startup step fails.
+pub(crate) async fn abort_background(mut background: Option<BackgroundRuntime>) {
+    if let Some(background) = background.as_mut() {
+        background.request_shutdown();
+        background.abort_all();
+        background.join_all().await;
+    }
+}
+
+pub(crate) async fn abort_served(served: Option<Served>) {
+    if let Some(served) = served {
+        served.abort_and_wait().await;
     }
 }
 

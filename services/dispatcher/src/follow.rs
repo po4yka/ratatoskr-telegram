@@ -57,23 +57,45 @@ impl OperationFollower {
         }
     }
 
-    /// Run forever. Spawned once per process; aborted only by process exit.
-    pub async fn run(self) {
+    /// Scan and follow until shutdown, owning every per-operation task in one join set.
+    pub async fn run_until_shutdown(
+        self,
+        mut shutdown: tokio::sync::watch::Receiver<bool>,
+        admission: Arc<tokio::sync::RwLock<()>>,
+        admission_closed: Arc<std::sync::atomic::AtomicBool>,
+    ) {
+        let mut tasks = tokio::task::JoinSet::new();
         loop {
-            self.scan_once().await;
-            tokio::time::sleep(Duration::from_secs(SCAN_INTERVAL_SECS)).await;
+            if *shutdown.borrow() || admission_closed.load(std::sync::atomic::Ordering::Acquire) {
+                break;
+            }
+            self.scan_once(&mut tasks, &shutdown, &admission, &admission_closed)
+                .await;
+            tokio::select! {
+                biased;
+                result = shutdown.changed() => {
+                    if result.is_err() || *shutdown.borrow() {
+                        break;
+                    }
+                }
+                completed = tasks.join_next(), if !tasks.is_empty() => {
+                    let _ = completed;
+                }
+                () = tokio::time::sleep(Duration::from_secs(SCAN_INTERVAL_SECS)) => {}
+            }
         }
-    }
-
-    /// One scan pass plus one follow tick per missing stream: the test seam over [`run`]'s body.
-    pub async fn scan_and_follow_once(&self) {
-        self.scan_once().await;
-        // Give the spawned follow tasks a beat to open their streams.
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        tasks.abort_all();
+        while tasks.join_next().await.is_some() {}
     }
 
     /// Diff the non-terminal bindings against the in-flight set and open what is missing.
-    async fn scan_once(&self) {
+    async fn scan_once(
+        &self,
+        tasks: &mut tokio::task::JoinSet<()>,
+        shutdown: &tokio::sync::watch::Receiver<bool>,
+        admission: &tokio::sync::RwLock<()>,
+        admission_closed: &std::sync::atomic::AtomicBool,
+    ) {
         let rows = match sqlx::query_scalar::<_, Uuid>(
             "select distinct operation_id from telegram.message_bindings where not terminal",
         )
@@ -87,10 +109,18 @@ impl OperationFollower {
             }
         };
 
+        if *shutdown.borrow() || admission_closed.load(std::sync::atomic::Ordering::Acquire) {
+            return;
+        }
+
         let mut inflight = self.in_flight.lock().await;
         let finished = self.finished.lock().await;
         inflight.retain(|_, done| !*done);
         for operation_id in rows {
+            let _admission = admission.read().await;
+            if *shutdown.borrow() || admission_closed.load(std::sync::atomic::Ordering::Acquire) {
+                break;
+            }
             if inflight.len() >= MAX_STREAMS {
                 break;
             }
@@ -99,7 +129,7 @@ impl OperationFollower {
             }
             inflight.insert(operation_id, false);
             let follower = self.clone();
-            tokio::spawn(async move {
+            tasks.spawn(async move {
                 metrics::counter!(
                     telegram_telemetry::metrics::TELEGRAM_OPERATION_FOLLOWS_TOTAL,
                     "event" => "started",

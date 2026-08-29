@@ -2,17 +2,15 @@
 //!
 //! The lifecycle calls [`build`] once, after the database is prepared and before any listener
 //! binds. It builds the Bot API client, the delivery limiter, the sender, and the projection
-//! consumer over shared handles, then spawns two detached workers:
+//! consumer over shared handles, then returns every worker to the shared process lifecycle:
 //!
-//! - **the sender** drains the durable queue forever ([`OutboundSender::run_forever`]), sampling
-//!   the queue-depth gauge once per cycle;
+//! - **the sender** drains the durable queue until cancellation
+//!   ([`OutboundSender::run_until_shutdown`]), sampling the queue-depth gauge once per cycle;
 //! - **the consumer** accepts operation events pushed into a bounded feed channel
 //!   ([`PROJECTION_FEED_CAPACITY`]) through [`DispatcherRuntime::projection_feed`].
 //!
-//! The feed is the transport seam (design D6): nothing publishes yet — the NATS adapter of the
-//! workspace-integration item will hold the feed handle for the process lifetime. Until then a
-//! closed feed does NOT stop the consumer: it parks on a pending future rather than dying, so a
-//! future publisher can never find the worker gone.
+//! The feed is the transport seam (design D6). Shutdown closes admission, drains accepted events,
+//! and joins every task before the database and telemetry are closed.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -21,7 +19,7 @@ use secrecy::ExposeSecret as _;
 use telegram_core::Subsystem;
 use telegram_core::TelegramError;
 use telegram_core::config::DispatcherConfig;
-use telegram_http::PublicContext;
+use telegram_http::{BackgroundRuntime, PublicContext};
 use telegram_persistence::Database;
 
 use crate::outbound::clock::{Clock, SystemClock};
@@ -40,7 +38,7 @@ pub const PROJECTION_FEED_CAPACITY: usize = 1024;
 /// The handles one running dispatcher keeps: everything a publisher needs to reach the workers.
 pub struct DispatcherRuntime {
     projection_feed: tokio::sync::mpsc::Sender<OperationEvent>,
-    follower: Option<crate::follow::OperationFollower>,
+    background: BackgroundRuntime,
 }
 
 impl DispatcherRuntime {
@@ -51,11 +49,33 @@ impl DispatcherRuntime {
         self.projection_feed.clone()
     }
 
-    /// The operation follower, when this runtime owns one. Production runtimes always do;
-    /// test compositions may construct without.
+    /// Stop new work admission without interrupting an already admitted delivery transaction.
+    pub fn request_shutdown(&mut self) {
+        self.background.request_shutdown();
+    }
+
+    /// Request shutdown and wait for every owned worker.
+    pub async fn join(mut self) {
+        self.background.request_shutdown();
+        self.background.join().await;
+    }
+
+    /// Hand every owned task to the shared HTTP lifecycle.
     #[must_use]
-    pub const fn follower(&self) -> Option<&crate::follow::OperationFollower> {
-        self.follower.as_ref()
+    pub fn into_background_runtime(self) -> BackgroundRuntime {
+        let Self {
+            projection_feed,
+            background,
+        } = self;
+        drop(projection_feed);
+        background
+    }
+
+    fn spawn_owned<F>(&mut self, worker: F)
+    where
+        F: std::future::Future<Output = ()> + Send + 'static,
+    {
+        self.background.spawn(worker);
     }
 }
 
@@ -66,7 +86,7 @@ impl DispatcherRuntime {
 /// A [`TelegramError::Internal`] labelled `http` when the prepared database is somehow absent —
 /// unreachable behind validation V15 — or `bot_api` when the client stack cannot be built.
 ///
-pub async fn build(context: PublicContext) -> Result<(), TelegramError> {
+pub async fn build(context: PublicContext) -> Result<BackgroundRuntime, TelegramError> {
     let database = context.database.ok_or_else(|| {
         TelegramError::internal(
             Subsystem::Http,
@@ -113,7 +133,7 @@ pub async fn build(context: PublicContext) -> Result<(), TelegramError> {
     ));
 
     let username = bot_api.username.clone();
-    let runtime = spawn_runtime_with(
+    let mut runtime = spawn_runtime_with(
         context.config.dispatcher,
         &database,
         client,
@@ -121,24 +141,20 @@ pub async fn build(context: PublicContext) -> Result<(), TelegramError> {
         username,
     );
 
-    // The follower is the feed's first real producer (design D6 of this change): NATS replaces
-    // only this loop's ingress at workspace integration.
-    if let Some(follower) = runtime.follower() {
-        tokio::spawn(follower.clone().run());
-    }
-    tokio::spawn(crate::notifications::supervise(
+    let notification_shutdown = runtime.background.cancel_receiver();
+    runtime.spawn_owned(crate::notifications::supervise_until_shutdown(
         context.config.notification_bus.clone(),
         database.clone(),
         bot_id,
         Arc::clone(&context.runtime),
+        notification_shutdown,
     ));
-    drop(runtime);
 
     tracing::info!(
         feed_capacity = PROJECTION_FEED_CAPACITY,
         "dispatcher workers started",
     );
-    Ok(())
+    Ok(runtime.into_background_runtime())
 }
 
 fn decode_seed(hex_key: &str) -> Result<[u8; 32], TelegramError> {
@@ -218,35 +234,74 @@ pub fn spawn_runtime_with(
     );
 
     let (feed, receiver) = tokio::sync::mpsc::channel(PROJECTION_FEED_CAPACITY);
-    tokio::spawn(sender_forever(sender, config.poll_idle_ms));
-    tokio::spawn(consume_forever(consumer, receiver));
+    let (cancel, shutdown) = tokio::sync::watch::channel(false);
+    let mut background = BackgroundRuntime::from_tasks(cancel, Vec::new());
+    let sender_admission = background.admission_fence();
+    let sender_admission_closed = background.admission_closed();
+    background.spawn(sender_until_shutdown(
+        sender,
+        config.poll_idle_ms,
+        shutdown.clone(),
+        sender_admission,
+        sender_admission_closed,
+    ));
+    background.spawn(consume_until_shutdown(consumer, receiver, shutdown.clone()));
     let follower = sessions.map(|sessions| {
         crate::follow::OperationFollower::new(database.clone(), feed.clone(), sessions)
     });
+    if let Some(follower) = follower {
+        let follower_admission = background.admission_fence();
+        let follower_admission_closed = background.admission_closed();
+        background.spawn(follower.run_until_shutdown(
+            shutdown,
+            follower_admission,
+            follower_admission_closed,
+        ));
+    }
     DispatcherRuntime {
         projection_feed: feed,
-        follower,
+        background,
     }
 }
 
-/// The sender's process lifetime: the wake channel never closes because its half lives inside
-/// this task, so only process exit ends the loop.
-async fn sender_forever(sender: OutboundSender, poll_idle_ms: u64) {
+/// The sender's owned process lifetime, ending only after cancellation and admitted settlement.
+async fn sender_until_shutdown(
+    sender: OutboundSender,
+    poll_idle_ms: u64,
+    shutdown: tokio::sync::watch::Receiver<bool>,
+    admission: Arc<tokio::sync::RwLock<()>>,
+    admission_closed: Arc<std::sync::atomic::AtomicBool>,
+) {
     // The sender half is held for the task's whole life; dropping it would close the channel and
-    // end `run_forever` as if shutdown had been signalled.
+    // end the sender loop as if shutdown had been signalled.
     let (_wake_keep_alive, wake) = tokio::sync::mpsc::channel::<()>(1);
     let idle_poll = Duration::from_millis(poll_idle_ms);
-    sender.run_forever(wake, idle_poll).await;
+    sender
+        .run_until_shutdown(wake, idle_poll, shutdown, admission, admission_closed)
+        .await;
 }
 
-/// The consumer's process lifetime: a closed feed parks the loop instead of ending it, so a
-/// future publisher can never find the worker dead.
-async fn consume_forever(
+/// The consumer's owned process lifetime: cancellation closes admission, then drains buffered
+/// events before returning.
+async fn consume_until_shutdown(
     consumer: ProjectionConsumer,
     mut receiver: tokio::sync::mpsc::Receiver<OperationEvent>,
+    mut shutdown: tokio::sync::watch::Receiver<bool>,
 ) {
     loop {
-        match receiver.recv().await {
+        let event = tokio::select! {
+            biased;
+            result = shutdown.changed() => {
+                if result.is_err() || *shutdown.borrow() {
+                    receiver.close();
+                    receiver.recv().await
+                } else {
+                    continue;
+                }
+            }
+            event = receiver.recv() => event,
+        };
+        match event {
             Some(event) => match consumer.accept(&event).await {
                 Ok(outcome) => tracing::info!(
                     outcome = outcome.as_str(),
@@ -259,7 +314,7 @@ async fn consume_forever(
                     "an operation event could not be accepted",
                 ),
             },
-            None => std::future::pending::<()>().await,
+            None => break,
         }
     }
 }

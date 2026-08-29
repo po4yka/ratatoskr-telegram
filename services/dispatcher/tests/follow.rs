@@ -34,9 +34,7 @@ async fn database() -> TestDatabase {
         .expect("a disposable database must be creatable")
 }
 
-/// Wait until the harness has served `expected` event-stream opens. `scan_and_follow_once` gives
-/// its spawned tasks a fixed beat, which is not a completion signal; under load the streams open
-/// later than any fixed delay, so the tests await the observable fact instead.
+/// Wait until the harness has served `expected` event-stream opens.
 async fn wait_for_opens(state: &HarnessState, expected: u64) {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
     while state.opens.load(Ordering::SeqCst) < expected {
@@ -145,6 +143,21 @@ fn follower(base_url: &str, db: &TestDatabase) -> OperationFollower {
     OperationFollower::new(db.database.clone(), feed_tx, sessions(base_url))
 }
 
+fn run_follower(
+    follower: OperationFollower,
+) -> (
+    tokio::sync::watch::Sender<bool>,
+    tokio::task::JoinHandle<()>,
+) {
+    let (shutdown, cancelled) = tokio::sync::watch::channel(false);
+    let task = tokio::spawn(follower.run_until_shutdown(
+        cancelled,
+        Arc::new(tokio::sync::RwLock::new(())),
+        Arc::new(std::sync::atomic::AtomicBool::new(false)),
+    ));
+    (shutdown, task)
+}
+
 async fn seed_live(db: &TestDatabase, operation: Uuid) {
     db.database
         .ensure_operation_binding(BOT, operation, CHAT)
@@ -200,8 +213,7 @@ async fn non_terminal_bindings_are_followed_once_each_after_restart() {
     )
     .await;
 
-    let follower = follower(&base_url, &db);
-    follower.scan_and_follow_once().await;
+    let (shutdown, task) = run_follower(follower(&base_url, &db));
     wait_for_opens(&state, 3).await;
 
     assert_eq!(
@@ -210,14 +222,15 @@ async fn non_terminal_bindings_are_followed_once_each_after_restart() {
         "three streams for three live bindings"
     );
 
-    // A second scan adds nothing: the in-flight set suppresses duplicates.
-    follower.scan_and_follow_once().await;
+    // A later scan adds nothing: the completed set suppresses duplicates in this change.
     tokio::time::sleep(Duration::from_millis(50)).await;
     assert_eq!(
         state.opens.load(Ordering::SeqCst),
         3,
         "a followed operation is not reopened by the next scan"
     );
+    shutdown.send_replace(true);
+    task.await.expect("the follower joins");
 }
 
 /// Frames map onto the projection seam through the real consumer, and the terminal frame stops
@@ -257,7 +270,7 @@ async fn frames_map_dedupe_and_stop_at_terminal() {
 
     let sessions = sessions(&base_url);
     let follower = OperationFollower::new(db.database.clone(), feed_tx, sessions);
-    follower.scan_and_follow_once().await;
+    let (shutdown, task) = run_follower(follower);
 
     for _ in 0..2 {
         let event = feed_rx
@@ -294,4 +307,6 @@ async fn frames_map_dedupe_and_stop_at_terminal() {
         exposition.contains(series),
         "{series} missing from:\n{exposition}"
     );
+    shutdown.send_replace(true);
+    task.await.expect("the follower joins");
 }

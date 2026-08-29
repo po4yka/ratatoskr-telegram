@@ -205,24 +205,42 @@ pub fn verify_consumer(
     Ok(())
 }
 
-/// Supervise initial connection and reopen the pre-provisioned durable after transport failure.
-pub async fn supervise(
+/// Supervise the pre-provisioned durable until shutdown stops the next fetch.
+pub async fn supervise_until_shutdown(
     config: NotificationBusConfig,
     database: Database,
     bot_id: i64,
     runtime: std::sync::Arc<telegram_http::RuntimeState>,
+    mut shutdown: tokio::sync::watch::Receiver<bool>,
 ) {
     loop {
-        match open_preprovisioned_consumer(&config).await {
+        if *shutdown.borrow() {
+            break;
+        }
+        let opened = tokio::select! {
+            biased;
+            result = shutdown.changed() => {
+                if result.is_err() || *shutdown.borrow() {
+                    break;
+                }
+                continue;
+            }
+            opened = open_preprovisioned_consumer(&config) => opened,
+        };
+        match opened {
             Ok(consumer) => {
-                consume_until_interrupted(
+                if consume_until_interrupted(
                     consumer,
                     database.clone(),
                     bot_id,
                     config.fetch_batch,
                     std::sync::Arc::clone(&runtime),
+                    &mut shutdown,
                 )
-                .await;
+                .await
+                {
+                    break;
+                }
             }
             Err(error) => tracing::warn!(
                 class = error.as_str(),
@@ -230,8 +248,16 @@ pub async fn supervise(
             ),
         }
         runtime.set_notification_reachable(false);
-        tokio::time::sleep(Duration::from_secs(1)).await;
+        tokio::select! {
+            result = shutdown.changed() => {
+                if result.is_err() || *shutdown.borrow() {
+                    break;
+                }
+            }
+            () = tokio::time::sleep(Duration::from_secs(1)) => {}
+        }
     }
+    runtime.set_notification_reachable(false);
 }
 
 /// Run one verified consumer until its transport stream is interrupted. Database admission
@@ -242,21 +268,37 @@ async fn consume_until_interrupted(
     bot_id: i64,
     fetch_batch: u32,
     runtime: std::sync::Arc<telegram_http::RuntimeState>,
-) {
-    let stream = consumer
-        .stream()
-        .max_messages_per_batch(usize::try_from(fetch_batch).unwrap_or(32))
-        .messages()
-        .await;
+    shutdown: &mut tokio::sync::watch::Receiver<bool>,
+) -> bool {
+    let stream = tokio::select! {
+        biased;
+        result = shutdown.changed() => {
+            return result.is_err() || *shutdown.borrow();
+        }
+        stream = consumer
+            .stream()
+            .max_messages_per_batch(usize::try_from(fetch_batch).unwrap_or(32))
+            .messages() => stream,
+    };
     let Ok(mut messages) = stream else {
         runtime.set_notification_reachable(false);
-        return;
+        return false;
     };
     runtime.set_notification_reachable(true);
-    while let Some(next) = messages.next().await {
+    loop {
+        let next = tokio::select! {
+            biased;
+            result = shutdown.changed() => {
+                return result.is_err() || *shutdown.borrow();
+            }
+            next = messages.next() => next,
+        };
+        let Some(next) = next else {
+            break;
+        };
         let Ok(message) = next else {
             runtime.set_notification_reachable(false);
-            return;
+            return false;
         };
         let info = message.info().ok();
         if let Some(info) = info.as_ref() {
@@ -278,10 +320,11 @@ async fn consume_until_interrupted(
         };
         if message.ack_with(ack).await.is_err() {
             runtime.set_notification_reachable(false);
-            return;
+            return false;
         }
     }
     runtime.set_notification_reachable(false);
+    false
 }
 
 /// Parse and admit one payload with no transport side effect. The real loop and tests share it.

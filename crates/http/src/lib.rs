@@ -34,7 +34,7 @@ use tracing::field::Empty;
 
 pub use crate::admin::admin_router;
 pub use crate::lifecycle::{Check, CheckName, CheckReason, CheckState, RuntimeState};
-pub use crate::public::{Background, PublicContext, PublicRoutes};
+pub use crate::public::{Background, BackgroundRuntime, PublicContext, PublicRoutes};
 pub use crate::shutdown::{Served, ShutdownOutcome, drain_and_close, serve};
 
 /// How often the database prober asks whether the dependency is still there.
@@ -42,6 +42,13 @@ pub use crate::shutdown::{Served, ShutdownOutcome, drain_and_close, serve};
 /// Five seconds: long enough that the probe is not itself load, short enough that a readiness state
 /// is never more than one scrape interval stale.
 const DATABASE_PROBE_INTERVAL: Duration = Duration::from_secs(5);
+
+struct RunningTasks {
+    admin: Served,
+    public: Option<Served>,
+    background: Option<BackgroundRuntime>,
+    prober: Option<tokio::task::JoinHandle<()>>,
+}
 
 /// The whole process lifecycle for one runtime role. Each binary's `main` is this call and nothing
 /// else.
@@ -127,34 +134,29 @@ pub async fn run_with_background(
 
     // The role's background workers start here, on prepared ground: their factory sees the same
     // context a public-router factory would, and its failure takes the identical cleanup path.
-    if background.is_present() {
-        let context = PublicContext {
-            config: Arc::clone(&config),
-            database: database.clone(),
-            runtime: Arc::clone(&runtime),
+    let background_context = public_context(&config, database.as_ref(), &runtime);
+    let mut background_runtime =
+        match start_optional_background(&background, background_context, &startup).await {
+            Ok(runtime) => runtime,
+            Err(error) => {
+                error.log();
+                close_database(database.as_ref()).await;
+                guard.shutdown();
+                return ExitCode::FAILURE;
+            }
         };
-        if let Err(error) = start_background(&background, context, &startup).await {
-            error.log();
-            close_database(database.as_ref()).await;
-            guard.shutdown();
-            return ExitCode::FAILURE;
-        }
-    }
 
     // The public listener comes from the role. Its factory runs inside the startup span so its
     // failures carry the same fields as every other startup record.
     let public = match public_routes.take() {
         None => None,
         Some(build) => {
-            let context = PublicContext {
-                config: Arc::clone(&config),
-                database: database.clone(),
-                runtime: Arc::clone(&runtime),
-            };
+            let context = public_context(&config, database.as_ref(), &runtime);
             match start_public(build, context, &startup, &config).await {
                 Ok(served) => served,
                 Err(error) => {
                     error.log();
+                    shutdown::abort_background(background_runtime.take()).await;
                     close_database(database.as_ref()).await;
                     guard.shutdown();
                     return ExitCode::FAILURE;
@@ -167,6 +169,8 @@ pub async fn run_with_background(
         .in_scope(|| bind_admin(&config, Arc::clone(&runtime), guard.metrics_handle()))
         .await
     else {
+        shutdown::abort_served(public).await;
+        shutdown::abort_background(background_runtime.take()).await;
         if let Some(database) = database.as_ref() {
             database.close().await;
         }
@@ -183,16 +187,32 @@ pub async fn run_with_background(
     record_startup_complete(&startup, &config, public.as_ref(), database.is_some());
     drop(startup);
 
+    let running = RunningTasks {
+        admin,
+        public,
+        background: background_runtime,
+        prober,
+    };
     serve_until_signal(
         &runtime,
         &config.shutdown,
-        admin,
-        public,
-        prober,
+        running,
         database.as_ref(),
         guard,
     )
     .await
+}
+
+fn public_context(
+    config: &Arc<telegram_core::TelegramConfig>,
+    database: Option<&telegram_persistence::Database>,
+    runtime: &Arc<RuntimeState>,
+) -> PublicContext {
+    PublicContext {
+        config: Arc::clone(config),
+        database: database.cloned(),
+        runtime: Arc::clone(runtime),
+    }
 }
 
 /// The one INFO line that names every listener and dependency the process started with.
@@ -220,21 +240,27 @@ fn record_startup_complete(
 async fn serve_until_signal(
     runtime: &Arc<RuntimeState>,
     shutdown_config: &telegram_core::config::ShutdownConfig,
-    admin: Served,
-    public: Option<Served>,
-    prober: Option<tokio::task::JoinHandle<()>>,
+    running: RunningTasks,
     database: Option<&telegram_persistence::Database>,
     guard: telegram_telemetry::TelemetryGuard,
 ) -> ExitCode {
     shutdown::signal().await;
-    let mut servers = vec![admin];
-    if let Some(public) = public {
+    let mut servers = vec![running.admin];
+    if let Some(public) = running.public {
         servers.push(public);
     }
-    drain_and_close(runtime, shutdown_config, servers, shutdown::signal()).await;
+    drain_and_close(
+        runtime,
+        shutdown_config,
+        servers,
+        running.background,
+        shutdown::signal(),
+    )
+    .await;
 
-    if let Some(prober) = prober {
+    if let Some(prober) = running.prober {
         prober.abort();
+        let _ = prober.await;
     }
     // After the listener stopped accepting and the grace window closed, so an in-flight request
     // kept its connection for its whole life.
@@ -314,8 +340,22 @@ async fn start_background(
     background: &Background,
     context: PublicContext,
     startup: &tracing::Span,
-) -> Result<(), TelegramError> {
+) -> Result<BackgroundRuntime, TelegramError> {
     startup.in_scope(|| background.call(context)).await
+}
+
+async fn start_optional_background(
+    background: &Background,
+    context: PublicContext,
+    startup: &tracing::Span,
+) -> Result<Option<BackgroundRuntime>, TelegramError> {
+    if background.is_present() {
+        start_background(background, context, startup)
+            .await
+            .map(Some)
+    } else {
+        Ok(None)
+    }
 }
 
 /// Build and bind the public listener inside the startup span. The factory's or bind's error

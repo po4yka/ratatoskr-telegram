@@ -2,7 +2,7 @@
 //!
 //! The loop body is deliberately claim-ONE-then-process: every property the delivery suite pins
 //! (per-chat FIFO, one job in flight, supersede-before-the-wire) holds per claim, so concurrency
-//! is a scheduling concern of [`OutboundSender::run_forever`] and never changes outcomes.
+//! is a scheduling concern of [`OutboundSender::run_until_shutdown`] and never changes outcomes.
 //!
 //! One cost is accepted and documented here rather than hidden: attempts increment AT CLAIM
 //! (persistence's crash-honesty decision), so a limiter deferral after a claim consumes an
@@ -161,31 +161,61 @@ impl OutboundSender {
     /// [`SenderError::Persistence`] when claiming or settling fails; the claimed row (if any)
     /// stays `sending` until its lease expires and is then reclaimed, so no work is lost.
     pub async fn run_once(&self) -> Result<bool, SenderError> {
-        let now = self.clock.now_secs();
-        let Some(job) = self
-            .database
-            .claim_due_outbound_job(now, self.limits.lease_ttl_secs)
-            .await?
-        else {
+        let Some(job) = self.claim_due().await? else {
             return Ok(false);
         };
         self.process(job).await?;
         Ok(true)
     }
 
-    /// Drain the queue forever, spawned once per process.
+    async fn claim_due(&self) -> Result<Option<QueuedOutboundJob>, SenderError> {
+        Ok(self
+            .database
+            .claim_due_outbound_job(self.clock.now_secs(), self.limits.lease_ttl_secs)
+            .await?)
+    }
+
+    /// Drain the queue until shutdown stops admission.
     ///
     /// `wake` is a hint channel: receiving an item retries immediately instead of waiting out the
     /// idle poll, and a CLOSED channel (every sender dropped) ends the loop — shutdown owns the
     /// senders, so closing them is the stop signal. Mirrors the webhook worker's shape.
     /// Every cycle also samples the queue-depth gauge, so its staleness is bounded by `idle_poll`.
-    pub async fn run_forever(self, mut wake: tokio::sync::mpsc::Receiver<()>, idle_poll: Duration) {
+    pub async fn run_until_shutdown(
+        self,
+        mut wake: tokio::sync::mpsc::Receiver<()>,
+        idle_poll: Duration,
+        mut shutdown: tokio::sync::watch::Receiver<bool>,
+        admission: std::sync::Arc<tokio::sync::RwLock<()>>,
+        admission_closed: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    ) {
         loop {
+            if *shutdown.borrow() || admission_closed.load(std::sync::atomic::Ordering::Acquire) {
+                break;
+            }
             record_queue_depth(&self.database).await;
-            match self.run_once().await {
+            let claimed = {
+                let _admission = admission.read().await;
+                if *shutdown.borrow() || admission_closed.load(std::sync::atomic::Ordering::Acquire)
+                {
+                    break;
+                }
+                self.claim_due().await
+            };
+            let worked = match claimed {
+                Ok(Some(job)) => self.process(job).await.map(|()| true),
+                Ok(None) => Ok(false),
+                Err(error) => Err(error),
+            };
+            match worked {
                 Ok(true) => {}
                 Ok(false) => {
                     tokio::select! {
+                        result = shutdown.changed() => {
+                            if result.is_err() || *shutdown.borrow() {
+                                break;
+                            }
+                        }
                         item = wake.recv() => {
                             if item.is_none() {
                                 break;
@@ -200,7 +230,14 @@ impl OutboundSender {
                         class = "claim_failed",
                         "due outbound jobs could not be claimed",
                     );
-                    tokio::time::sleep(idle_poll).await;
+                    tokio::select! {
+                        result = shutdown.changed() => {
+                            if result.is_err() || *shutdown.borrow() {
+                                break;
+                            }
+                        }
+                        () = tokio::time::sleep(idle_poll) => {}
+                    }
                 }
             }
         }
