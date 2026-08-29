@@ -1,9 +1,5 @@
-//! The capture domain action, end to end over the real worker: intent parsing, idempotency-key
-//! derivation, assertion-authenticated submission against a fake Platform, the pre-created
-//! binding, the acknowledgment job, and honest failure settlement.
-//!
-//! Each test drives its own disposable database plus a fake Platform server. No test contacts a
-//! deployed Ratatoskr deployment or Telegram.
+//! Capture behavior end to end over the real worker and synthetic local dependencies.
+//! No test contacts a deployed Ratatoskr service or Telegram.
 
 #![allow(
     clippy::expect_used,
@@ -11,6 +7,8 @@
     clippy::unwrap_used,
     reason = "assertions in a test binary"
 )]
+
+mod capture_recovery;
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -42,7 +40,6 @@ const SEED: [u8; 32] = [
 ];
 /// The operation id the fake Platform always mints; replays return the same one, per contract.
 const OPERATION_ID: &str = "018f0000-0000-7000-8000-00000000cafe";
-
 /// How the fake Platform's capture route answers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CaptureAnswer {
@@ -51,7 +48,6 @@ enum CaptureAnswer {
     /// `401`, the uniform credential refusal.
     RefuseAuth,
 }
-
 #[derive(Default)]
 struct PlatformState {
     exchange_calls: AtomicU64,
@@ -60,6 +56,7 @@ struct PlatformState {
     download_calls: AtomicU64,
     last_get_file_id: std::sync::Mutex<Option<String>>,
     last_idempotency_key: std::sync::Mutex<Option<String>>,
+    idempotency_keys: std::sync::Mutex<Vec<String>>,
     /// The most recent capture request body, for wire-shape assertions.
     last_capture_body: std::sync::Mutex<Option<Value>>,
     attachment_bytes: std::sync::Mutex<Vec<u8>>,
@@ -70,8 +67,19 @@ async fn platform_harness(answer: CaptureAnswer) -> (String, Arc<PlatformState>)
         attachment_bytes: std::sync::Mutex::new(b"synthetic attachment".to_vec()),
         ..PlatformState::default()
     });
-    let app_state = Arc::clone(&state);
-    let app = axum::Router::new()
+    let app = platform_router(answer, Arc::clone(&state));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind");
+    let bound = listener.local_addr().expect("addr");
+    tokio::spawn(async move {
+        let _ = axum::serve(listener, app).into_future().await;
+    });
+    (format!("http://{bound}"), state)
+}
+
+fn platform_router(answer: CaptureAnswer, state: Arc<PlatformState>) -> axum::Router {
+    axum::Router::new()
         .route(
             "/v1/sessions/telegram",
             post(move |State(state): State<Arc<PlatformState>>| async move {
@@ -95,8 +103,13 @@ async fn platform_harness(answer: CaptureAnswer) -> (String, Arc<PlatformState>)
                     state.capture_calls.fetch_add(1, Ordering::SeqCst);
                     if let Some(key) = headers.get("idempotency-key").and_then(|v| v.to_str().ok())
                     {
-                        *state.last_idempotency_key.lock().expect("key lock") =
-                            Some(key.to_owned());
+                        let key = key.to_owned();
+                        *state.last_idempotency_key.lock().expect("key lock") = Some(key.clone());
+                        state
+                            .idempotency_keys
+                            .lock()
+                            .expect("key history lock")
+                            .push(key);
                     }
                     let parsed =
                         serde_json::from_slice::<Value>(&body).expect("a capture body parses");
@@ -154,15 +167,7 @@ async fn platform_harness(answer: CaptureAnswer) -> (String, Arc<PlatformState>)
                     .clone()
             }),
         )
-        .with_state(app_state);
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-        .await
-        .expect("bind");
-    let bound = listener.local_addr().expect("addr");
-    tokio::spawn(async move {
-        let _ = axum::serve(listener, app).into_future().await;
-    });
-    (format!("http://{bound}"), state)
+        .with_state(state)
 }
 
 /// A dead endpoint: nothing listens, every call fails at the transport level.
@@ -182,6 +187,24 @@ impl Fixture {
         _answer: CaptureAnswer,
         platform_state: Arc<PlatformState>,
     ) -> Self {
+        let (fixture, receiver, context) = Self::prepare(base_url).await;
+        tokio::spawn(intake::run_worker(
+            fixture.database.database.clone(),
+            receiver,
+            Some(context),
+        ));
+        let _ = platform_state; // the harness state is asserted through the returned Arc
+        fixture
+    }
+
+    /// Build an admitted-update fixture without starting its worker.
+    async fn prepare(
+        base_url: &str,
+    ) -> (
+        Self,
+        tokio::sync::mpsc::Receiver<intake::QueuedUpdate>,
+        CaptureContext,
+    ) {
         let database = TestDatabase::create().await.expect("disposable database");
         database
             .database
@@ -216,17 +239,15 @@ impl Fixture {
         };
         let (intake, receiver) = Intake::new(settings, database.database.clone());
         let context = CaptureContext::new(Arc::clone(&sessions), bot_api, blobs, 1024);
-        tokio::spawn(intake::run_worker(
-            intake.database.clone(),
+        (
+            Self {
+                database,
+                app: intake.router(),
+                blob_root,
+            },
             receiver,
-            Some(context),
-        ));
-        let _ = platform_state; // the harness state is asserted through the returned Arc
-        Self {
-            database,
-            app: intake.router(),
-            blob_root,
-        }
+            context,
+        )
     }
 
     /// One admitted update, delivered as Telegram would.

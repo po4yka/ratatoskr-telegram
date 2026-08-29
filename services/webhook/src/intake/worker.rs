@@ -1,14 +1,16 @@
 //! The processing worker: the asynchronous half of admission.
 //!
 //! One task uses the bounded queue as a wake-up hint and claims work from `PostgreSQL`. For every
-//! accepted update it walks the row through
-//! `processing` to exactly one terminal state — `processed` for kinds this build acts on,
+//! accepted update it walks the row through `processing` to a terminal state — `processed` for
+//! kinds this build acts on,
 //! `unsupported` for kinds it does not, `denied` when the authorization gate refuses the sender
-//! or chat — and logs settlement failures with their class rather than swallowing them. Later
-//! plan items replace the body of [`process_one`]; the intake contract around it does not move.
+//! or chat — unless an already-accepted capture still needs its local projection, in which case
+//! the durable payload remains processable. Settlement failures are logged by safe class.
 //!
 //! The task is detached by design: after the shutdown grace window closes, queued-but-unprocessed
 //! items remain processable in the database rather than silently gone.
+
+mod capture_run;
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -24,7 +26,6 @@ use tracing::Instrument as _;
 
 use crate::intake::QueuedUpdate;
 use crate::intake::access;
-use crate::intake::capture;
 use crate::intake::classify::supported;
 use crate::intake::github;
 use crate::intake::intent;
@@ -89,7 +90,7 @@ pub async fn run_worker(
         match database.claim_update().await {
             Ok(Some(pending)) => match serde_json::from_str(&pending.payload) {
                 Ok(update) => {
-                    process_one(
+                    process_one_with_recovery(
                         &database,
                         &QueuedUpdate {
                             bot_id: pending.bot_id,
@@ -180,16 +181,23 @@ async fn run_interaction_cleanup(database: &Database) {
     }
 }
 
-/// Settle one queued update: `processing`, then its terminal state.
+/// Process one queued update through its terminal state when no recovery remains.
 ///
 /// `capture` carries the Platform half of the domain action; admission-contract tests drive
 /// processing with `None`, which keeps the pre-item-5 behavior of settling supported updates as
 /// processed without acting. Production always wires a context.
 ///
-/// Errors are logged with their class and leave the row in its last honest state — never silently
-/// swallowed, never retried inline. A retry belongs to whoever reprocesses `accepted`/`failed`
-/// rows, which is the durable-queue work of a later item.
+/// Errors are logged with their class and leave the row in its last honest state.
 pub async fn process_one(
+    database: &Database,
+    item: &QueuedUpdate,
+    capture_context: Option<&CaptureContext>,
+) {
+    process_one_with_recovery(database, item, capture_context).await;
+}
+
+/// Process one update, durably scheduling recoverable projection work after backoff.
+async fn process_one_with_recovery(
     database: &Database,
     item: &QueuedUpdate,
     capture_context: Option<&CaptureContext>,
@@ -216,7 +224,7 @@ pub async fn process_one(
         // The gate runs between the two settlement writes: a refusal is an ordinary terminal
         // transition from here, and an unreadable policy is recorded as a failure rather than
         // improvised into a verdict.
-        let terminal = if supported(&item.update.kind) {
+        let outcome = if supported(&item.update.kind) {
             match access::authorize(database, &item.update).await {
                 Ok(None) => self_domain_action(database, item, capture_context).await,
                 Ok(Some(denial)) => {
@@ -228,7 +236,7 @@ pub async fn process_one(
                         class = denial.as_str(),
                         "the access policy refused the sender or chat",
                     );
-                    UpdateState::Denied
+                    ProcessingOutcome::Settle(UpdateState::Denied)
                 }
                 Err(error) => {
                     tracing::error!(
@@ -236,11 +244,33 @@ pub async fn process_one(
                         class = "authorization_check_failed",
                         "the access policy could not be evaluated",
                     );
-                    UpdateState::Failed
+                    ProcessingOutcome::Settle(UpdateState::Failed)
                 }
             }
         } else {
-            UpdateState::Unsupported
+            ProcessingOutcome::Settle(UpdateState::Unsupported)
+        };
+
+        let ProcessingOutcome::Settle(terminal) = outcome else {
+            tracing::warn!(
+                class = "accepted_projection_pending",
+                "the accepted capture remains processable for recovery",
+            );
+            if let Err(error) = database
+                .defer_update_retry(
+                    item.bot_id,
+                    i64::from(item.update.id.0),
+                    now_secs().saturating_add(1),
+                )
+                .await
+            {
+                tracing::error!(
+                    error = %error,
+                    class = "recovery_schedule_failed",
+                    "the accepted capture retry could not be scheduled",
+                );
+            }
+            return;
         };
 
         match database
@@ -272,6 +302,20 @@ pub async fn process_one(
     .await;
 }
 
+/// Whether an authorized action reached a terminal state or retained its durable source payload.
+pub(crate) enum ProcessingOutcome {
+    /// Settle and minimize the update in the named terminal state.
+    Settle(UpdateState),
+    /// Platform accepted a capture whose local projection has not committed yet.
+    RetryAcceptedProjection,
+}
+
+impl From<UpdateState> for ProcessingOutcome {
+    fn from(state: UpdateState) -> Self {
+        Self::Settle(state)
+    }
+}
+
 /// The authorized-update arm: parse an intent, act on it, and answer with one terminal state.
 ///
 /// A forwarded message loosens the grammar: its first http(s) link - in text or caption - becomes
@@ -284,29 +328,31 @@ async fn self_domain_action(
     database: &Database,
     item: &QueuedUpdate,
     capture_context: Option<&CaptureContext>,
-) -> UpdateState {
+) -> ProcessingOutcome {
     if let bot_api::UpdateKind::CallbackQuery(callback) = &item.update.kind {
         let Some(context) = capture_context else {
-            return UpdateState::Processed;
+            return UpdateState::Processed.into();
         };
         return if github::handle_callback(database, item.bot_id, callback, context, now_secs())
             .await
         {
-            UpdateState::Processed
+            UpdateState::Processed.into()
         } else {
-            UpdateState::Failed
+            UpdateState::Failed.into()
         };
     }
     let Some(parts) = message_parts(&item.update.kind) else {
-        return UpdateState::Processed;
+        return UpdateState::Processed.into();
     };
     if let Some(token) = parts.text.and_then(intent::parse_start_token) {
-        return handle_start_token(database, item.bot_id, &parts, &token).await;
+        return handle_start_token(database, item.bot_id, &parts, &token)
+            .await
+            .into();
     }
     if let Some(text) = parts.text {
         match settings::handle(database, item.bot_id, parts.sender_id, parts.chat_id, text).await {
-            SettingsResult::Processed => return UpdateState::Processed,
-            SettingsResult::Failed => return UpdateState::Failed,
+            SettingsResult::Processed => return UpdateState::Processed.into(),
+            SettingsResult::Failed => return UpdateState::Failed.into(),
             SettingsResult::NotSettings => {}
         }
         if let Some(state) = library::handle(
@@ -319,12 +365,12 @@ async fn self_domain_action(
         )
         .await
         {
-            return state;
+            return state.into();
         }
     }
     let Some(context) = capture_context else {
         // Test-only arm: no Platform half wired, nothing to act on.
-        return UpdateState::Processed;
+        return UpdateState::Processed.into();
     };
 
     if parts.forward.is_some() {
@@ -332,7 +378,7 @@ async fn self_domain_action(
         let metadata = parts.forward.clone().map(url_metadata);
         return match link {
             Some(url) => {
-                run_capture(
+                capture_run::run_capture(
                     database,
                     item.bot_id,
                     parts.chat_id,
@@ -359,14 +405,14 @@ async fn self_domain_action(
         )
         .await
         {
-            UpdateState::Processed
+            UpdateState::Processed.into()
         } else {
-            UpdateState::Failed
+            UpdateState::Failed.into()
         };
     }
 
     if let Some(intent) = parts.text.and_then(intent::parse) {
-        return run_capture(
+        return capture_run::run_capture(
             database,
             item.bot_id,
             parts.chat_id,
@@ -445,46 +491,6 @@ const fn token_refusal_name(
     }
 }
 
-/// Submit one capture intent and map the outcome to the update's terminal state.
-async fn run_capture(
-    database: &Database,
-    bot_id: i64,
-    chat_id: i64,
-    telegram_user_id: i64,
-    source: platform_api::CaptureSource,
-    context: &CaptureContext,
-    metadata: Option<telegram_persistence::interaction_tokens::IntentMetadata>,
-) -> UpdateState {
-    match capture::submit(
-        &context.sessions,
-        database,
-        bot_id,
-        chat_id,
-        telegram_user_id,
-        source,
-        metadata,
-    )
-    .await
-    {
-        Ok(accepted) => {
-            tracing::info!(
-                operation = %accepted.operation_id,
-                "a capture was submitted and acknowledged",
-            );
-            UpdateState::Processed
-        }
-        Err(class) => {
-            metrics::counter!(
-                telegram_telemetry::metrics::TELEGRAM_CAPTURE_SUBMISSIONS_TOTAL,
-                "class" => class.as_str(),
-            )
-            .increment(1);
-            tracing::warn!(class = class.as_str(), "the capture could not be submitted");
-            UpdateState::Failed
-        }
-    }
-}
-
 /// Handle the attachment alternative after URL parsing: supported files enter the bounded blob
 /// path; unsupported kinds and declared oversize inputs receive one durable, truthful response.
 async fn handle_attachment(
@@ -492,32 +498,36 @@ async fn handle_attachment(
     bot_id: i64,
     parts: &MessageParts<'_>,
     context: &CaptureContext,
-) -> UpdateState {
+) -> ProcessingOutcome {
     let Some(choice) = select_attachment(parts.attachment.as_ref(), context.max_attachment_bytes)
     else {
-        return UpdateState::Unsupported;
+        return UpdateState::Unsupported.into();
     };
     let choice = match choice {
         Ok(choice) => choice,
-        Err(reply) => return enqueue_reply(database, bot_id, parts.chat_id, reply).await,
+        Err(reply) => {
+            return enqueue_reply(database, bot_id, parts.chat_id, reply)
+                .await
+                .into();
+        }
     };
 
     let file = match context.bot_api.get_file(&choice.file_id).await {
         Ok(file) => file,
         Err(error) => {
             tracing::warn!(error = %error, class = "attachment_file_resolution_failed", "Bot API file resolution failed");
-            return UpdateState::Failed;
+            return UpdateState::Failed.into();
         }
     };
     let mut download = match context.bot_api.download_file(&file.path).await {
         Ok(download) => download,
         Err(error) => {
             tracing::warn!(error = %error, class = "attachment_download_failed", "Bot API attachment download failed");
-            return UpdateState::Failed;
+            return UpdateState::Failed.into();
         }
     };
     let Ok(media_type) = MediaType::parse(&choice.media_type) else {
-        return UpdateState::Failed;
+        return UpdateState::Failed.into();
     };
     let blob = match context
         .blobs
@@ -531,7 +541,7 @@ async fn handle_attachment(
         Ok(blob) => blob,
         Err(error) => {
             tracing::warn!(error = %error, class = "attachment_store_failed", "attachment blob storage failed");
-            return UpdateState::Failed;
+            return UpdateState::Failed.into();
         }
     };
     let metadata = telegram_persistence::interaction_tokens::IntentMetadata {
@@ -550,7 +560,7 @@ async fn handle_attachment(
         media_type: blob.media_type.as_str().to_owned(),
         length_bytes: blob.length_bytes,
     };
-    run_capture(
+    capture_run::run_capture(
         database,
         bot_id,
         parts.chat_id,

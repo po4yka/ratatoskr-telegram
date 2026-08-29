@@ -117,6 +117,89 @@ fn the_same_update_id_under_another_bot_is_not_a_duplicate() {
     });
 }
 
+/// Claiming an update makes it unavailable to another worker until the claim lease expires.
+#[test]
+fn claimed_update_is_not_reclaimed_before_lease_expiry() {
+    let runtime = tokio::runtime::Runtime::new().expect("test runtime");
+    runtime.block_on(async {
+        let test = database().await;
+        let db = &test.database;
+
+        db.record_update(&admitted(700_100_200, 43))
+            .await
+            .expect("the update is admitted");
+
+        let first = db.claim_update().await.expect("the first claim succeeds");
+        assert!(first.is_some(), "the admitted update is claimed once");
+
+        let second = db
+            .claim_update()
+            .await
+            .expect("the second claim query succeeds");
+        assert!(
+            second.is_none(),
+            "an in-flight update must not be reclaimed before its lease expires"
+        );
+        test.cleanup().await.expect("cleanup");
+    });
+}
+
+/// Repeated recoverable projection failures stop automatic claiming after the production bound,
+/// while retaining the authenticated payload for explicit recovery inspection.
+#[test]
+fn recoverable_update_dead_letters_after_bounded_attempts() {
+    const BOT_ID: i64 = 700_100_200;
+    const UPDATE_ID: i64 = 44;
+    const RETRY_BOUND: usize = 8;
+
+    let runtime = tokio::runtime::Runtime::new().expect("test runtime");
+    runtime.block_on(async {
+        let test = database().await;
+        let db = &test.database;
+
+        db.record_update(&admitted(BOT_ID, UPDATE_ID))
+            .await
+            .expect("the update is admitted");
+        for _ in 0..RETRY_BOUND {
+            let claimed = db.claim_update().await.expect("the retry claim succeeds");
+            assert!(claimed.is_some(), "each bounded retry remains claimable");
+            db.defer_update_retry(BOT_ID, UPDATE_ID, 0)
+                .await
+                .expect("the retry is deferred immediately");
+        }
+
+        let row = sqlx::query(
+            "select state, payload is not null as payload_retained
+             from telegram.updates where bot_id = $1 and update_id = $2",
+        )
+        .bind(BOT_ID)
+        .bind(UPDATE_ID)
+        .fetch_one(db.pool())
+        .await
+        .expect("the bounded-retry row");
+        let state = row.get::<String, _>("state");
+        let payload_retained = row.get::<bool, _>("payload_retained");
+        let next = db
+            .claim_update()
+            .await
+            .expect("the post-bound claim succeeds");
+
+        test.cleanup().await.expect("cleanup");
+        assert_eq!(
+            state, "recovery_required",
+            "bounded retry exhaustion requires operator-visible recovery"
+        );
+        assert!(
+            payload_retained,
+            "recovery-required updates retain their authenticated replay input"
+        );
+        assert!(
+            next.is_none(),
+            "automatic workers must not reclaim an exhausted recoverable update"
+        );
+    });
+}
+
 /// An admitted row starts accepted with kind and receipt time recorded; settlement moves it to a
 /// terminal state with a settle time.
 #[test]

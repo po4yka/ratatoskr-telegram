@@ -103,9 +103,11 @@ comment on table telegram.chats is
 -- (bot_id, update_id) makes redelivered and out-of-order duplicates no-ops while genuinely unseen
 -- ids — including ones below the highest seen id — still insert. `kind` holds a CLOSED
 -- classification label (`message`, `callback_query`, ..., `unsupported`). The authenticated,
--- parsed payload remains processable across a restart until terminal settlement removes it.
+-- parsed payload remains processable across a restart until terminal settlement removes it, or
+-- retained for explicit inspection after the automatic recovery budget is exhausted.
 -- `state` walks accepted -> processing -> exactly one of processed / unsupported / failed /
--- denied. `denied` records a sender or chat the access policy refused before any processing ran:
+-- denied, or recovery_required after the automatic recovery budget. `denied` records a sender or
+-- chat the access policy refused before any processing ran:
 -- it is settled like any terminal state — settle time stamped, processable payload removed — and
 -- the silent, no-outbound-call part of the refusal lives in the webhook worker, not here.
 create table telegram.updates (
@@ -114,18 +116,24 @@ create table telegram.updates (
     kind        text        not null,
     payload     jsonb,
     state       text        not null default 'accepted'
-                check (state in ('accepted', 'processing', 'processed', 'unsupported',
-                                 'failed', 'denied')),
-    received_at timestamptz not null default now(),
-    settled_at  timestamptz,
+                check (state in ('accepted', 'processing', 'recovery_required', 'processed',
+                                 'unsupported', 'failed', 'denied')),
+    attempt_count integer   not null default 0 check (attempt_count >= 0),
+    received_at     timestamptz not null default now(),
+    next_attempt_at timestamptz not null default now(),
+    lease_expires_at timestamptz,
+    settled_at      timestamptz,
     primary key (bot_id, update_id),
     constraint update_payload_exists_only_while_processable
-        check ((state in ('accepted', 'processing')) = (payload is not null))
+        check ((state in ('accepted', 'processing', 'recovery_required')) = (payload is not null)),
+    constraint update_lease_exists_only_while_processing
+        check ((state = 'processing') = (lease_expires_at is not null))
 );
 
 comment on table telegram.updates is
     'Admitted Bot API updates and their processing state. One row per (bot, update id); the '
-    'primary key is the deduplication identity. Payload is retained only while processable.';
+    'primary key is the deduplication identity. Payload is retained while processable or while '
+    'automatic recovery has stopped for inspection.';
 
 -- `message_bindings` — one live binding of a Platform operation to one Telegram chat message.
 -- The dispatcher edits that message in place as operation events arrive; the unique constraint on

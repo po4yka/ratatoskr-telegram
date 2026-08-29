@@ -22,6 +22,8 @@ pub(crate) enum SubmitClass {
     TransientExhausted,
     /// Platform refused the credential or request outright.
     PermanentRefusal,
+    /// Platform accepted the command, but its local projection did not commit.
+    AcceptedProjectionPending,
 }
 
 impl SubmitClass {
@@ -30,6 +32,7 @@ impl SubmitClass {
         match self {
             Self::TransientExhausted => "transient_exhausted",
             Self::PermanentRefusal => "permanent_refusal",
+            Self::AcceptedProjectionPending => "accepted_projection_pending",
         }
     }
 }
@@ -86,62 +89,47 @@ pub(crate) async fn submit(
     .await?;
     let operation_id = accepted.operation_id;
 
-    let existing = database
-        .find_binding(operation_id, chat_id)
+    let now = now_secs();
+    let intent = telegram_persistence::interaction_tokens::NewOperationIntent {
+        scope: telegram_persistence::interaction_tokens::TokenScope {
+            bot_id,
+            telegram_user_id,
+            chat_id,
+            message_id: None,
+        },
+        operation_id,
+        payload: telegram_persistence::interaction_tokens::OperationIntentPayload {
+            source_url: source_url(&source),
+            metadata,
+        },
+        expires_at: now + INTENT_TTL_SECS,
+    };
+    let payload = telegram_persistence::outbound_jobs::MessagePayload {
+        text: ack_body(&source),
+        parse_mode: Some(HTML.to_owned()),
+        reply_markup: None,
+    };
+    let content_hash = payload
+        .canonical()
+        .map_err(|_| SubmitClass::AcceptedProjectionPending)?;
+    database
+        .record_accepted_capture_projection(
+            &intent,
+            &telegram_persistence::outbound_jobs::NewOutboundJob {
+                bot_id,
+                chat_id,
+                kind: telegram_persistence::outbound_jobs::OutboundJobKind::SendMessage,
+                payload,
+                content_hash,
+                operation_id: Some(operation_id),
+                revision: None,
+                correlation_id: Some(format!("operation:{operation_id}")),
+                next_attempt_at: None,
+            },
+            now,
+        )
         .await
-        .map_err(|_| SubmitClass::TransientExhausted)?;
-    if existing.is_none() {
-        database
-            .ensure_operation_binding(bot_id, operation_id, chat_id)
-            .await
-            .map_err(|_| SubmitClass::TransientExhausted)?;
-        let now = now_secs();
-        database
-            .issue_operation_intent(
-                &telegram_persistence::interaction_tokens::NewOperationIntent {
-                    scope: telegram_persistence::interaction_tokens::TokenScope {
-                        bot_id,
-                        telegram_user_id,
-                        chat_id,
-                        message_id: None,
-                    },
-                    operation_id,
-                    payload: telegram_persistence::interaction_tokens::OperationIntentPayload {
-                        source_url: source_url(&source),
-                        metadata,
-                    },
-                    expires_at: now + INTENT_TTL_SECS,
-                },
-                now,
-            )
-            .await
-            .map_err(|_| SubmitClass::TransientExhausted)?;
-        let payload = telegram_persistence::outbound_jobs::MessagePayload {
-            text: ack_body(&source),
-            parse_mode: Some(HTML.to_owned()),
-            reply_markup: None,
-        };
-        let content_hash = payload
-            .canonical()
-            .map_err(|_| SubmitClass::TransientExhausted)?;
-        database
-            .enqueue_outbound_job(
-                &telegram_persistence::outbound_jobs::NewOutboundJob {
-                    bot_id,
-                    chat_id,
-                    kind: telegram_persistence::outbound_jobs::OutboundJobKind::SendMessage,
-                    payload,
-                    content_hash,
-                    operation_id: Some(operation_id),
-                    revision: None,
-                    correlation_id: Some(format!("operation:{operation_id}")),
-                    next_attempt_at: None,
-                },
-                now_secs(),
-            )
-            .await
-            .map_err(|_| SubmitClass::TransientExhausted)?;
-    }
+        .map_err(|_| SubmitClass::AcceptedProjectionPending)?;
 
     Ok(AcceptedCapture { operation_id })
 }

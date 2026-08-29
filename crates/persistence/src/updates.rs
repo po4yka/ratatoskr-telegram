@@ -7,6 +7,11 @@
 
 use crate::{Database, PersistenceError};
 
+/// A worker has thirty seconds to finish one update before another process may reclaim it.
+const UPDATE_LEASE_SECS: i64 = 30;
+/// Automatic recovery stops after eight total processing claims for operator inspection.
+const UPDATE_RECOVERY_ATTEMPTS: i32 = 8;
+
 /// An admitted update as the intake records it, including its authenticated processable payload.
 #[derive(Debug, Clone)]
 pub struct AdmittedUpdate {
@@ -109,7 +114,7 @@ impl Database {
         })
     }
 
-    /// Claim the oldest processable update, including one interrupted during processing.
+    /// Claim the oldest eligible update, including processing interrupted past its lease.
     ///
     /// # Errors
     ///
@@ -119,17 +124,22 @@ impl Database {
             "with pending as (
                  select bot_id, update_id
                  from telegram.updates
-                 where state in ('accepted', 'processing') and payload is not null
-                 order by received_at, bot_id, update_id
+                 where payload is not null
+                   and ((state = 'accepted' and next_attempt_at <= now())
+                        or (state = 'processing' and lease_expires_at <= now()))
+                 order by next_attempt_at, received_at, bot_id, update_id
                  for update skip locked
                  limit 1
              )
              update telegram.updates as updates
-             set state = 'processing'
+             set state = 'processing',
+                 lease_expires_at = now() + make_interval(secs => $1),
+                 attempt_count = attempt_count + 1
              from pending
              where updates.bot_id = pending.bot_id and updates.update_id = pending.update_id
              returning updates.bot_id, updates.update_id, updates.payload::text",
         )
+        .bind(UPDATE_LEASE_SECS)
         .fetch_optional(&self.pool)
         .await
         .map_err(PersistenceError::Query)?;
@@ -139,6 +149,40 @@ impl Database {
             update_id,
             payload,
         }))
+    }
+
+    /// Release one recoverable update after a bounded delay without minimizing its payload.
+    ///
+    /// # Errors
+    ///
+    /// [`PersistenceError::UnknownUpdate`] when the pair is absent or no longer processing;
+    /// [`PersistenceError::Query`] if the update fails otherwise.
+    pub async fn defer_update_retry(
+        &self,
+        bot_id: i64,
+        update_id: i64,
+        retry_at: i64,
+    ) -> Result<(), PersistenceError> {
+        let result = sqlx::query(
+            "update telegram.updates
+             set state = case when attempt_count >= $4
+                              then 'recovery_required' else 'accepted' end,
+                 lease_expires_at = null,
+                 next_attempt_at = to_timestamp($3)
+             where bot_id = $1 and update_id = $2
+               and state = 'processing' and payload is not null",
+        )
+        .bind(bot_id)
+        .bind(update_id)
+        .bind(retry_at)
+        .bind(UPDATE_RECOVERY_ATTEMPTS)
+        .execute(&self.pool)
+        .await
+        .map_err(PersistenceError::Query)?;
+        if result.rows_affected() == 0 {
+            return Err(PersistenceError::UnknownUpdate);
+        }
+        Ok(())
     }
 
     /// Move an admitted update's state forward, stamping the settle time on terminal states.
@@ -161,6 +205,9 @@ impl Database {
         let result = sqlx::query(
             "update telegram.updates
              set state = $3,
+                 lease_expires_at = case when $3 = 'processing'
+                                         then now() + make_interval(secs => $4)
+                                         else null end,
                  settled_at = case when $3 in ('processed', 'unsupported', 'failed', 'denied')
                                    then now() else settled_at end,
                  payload = case when $3 in ('processed', 'unsupported', 'failed', 'denied')
@@ -170,6 +217,7 @@ impl Database {
         .bind(bot_id)
         .bind(update_id)
         .bind(state.as_str())
+        .bind(UPDATE_LEASE_SECS)
         .execute(&self.pool)
         .await
         .map_err(PersistenceError::Query)?;

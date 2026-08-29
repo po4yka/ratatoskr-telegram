@@ -13,6 +13,7 @@
 pub mod test_support;
 
 pub mod bindings;
+pub mod capture_projection;
 pub mod dialogues;
 pub mod inbox;
 pub mod interaction_cleanup;
@@ -81,6 +82,10 @@ pub enum PersistenceError {
     /// A query failed.
     #[error("a database query failed")]
     Query(#[source] sqlx::Error),
+
+    /// Accepted-capture projection inputs disagree about their bot, chat, operation, or shape.
+    #[error("the accepted capture projection is internally inconsistent")]
+    InvalidCaptureProjection,
 
     /// A settlement named an update that was never admitted. A state transition for a row that
     /// does not exist is a bug, and silently succeeding would hide it.
