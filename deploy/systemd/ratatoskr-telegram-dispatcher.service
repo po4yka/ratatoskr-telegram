@@ -28,8 +28,6 @@ MemoryMax=384M
 CPUQuota=100%
 TasksMax=128
 
-IPAddressDeny=any
-IPAddressAllow=localhost 172.16.0.0/12 100.64.0.0/10
 NoNewPrivileges=yes
 ProtectSystem=strict
 ReadWritePaths=/mnt/nvme/ratatoskr/logs

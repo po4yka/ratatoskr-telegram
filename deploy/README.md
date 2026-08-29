@@ -3,8 +3,12 @@
 This profile follows `ratatoskr-workspace/docs/DEPLOYMENT_TARGET.md` and the workspace port
 contract: the webhook listens on loopback `8182` behind the
 trusted cloudflared path, while operator listeners use `9467` (webhook) and `9468` (dispatcher).
-Never publish either operator port through ingress. The monitoring bridge and Tailscale ranges in
-the units are examples that must be checked against the target before installation.
+Never publish either operator port through ingress. The units permit the outbound HTTPS required
+by the configured Bot API and Platform endpoints: systemd's `IPAddressDeny`/`IPAddressAllow`
+directives are bidirectional, so a private-only allowlist would also block those runtime
+dependencies. Listener bind addresses, the trusted cloudflared route, and the target-host firewall
+remain authoritative for ingress. A deployment that needs narrower directional egress must enforce
+it in a host network policy without pinning provider-controlled DNS answers in these shared units.
 
 Install the binaries in `/usr/local/bin`, the two examples in `/etc/ratatoskr`, four root-owned
 secret files under `/etc/ratatoskr/secrets`, the logrotate policy in `/etc/logrotate.d`, and the

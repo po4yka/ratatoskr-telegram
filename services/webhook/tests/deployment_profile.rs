@@ -99,6 +99,33 @@ fn systemd_profile_matches_runtime_and_workspace_contract() {
 }
 
 #[test]
+fn systemd_units_preserve_required_https_egress() {
+    let webhook = read("systemd/ratatoskr-telegram-webhook.service");
+    let dispatcher = read("systemd/ratatoskr-telegram-dispatcher.service");
+    let webhook_env = read("systemd/webhook.conf.example");
+    let dispatcher_env = read("systemd/dispatcher.conf.example");
+
+    assert!(
+        !webhook.contains("IPAddressDeny=any"),
+        "webhook unit denies required public HTTPS egress"
+    );
+    assert!(
+        !dispatcher.contains("IPAddressDeny=any"),
+        "dispatcher unit denies required public HTTPS egress"
+    );
+    for (role, unit) in [("webhook", &webhook), ("dispatcher", &dispatcher)] {
+        assert!(
+            unit.contains("RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK"),
+            "{role} unit lost its address-family boundary"
+        );
+    }
+    assert!(webhook_env.contains("RATATOSKR__WEBHOOK__BIND=127.0.0.1:8182"));
+    assert!(webhook_env.contains("RATATOSKR__ADMIN__BIND=0.0.0.0:9467"));
+    assert!(dispatcher_env.contains("RATATOSKR__ADMIN__BIND=0.0.0.0:9468"));
+    assert!(!dispatcher_env.contains("RATATOSKR__WEBHOOK__BIND"));
+}
+
+#[test]
 fn deployment_profile_refuses_role_or_schema_drift() {
     let webhook = read("systemd/ratatoskr-telegram-webhook.service");
     let dispatcher = read("systemd/ratatoskr-telegram-dispatcher.service");
