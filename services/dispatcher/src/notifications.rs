@@ -106,7 +106,8 @@ pub fn record_delivery_outcome(
         }
         telegram_persistence::outbound_jobs::DeliveryOutcome::RetryWithBackoff { .. } => "retry",
         telegram_persistence::outbound_jobs::DeliveryOutcome::FailedPermanent { .. }
-        | telegram_persistence::outbound_jobs::DeliveryOutcome::SupersededStale => "terminal",
+        | telegram_persistence::outbound_jobs::DeliveryOutcome::SupersededStale
+        | telegram_persistence::outbound_jobs::DeliveryOutcome::OutcomeUnknown { .. } => "terminal",
     };
     record_outcome(metric_outcome, class);
 }

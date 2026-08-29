@@ -16,10 +16,12 @@ mod sink;
 
 pub use crate::outbound::sender::sink::{BotApiSink, ClientSink, SendFuture, SentMessage};
 
+use std::future::Future;
 use std::sync::Arc;
 use std::time::Duration;
 
 use telegram_persistence::Database;
+use telegram_persistence::outbound_jobs::{AcknowledgedMethod, QueuedOutboundJob};
 
 use crate::outbound::clock::Clock;
 use crate::outbound::limiter::DeliveryLimiter;
@@ -50,11 +52,42 @@ pub enum SenderError {
     Persistence(#[from] telegram_persistence::PersistenceError),
 }
 
+/// Boxed persistence future for an acknowledged provider write.
+pub type AcknowledgementFuture<'a> = std::pin::Pin<
+    Box<dyn Future<Output = Result<(), telegram_persistence::PersistenceError>> + Send + 'a>,
+>;
+
+/// Idempotent local acknowledgement store, separated for one-shot fault testing.
+pub trait AcknowledgementStore: Send + Sync {
+    /// Persist every local effect of this provider acknowledgement atomically.
+    fn record<'a>(
+        &'a self,
+        job: &'a QueuedOutboundJob,
+        method: AcknowledgedMethod,
+        message_id: i64,
+        now: i64,
+    ) -> AcknowledgementFuture<'a>;
+}
+
+impl AcknowledgementStore for Database {
+    fn record<'a>(
+        &'a self,
+        job: &'a QueuedOutboundJob,
+        method: AcknowledgedMethod,
+        message_id: i64,
+        now: i64,
+    ) -> AcknowledgementFuture<'a> {
+        Box::pin(self.record_outbound_acknowledgement(job, method, message_id, now))
+    }
+}
+
 /// The durable delivery worker over one database and one Bot API seam.
 #[derive(Clone)]
 pub struct OutboundSender {
     /// The pool the queue, bindings, and settlements go through.
     pub(crate) database: Arc<Database>,
+    /// The idempotent transaction seam used after a known provider acknowledgement.
+    pub(crate) acknowledgement_store: Arc<dyn AcknowledgementStore>,
     /// The wire seam calls go out through.
     pub(crate) sink: Arc<dyn BotApiSink>,
     /// The shared rate gate; penalties from `429`s land here too.
@@ -72,6 +105,7 @@ impl std::fmt::Debug for OutboundSender {
         formatter
             .debug_struct("OutboundSender")
             .field("database", &self.database)
+            .field("acknowledgement_store", &"dyn AcknowledgementStore")
             .field("limiter", &self.limiter)
             .field("sink", &"dyn BotApiSink")
             .field("clock", &"dyn Clock")
@@ -91,7 +125,28 @@ impl OutboundSender {
         limits: SenderLimits,
     ) -> Self {
         Self {
+            acknowledgement_store: Arc::clone(&database) as Arc<dyn AcknowledgementStore>,
             database,
+            sink,
+            limiter,
+            clock,
+            limits,
+        }
+    }
+
+    /// Assemble a sender with an injected acknowledgement store for deterministic fault tests.
+    #[must_use]
+    pub fn new_with_acknowledgement_store(
+        database: Arc<Database>,
+        acknowledgement_store: Arc<dyn AcknowledgementStore>,
+        sink: Arc<dyn BotApiSink>,
+        limiter: Arc<DeliveryLimiter>,
+        clock: Arc<dyn Clock>,
+        limits: SenderLimits,
+    ) -> Self {
+        Self {
+            database,
+            acknowledgement_store,
             sink,
             limiter,
             clock,

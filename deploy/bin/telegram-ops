@@ -13,6 +13,8 @@ commands:
   inspect-session       --user-ref user:UUID [--dry-run]
   recover-stuck-update  --bot-id ID --update-id ID --expected-state processing
                         (--dry-run | --execute --ack TEXT)
+  recover-unknown-send  --job-id UUID --expected-state outcome_unknown
+                        (--dry-run | --execute --ack TEXT)
   inspect-dead          --kind updates|outbound|notifications|all [--limit 1..100] [--dry-run]
 
 Provider webhook registration/revocation and Platform session mutation are separate external
@@ -137,6 +139,36 @@ recover_update() {
         --file="$(dirname "$0")/../sql/recover-stuck-update.sql"
 }
 
+recover_unknown_send() {
+    local job_id='' expected='' dry_run=false execute=false ack=''
+    while (($#)); do
+        case "$1" in
+            --job-id) (($# >= 2)) || usage; job_id="$2"; shift 2 ;;
+            --expected-state) (($# >= 2)) || usage; expected="$2"; shift 2 ;;
+            --dry-run) dry_run=true; shift ;;
+            --execute) execute=true; shift ;;
+            --ack) (($# >= 2)) || usage; ack="$2"; shift 2 ;;
+            *) usage ;;
+        esac
+    done
+    [[ "$job_id" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]] \
+        || die 'job-id must be a lowercase UUID'
+    [[ "$expected" == outcome_unknown ]] || die 'expected-state must be outcome_unknown'
+    if "$dry_run"; then
+        "$execute" && die '--dry-run and --execute are mutually exclusive'
+        printf 'DRY-RUN: create a new deliberate attempt for %s; expected state: outcome_unknown; duplicate-risk warning: Telegram may already have applied the original send\n' "$job_id"
+        return
+    fi
+    "$execute" || die 'recovery requires --dry-run or --execute'
+    local expected_ack="resend unknown ${job_id} accepting duplicate risk"
+    [[ "$ack" == "$expected_ack" ]] || die "--ack must equal: $expected_ack"
+    [[ -n "${RATATOSKR_TELEGRAM_DATABASE_URL:-}" ]] \
+        || die 'RATATOSKR_TELEGRAM_DATABASE_URL is required' 78
+    psql "$RATATOSKR_TELEGRAM_DATABASE_URL" --no-psqlrc --set=ON_ERROR_STOP=1 --tuples-only \
+        --set=job_id="$job_id" --set=expected_state="$expected" \
+        --file="$(dirname "$0")/../sql/recover-unknown-send.sql"
+}
+
 inspect_dead() {
     local kind='' limit=25 dry_run=false
     while (($#)); do
@@ -152,7 +184,7 @@ inspect_dead() {
         die 'limit must be 1..100'
     fi
     if "$dry_run"; then
-        printf 'DRY-RUN: bounded read-only dead-%s projection: identifiers,timestamps,attempts,safe_class,correlation_ref\n' "$kind"
+        printf 'DRY-RUN: bounded read-only dead-%s projection including outcome_unknown: identifiers,timestamps,attempts,safe_class,correlation_ref\n' "$kind"
         return
     fi
     [[ -n "${RATATOSKR_TELEGRAM_DATABASE_URL:-}" ]] || die 'RATATOSKR_TELEGRAM_DATABASE_URL is required' 78
@@ -167,6 +199,7 @@ case "$command" in
     rotate-bot-token) rotate bot-token "$@" ;;
     inspect-session) inspect_session "$@" ;;
     recover-stuck-update) recover_update "$@" ;;
+    recover-unknown-send) recover_unknown_send "$@" ;;
     inspect-dead) inspect_dead "$@" ;;
     help|--help|-h) usage ;;
     *) usage ;;

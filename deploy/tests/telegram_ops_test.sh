@@ -91,6 +91,26 @@ dead_inspection_is_bounded_and_read_only() {
     [[ "$output" != *'payload'* && "$output" != *'chat_id'* && "$output" != *'title'* ]] || fail 'private column exposed'
 }
 
+operator_inspection_reports_unknown_without_private_content() {
+    local output
+    output="$($OPS inspect-dead --kind outbound --limit 25 --dry-run)"
+    [[ "$output" == *'outcome_unknown'* ]] || fail 'unknown-outcome class absent from inspection'
+    [[ "$output" != *'payload'* && "$output" != *'chat_id'* && "$output" != *'message'* ]] \
+        || fail 'unknown-outcome inspection exposes private content'
+}
+
+unknown_send_recovery_requires_explicit_duplicate_risk_acknowledgement() {
+    local job='018f65d8-25a1-7f59-aaf8-72941f37c031' output
+    if "$OPS" recover-unknown-send --job-id "$job" --expected-state outcome_unknown \
+        --execute >/dev/null 2>&1; then
+        fail 'unknown send recovery executed without duplicate-risk acknowledgement'
+    fi
+    output="$($OPS recover-unknown-send --job-id "$job" --expected-state outcome_unknown --dry-run)"
+    [[ "$output" == *'new deliberate attempt'* ]] || fail 'recovery does not promise a new attempt'
+    [[ "$output" == *'duplicate-risk warning'* ]] || fail 'duplicate-risk warning absent'
+    [[ "$output" == *'expected state: outcome_unknown'* ]] || fail 'transactional state guard absent'
+}
+
 runbook_commands_execute_as_written() {
     for runbook in "$ROOT"/docs/runbooks/*.md; do
         [[ -f "$runbook" ]] || fail 'runbooks absent'
@@ -106,5 +126,7 @@ rotation_execute_and_readiness_rollback_use_only_local_fixture_tools
 session_inspection_uses_platform_authority
 stuck_recovery_requires_expected_state_and_execute
 dead_inspection_is_bounded_and_read_only
+operator_inspection_reports_unknown_without_private_content
+unknown_send_recovery_requires_explicit_duplicate_risk_acknowledgement
 runbook_commands_execute_as_written
 printf 'PASS: telegram operator dry-run and runbook contract\n'

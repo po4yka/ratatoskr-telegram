@@ -50,7 +50,7 @@ async fn direct_jobs_precede_new_notifications_and_old_notifications_age_in() {
         .expect("claim")
         .expect("direct claim");
     assert_eq!(first.payload.text, "direct");
-    db.settle_outbound_job(first.id, T0 + 1, 5, &DeliveryOutcome::Sent)
+    db.settle_outbound_job(first.id, first.attempts, T0 + 1, 5, &DeliveryOutcome::Sent)
         .await
         .expect("settle direct");
     let fresh_notification = db
@@ -62,6 +62,7 @@ async fn direct_jobs_precede_new_notifications_and_old_notifications_age_in() {
 
     db.settle_outbound_job(
         fresh_notification.id,
+        fresh_notification.attempts,
         T0 + 1,
         5,
         &DeliveryOutcome::RetryWithBackoff { delay_secs: 1 },

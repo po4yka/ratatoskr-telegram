@@ -21,6 +21,7 @@ pub mod interaction_tokens;
 pub mod message_bindings;
 pub mod notification_delivery;
 pub mod notification_preferences;
+mod outbound_acknowledgements;
 pub mod outbound_jobs;
 pub mod projection_accept;
 pub mod updates;
@@ -31,7 +32,8 @@ pub use notification_preferences::{
     NotificationPreferenceUpdate, NotificationPreferences, QuietPolicy,
 };
 pub use outbound_jobs::{
-    DeliveryOutcome, NewOutboundJob, OutboundJobKind, OutboundJobState, QueuedOutboundJob,
+    AcknowledgedMethod, DeliveryOutcome, NewOutboundJob, OutboundJobKind, OutboundJobState,
+    QueuedOutboundJob,
 };
 pub use projection_accept::{AcceptOutcome, AcceptedEvent};
 pub use updates::{AdmittedUpdate, PendingUpdate, RecordOutcome, UpdateState};
@@ -104,6 +106,15 @@ pub enum PersistenceError {
     /// work the queue promised to deliver.
     #[error("the outbound job was never enqueued")]
     UnknownOutboundJob,
+
+    /// A sender tried to settle a lease that another sender had already reclaimed. Applying that
+    /// stale outcome would overwrite the newer attempt's durable decision.
+    #[error("the outbound job claim is no longer active")]
+    StaleOutboundClaim,
+
+    /// A provider acknowledgement did not match the job's current claim or durable identity.
+    #[error("the outbound acknowledgement does not match the active claim")]
+    StaleOutboundAcknowledgement,
 
     /// An optimistic notification-preference update named an old version.
     #[error("the notification preference version is stale")]

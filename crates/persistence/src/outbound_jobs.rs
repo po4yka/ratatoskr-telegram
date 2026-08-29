@@ -70,6 +70,8 @@ pub enum OutboundJobState {
     Superseded,
     /// Dead-lettered: permanently undeliverable, or transient failures exhausted the bound.
     FailedPermanent,
+    /// Telegram may have applied a non-idempotent send, so automatic replay is forbidden.
+    OutcomeUnknown,
     /// Withdrawn by its producer before delivery.
     Cancelled,
 }
@@ -86,6 +88,7 @@ impl OutboundJobState {
             Self::RetryWait => "retry_wait",
             Self::Superseded => "superseded",
             Self::FailedPermanent => "failed_permanent",
+            Self::OutcomeUnknown => "outcome_unknown",
             Self::Cancelled => "cancelled",
         }
     }
@@ -106,6 +109,7 @@ impl OutboundJobState {
             "retry_wait" => Ok(Self::RetryWait),
             "superseded" => Ok(Self::Superseded),
             "failed_permanent" => Ok(Self::FailedPermanent),
+            "outcome_unknown" => Ok(Self::OutcomeUnknown),
             "cancelled" => Ok(Self::Cancelled),
             other => Err(PersistenceError::Query(sqlx::Error::ColumnDecode {
                 index: "state".to_owned(),
@@ -217,6 +221,8 @@ pub struct QueuedOutboundJob {
     pub revision: Option<i64>,
     /// The contracts `EntityRef` correlation string, carried for tracing only.
     pub correlation_id: Option<String>,
+    /// Original quarantined attempt when an operator explicitly authorized this new attempt.
+    pub recovery_of: Option<Uuid>,
     /// Notification class for notification jobs; absent for direct/projection work.
     pub notification_class: Option<String>,
     /// How many times this job has been claimed, including this one.
@@ -246,6 +252,29 @@ pub enum DeliveryOutcome {
         /// The safe failure-class label recorded on the row.
         class: String,
     },
+    /// A non-idempotent write may have reached Telegram and cannot be reconciled safely.
+    OutcomeUnknown {
+        /// Closed, content-free uncertainty class.
+        class: String,
+    },
+}
+
+/// The exact Bot API method whose successful acknowledgement is being recorded.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AcknowledgedMethod {
+    /// A fresh, non-idempotent `sendMessage`.
+    SendMessage,
+    /// An idempotent `editMessageText`.
+    EditMessageText,
+}
+
+impl AcknowledgedMethod {
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Self::SendMessage => "send_message",
+            Self::EditMessageText => "edit_message_text",
+        }
+    }
 }
 
 /// The column tuple a claimed job maps from, in claim-SQL order. Kind crosses as its stored
@@ -260,6 +289,7 @@ type ClaimedRow = (
     Option<Uuid>,
     Option<i64>,
     Option<String>,
+    Option<Uuid>,
     Option<String>,
     i32,
 );
@@ -315,6 +345,8 @@ impl Database {
         now: i64,
         lease_ttl_secs: u32,
     ) -> Result<Option<QueuedOutboundJob>, PersistenceError> {
+        let mut transaction = self.pool.begin().await.map_err(PersistenceError::Query)?;
+        quarantine_expired_sends(&mut transaction, now).await?;
         let row: Option<ClaimedRow> = sqlx::query_as(
             "with busy as (
                  select distinct chat_id
@@ -355,28 +387,33 @@ impl Database {
              ),
              claimed as (
              update telegram.outbound_jobs as job
-             set state = 'sending',
-                 lease_expires_at = to_timestamp($1 + $2),
-                 attempts = job.attempts + 1,
+                 set state = 'sending',
+                     lease_expires_at = to_timestamp($1 + $2),
+                     attempts = job.attempts + 1,
                  updated_at = to_timestamp($1)
              from head
              where job.id = head.id
               returning job.id, job.bot_id, job.chat_id, job.kind, job.payload::text,
                         job.content_hash, job.operation_id, job.revision, job.correlation_id,
-                        job.notification_id, job.attempts
+                        job.recovery_of, job.notification_id, job.attempts
              )
              select claimed.id, claimed.bot_id, claimed.chat_id, claimed.kind, claimed.payload,
                     claimed.content_hash, claimed.operation_id, claimed.revision,
-                    claimed.correlation_id, decision.class, claimed.attempts
+                    claimed.correlation_id, claimed.recovery_of, decision.class, claimed.attempts
              from claimed
              left join telegram.notification_decisions decision
                on decision.outbound_job_id = claimed.id",
         )
         .bind(now)
         .bind(i64::from(lease_ttl_secs))
-        .fetch_optional(&self.pool)
+        .fetch_optional(&mut *transaction)
         .await
         .map_err(PersistenceError::Query)?;
+
+        transaction
+            .commit()
+            .await
+            .map_err(PersistenceError::Query)?;
 
         row.map(|claimed| {
             Ok(QueuedOutboundJob {
@@ -389,8 +426,9 @@ impl Database {
                 operation_id: claimed.6,
                 revision: claimed.7,
                 correlation_id: claimed.8,
-                notification_class: claimed.9,
-                attempts: claimed.10,
+                recovery_of: claimed.9,
+                notification_class: claimed.10,
+                attempts: claimed.11,
             })
         })
         .transpose()
@@ -405,16 +443,18 @@ impl Database {
     /// settlement clears the lease. The retry bound is evaluated against the row's attempt count
     /// INSIDE the statement, so a concurrent reclaim cannot slip past the bound.
     ///
-    /// The sender settles each claim exactly once; this layer does not re-verify the job was in
-    /// flight, mirroring how update settlement trusts its worker.
+    /// The sender presents the attempt number it received at claim time. A reclaimed worker's
+    /// stale settlement is rejected, so it cannot overwrite the newer lease holder's outcome.
     ///
     /// # Errors
     ///
     /// [`PersistenceError::UnknownOutboundJob`] when no row carries `id`;
+    /// [`PersistenceError::StaleOutboundClaim`] when `id` no longer belongs to this attempt;
     /// [`PersistenceError::Query`] if the statement fails otherwise.
     pub async fn settle_outbound_job(
         &self,
         id: Uuid,
+        claim_attempt: i32,
         now: i64,
         max_attempts: i32,
         outcome: &DeliveryOutcome,
@@ -422,12 +462,21 @@ impl Database {
         let mut transaction = self.pool.begin().await.map_err(PersistenceError::Query)?;
         let result = match outcome {
             DeliveryOutcome::Sent | DeliveryOutcome::NotModified => {
-                settle_terminal(&mut transaction, id, now, OutboundJobState::Sent, None).await?
+                settle_terminal(
+                    &mut transaction,
+                    id,
+                    claim_attempt,
+                    now,
+                    OutboundJobState::Sent,
+                    None,
+                )
+                .await?
             }
             DeliveryOutcome::SupersededStale => {
                 settle_terminal(
                     &mut transaction,
                     id,
+                    claim_attempt,
                     now,
                     OutboundJobState::Superseded,
                     None,
@@ -438,8 +487,20 @@ impl Database {
                 settle_terminal(
                     &mut transaction,
                     id,
+                    claim_attempt,
                     now,
                     OutboundJobState::FailedPermanent,
+                    Some(class),
+                )
+                .await?
+            }
+            DeliveryOutcome::OutcomeUnknown { class } => {
+                settle_terminal(
+                    &mut transaction,
+                    id,
+                    claim_attempt,
+                    now,
+                    OutboundJobState::OutcomeUnknown,
                     Some(class),
                 )
                 .await?
@@ -455,42 +516,37 @@ impl Database {
                                                 else to_timestamp($3 + $4) end,
                          lease_expires_at = null,
                          updated_at = to_timestamp($3)
-                     where id = $1",
+                     where id = $1 and state = 'sending' and attempts = $5",
             )
             .bind(id)
             .bind(max_attempts)
             .bind(now)
             .bind(i64::from(*delay_secs))
+            .bind(claim_attempt)
             .execute(&mut *transaction)
             .await
             .map_err(PersistenceError::Query)?,
         };
 
         if result.rows_affected() == 0 {
+            let exists: bool = sqlx::query_scalar(
+                "select exists(select 1 from telegram.outbound_jobs where id = $1)",
+            )
+            .bind(id)
+            .fetch_one(&mut *transaction)
+            .await
+            .map_err(PersistenceError::Query)?;
             transaction
                 .rollback()
                 .await
                 .map_err(PersistenceError::Query)?;
-            return Err(PersistenceError::UnknownOutboundJob);
+            return Err(if exists {
+                PersistenceError::StaleOutboundClaim
+            } else {
+                PersistenceError::UnknownOutboundJob
+            });
         }
-        sqlx::query(
-            "update telegram.notification_decisions decision
-             set outcome = case job.state
-                               when 'sent' then 'delivered'
-                               when 'retry_wait' then 'retry_wait'
-                               when 'failed_permanent' then 'failed_permanent'
-                               else decision.outcome
-                           end,
-                 updated_at = to_timestamp($2)
-             from telegram.outbound_jobs job
-             where job.id = $1
-               and decision.outbound_job_id = job.id",
-        )
-        .bind(id)
-        .bind(now)
-        .execute(&mut *transaction)
-        .await
-        .map_err(PersistenceError::Query)?;
+        settle_notification(&mut transaction, id, now).await?;
         transaction.commit().await.map_err(PersistenceError::Query)
     }
 
@@ -513,6 +569,66 @@ impl Database {
         .await
         .map_err(PersistenceError::Query)
     }
+}
+
+async fn settle_notification(
+    transaction: &mut Transaction<'_, Postgres>,
+    id: Uuid,
+    now: i64,
+) -> Result<(), PersistenceError> {
+    sqlx::query(
+        "update telegram.notification_decisions decision
+         set outcome = case job.state
+                           when 'sent' then 'delivered'
+                           when 'retry_wait' then 'retry_wait'
+                           when 'failed_permanent' then 'failed_permanent'
+                           when 'outcome_unknown' then 'outcome_unknown'
+                           else decision.outcome
+                       end,
+             updated_at = to_timestamp($2)
+         from telegram.outbound_jobs job
+         where job.id = $1 and decision.outbound_job_id = job.id",
+    )
+    .bind(id)
+    .bind(now)
+    .execute(&mut **transaction)
+    .await
+    .map_err(PersistenceError::Query)?;
+    Ok(())
+}
+
+async fn quarantine_expired_sends(
+    transaction: &mut Transaction<'_, Postgres>,
+    now: i64,
+) -> Result<(), PersistenceError> {
+    let quarantined: Vec<Uuid> = sqlx::query_scalar(
+        "update telegram.outbound_jobs
+         set state = 'outcome_unknown',
+             lease_expires_at = null,
+             last_error_class = 'process_exit_unknown',
+             updated_at = to_timestamp($1)
+         where state = 'sending' and kind = 'send_message'
+           and lease_expires_at <= to_timestamp($1)
+         returning id",
+    )
+    .bind(now)
+    .fetch_all(&mut **transaction)
+    .await
+    .map_err(PersistenceError::Query)?;
+    if quarantined.is_empty() {
+        return Ok(());
+    }
+    sqlx::query(
+        "update telegram.notification_decisions
+         set outcome = 'outcome_unknown', updated_at = to_timestamp($2)
+         where outbound_job_id = any($1)",
+    )
+    .bind(&quarantined)
+    .bind(now)
+    .execute(&mut **transaction)
+    .await
+    .map_err(PersistenceError::Query)?;
+    Ok(())
 }
 
 /// Insert one outbound job inside a caller-owned atomic persistence operation.
@@ -565,6 +681,7 @@ pub(crate) async fn insert_outbound_job(
 async fn settle_terminal(
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     id: Uuid,
+    claim_attempt: i32,
     now: i64,
     state: OutboundJobState,
     error_class: Option<&String>,
@@ -575,12 +692,13 @@ async fn settle_terminal(
              last_error_class = $3,
              lease_expires_at = null,
              updated_at = to_timestamp($4)
-         where id = $1",
+         where id = $1 and state = 'sending' and attempts = $5",
     )
     .bind(id)
     .bind(state.as_str())
     .bind(error_class)
     .bind(now)
+    .bind(claim_attempt)
     .execute(&mut **transaction)
     .await
     .map_err(PersistenceError::Query)

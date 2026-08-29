@@ -99,7 +99,9 @@ The dispatcher owns everything Telegram sends. Every `sendMessage`/`editMessageT
 in `telegram.outbound_jobs` (`ready`), claimed strictly FIFO per chat with one job in flight per
 chat; a global token bucket and a per-chat minimum interval gate each wire call; `Retry-After`
 reschedules authoritatively and cools the chat; transient failures retry with capped jittered
-backoff to a bounded attempt count and then dead-letter as `failed_permanent`; permanent Bot API
+backoff to a bounded attempt count and then dead-letter as `failed_permanent`; a transport-unknown
+`sendMessage` is quarantined as `outcome_unknown` and never automatically replayed, while an
+expired idempotent edit remains reclaimable; permanent Bot API
 answers settle immediately, and a permanent edit failure unbinds so the next revision sends fresh.
 Edits carry revisions: stale ones are superseded before any wire call and identical re-renders are
 no-ops via content hash, with the Bot API's `message is not modified` counted as success.

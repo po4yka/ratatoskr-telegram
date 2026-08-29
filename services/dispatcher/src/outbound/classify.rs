@@ -32,6 +32,8 @@ pub enum Classified {
     },
     /// A failure worth bounded retries before dead-lettering.
     Transient,
+    /// No provider evidence proves whether the write was applied.
+    OutcomeUnknown,
     /// A failure no retry can fix; dead-letters immediately under its safe class.
     Permanent {
         /// The closed, content-free label recorded on the job row.
@@ -135,18 +137,17 @@ fn shape_of(error: &BotApiError) -> FailureShape {
 /// Design D5's table: shape in, decision out.
 fn classify_shape(shape: &FailureShape) -> Classified {
     match shape {
-        // Transport and local-file failures carry no information about the payload; bounded
-        // backoff is the honest answer, and the attempt bound dead-letters stubborn ones.
-        FailureShape::Network | FailureShape::Io | FailureShape::Unknown => Classified::Transient,
+        // Transport and local-file failures carry no proof that the write was not applied.
+        FailureShape::Network | FailureShape::Io | FailureShape::Unknown => {
+            Classified::OutcomeUnknown
+        }
         FailureShape::RateLimited { retry_after_secs } => Classified::RateLimited {
             retry_after_secs: *retry_after_secs,
         },
         // Their reply to us did not parse or our request did not parse to them: re-sending
         // identical bytes storms without new information, so this is treated as our payload
         // problem and dead-letters.
-        FailureShape::Json => Classified::Permanent {
-            class: PermanentClass::InvalidPayload,
-        },
+        FailureShape::Json => Classified::OutcomeUnknown,
         // v1 dead-letters migrations and counts them; following the supergroup id is deferred to
         // its own task rather than improvised here.
         FailureShape::ChatMigrated => Classified::Permanent {
@@ -231,18 +232,18 @@ mod tests {
     }
 
     #[test]
-    fn network_error_is_transient_within_bounds() {
+    fn network_error_has_unknown_application_outcome() {
         assert_eq!(
             classify_shape(&FailureShape::Network),
-            Classified::Transient,
-            "transport failures retry with backoff until the attempt bound"
+            Classified::OutcomeUnknown,
+            "transport failures do not prove whether a write was applied"
         );
     }
 
     #[test]
-    fn io_failure_is_transient_too() {
+    fn io_failure_has_unknown_application_outcome_too() {
         let error = BotApiError::Io(Arc::new(std::io::Error::other("synthetic io failure")));
-        assert_eq!(classify(&error), Classified::Transient);
+        assert_eq!(classify(&error), Classified::OutcomeUnknown);
     }
 
     #[test]
@@ -360,13 +361,11 @@ mod tests {
     }
 
     #[test]
-    fn unparseable_reply_is_our_payload_problem() {
+    fn unparseable_reply_has_unknown_application_outcome() {
         assert_eq!(
             classify(&BotApiError::Json),
-            Classified::Permanent {
-                class: PermanentClass::InvalidPayload
-            },
-            "a response we cannot parse will not parse differently on retry"
+            Classified::OutcomeUnknown,
+            "an unparseable response cannot prove whether the request was applied"
         );
     }
 
@@ -394,11 +393,11 @@ mod tests {
     }
 
     #[test]
-    fn unknown_taxonomy_variant_defaults_to_transient() {
+    fn unknown_taxonomy_variant_defaults_to_unknown_outcome() {
         assert_eq!(
             classify_shape(&FailureShape::Unknown),
-            Classified::Transient,
-            "variants added upstream after this table get the conservative default"
+            Classified::OutcomeUnknown,
+            "variants added upstream after this table cannot prove non-application"
         );
     }
 }

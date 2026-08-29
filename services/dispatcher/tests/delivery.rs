@@ -213,13 +213,11 @@ async fn job_row(db: &TestDatabase, id: Uuid) -> (String, Option<String>, Option
     .expect("job row")
 }
 
-/// A network-classified failure the way production receives it: a transport-level error that
-/// classifies as transient. (`reqwest::Error` cannot be constructed in-process, so the fake uses
-/// the taxonomy's other transport variant, which the classifier treats identically.)
-fn transport_failure() -> BotApiError {
-    BotApiError::Io(Arc::new(std::io::Error::other(
-        "synthetic transport failure",
-    )))
+/// A provider response that proves the request was refused but is not a known permanent class.
+fn definite_transient_refusal() -> BotApiError {
+    BotApiError::Api {
+        description: "Internal Server Error: retry later".to_owned(),
+    }
 }
 
 /// Chat A delivers its three jobs strictly in enqueue order while chats B and C interleave, two
@@ -375,7 +373,10 @@ async fn transient_failure_backs_off_then_dead_letters_at_bound() {
     let db = database().await;
     let job = enqueue(&db, 500, OutboundJobKind::SendMessage, "flaky", None, None).await;
 
-    let fake = FakeBotApi::new(VecDeque::from([transport_failure(), transport_failure()]));
+    let fake = FakeBotApi::new(VecDeque::from([
+        definite_transient_refusal(),
+        definite_transient_refusal(),
+    ]));
     let clock = FakeClock::at(T0);
     let limiter = Arc::new(DeliveryLimiter::new(30, 0));
     let sender = make_sender(
@@ -488,7 +489,7 @@ fn delivery_outcomes_are_countable_without_content() {
             None,
         )
         .await;
-        let fake = FakeBotApi::new(VecDeque::from([transport_failure()]));
+        let fake = FakeBotApi::new(VecDeque::from([definite_transient_refusal()]));
         let sender = make_sender(
             &db,
             Arc::clone(&fake),

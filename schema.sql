@@ -205,11 +205,14 @@ create table telegram.outbound_jobs (
     notification_created_at timestamptz,
     state            text        not null default 'ready'
                      check (state in ('planned', 'ready', 'sending', 'sent', 'retry_wait',
-                                      'superseded', 'failed_permanent', 'cancelled')),
+                                      'superseded', 'failed_permanent', 'outcome_unknown',
+                                      'cancelled')),
     attempts         integer     not null default 0,
     next_attempt_at  timestamptz not null default now(),
     lease_expires_at timestamptz,
+    acknowledged_message_id bigint,
     last_error_class text,
+    recovery_of      uuid        references telegram.outbound_jobs(id),
     created_at       timestamptz not null default now(),
     updated_at       timestamptz not null default now(),
     check ((delivery_class = 'notification') = (notification_id is not null)),
@@ -243,7 +246,7 @@ comment on column telegram.outbound_jobs.payload is
 
 comment on column telegram.outbound_jobs.state is
     'ARCHITECTURE.md §18.1 job-state tokens: planned -> ready -> sending -> sent, plus '
-    'retry_wait, superseded, failed_permanent, cancelled.';
+    'retry_wait, superseded, failed_permanent, outcome_unknown, cancelled.';
 
 comment on column telegram.outbound_jobs.last_error_class is
     'A closed safe failure-class label recorded at dead-lettering; never provider error text.';
@@ -329,7 +332,7 @@ create table telegram.notification_decisions (
                        check (class ~ '^[a-z][a-z0-9_-]{0,31}$'),
     outcome            text        not null
                        check (outcome in ('suppressed', 'deferred', 'enqueued', 'delivered',
-                                          'retry_wait', 'failed_permanent')),
+                                          'retry_wait', 'failed_permanent', 'outcome_unknown')),
     outbound_job_id    uuid        references telegram.outbound_jobs(id),
     release_at         timestamptz,
     decided_at         timestamptz not null,

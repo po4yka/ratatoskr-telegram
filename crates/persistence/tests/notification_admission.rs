@@ -249,7 +249,13 @@ async fn sender_settlement_updates_the_linked_notification_decision() {
     .expect("decision link");
     assert_eq!(linked_job, Some(job.id));
     test.database
-        .settle_outbound_job(job.id, AT_2300_UTC + 1, 5, &DeliveryOutcome::Sent)
+        .settle_outbound_job(
+            job.id,
+            job.attempts,
+            AT_2300_UTC + 1,
+            5,
+            &DeliveryOutcome::Sent,
+        )
         .await
         .expect("settlement");
     let outcome: String = sqlx::query_scalar(

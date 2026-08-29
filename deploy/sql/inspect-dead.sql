@@ -8,9 +8,9 @@ select bot_id::text || '/' || update_id::text as identifier,
   from telegram.updates
  where :'kind' in ('updates', 'all') and state = 'failed'
 union all
-select id::text, updated_at, attempts, coalesce(last_error_class, state), correlation_id
+select id::text, updated_at, attempts, coalesce(last_error_class, state), null::text
   from telegram.outbound_jobs
- where :'kind' in ('outbound', 'all') and state = 'failed_permanent'
+ where :'kind' in ('outbound', 'all') and state in ('failed_permanent', 'outcome_unknown')
 union all
 select notification_id::text, updated_at, null::integer, outcome, transport_event_id::text
   from telegram.notification_decisions

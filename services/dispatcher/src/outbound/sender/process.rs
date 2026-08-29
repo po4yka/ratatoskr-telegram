@@ -6,7 +6,9 @@
 
 use tracing::Instrument as _;
 
-use telegram_persistence::outbound_jobs::{DeliveryOutcome, OutboundJobKind, QueuedOutboundJob};
+use telegram_persistence::outbound_jobs::{
+    AcknowledgedMethod, DeliveryOutcome, OutboundJobKind, QueuedOutboundJob,
+};
 
 use crate::outbound::classify::{Classified, PermanentClass, classify};
 use crate::outbound::limiter::RateDecision;
@@ -24,6 +26,15 @@ enum WireAction {
     },
 }
 
+impl WireAction {
+    const fn method(self) -> AcknowledgedMethod {
+        match self {
+            Self::Send => AcknowledgedMethod::SendMessage,
+            Self::Edit { .. } => AcknowledgedMethod::EditMessageText,
+        }
+    }
+}
+
 impl OutboundSender {
     /// Process one claimed job end to end, under a span that names the job without any chat or
     /// content fields.
@@ -39,9 +50,25 @@ impl OutboundSender {
 
     async fn process_inner(&self, job: QueuedOutboundJob) -> Result<(), SenderError> {
         match job.kind {
-            OutboundJobKind::SendMessage => self.deliver_and_settle(&job, WireAction::Send).await,
+            OutboundJobKind::SendMessage => self.process_send(job).await,
             OutboundJobKind::EditMessageText => self.process_edit(job).await,
         }
+    }
+
+    async fn process_send(&self, job: QueuedOutboundJob) -> Result<(), SenderError> {
+        if job.recovery_of.is_some()
+            && let (Some(operation_id), Some(revision)) = (job.operation_id, job.revision)
+            && let Some(binding) = self
+                .database
+                .find_binding(operation_id, job.chat_id)
+                .await?
+            && (binding.last_rendered_revision > revision
+                || (binding.last_rendered_revision == revision && binding.message_id.is_some()))
+        {
+            tracing::info!(class = "stale_recovery", "a newer durable render won");
+            return self.settle(&job, DeliveryOutcome::SupersededStale).await;
+        }
+        self.deliver_and_settle(&job, WireAction::Send).await
     }
 
     /// Resolve an edit job against its binding before anything touches the wire.
@@ -113,6 +140,9 @@ impl OutboundSender {
         }
 
         let now = self.clock.now_secs();
+        self.database
+            .prepare_outbound_method(job, action.method(), now)
+            .await?;
         // The histogram covers the wire call only: claim, guards, and settlement are queue work,
         // not delivery latency.
         let started = std::time::Instant::now();
@@ -129,65 +159,43 @@ impl OutboundSender {
 
         match result {
             Ok(sent) => {
-                self.apply_success(job, action, sent.message_id, now)
-                    .await?;
-                self.settle(job, DeliveryOutcome::Sent).await
+                self.record_known_ack(job, action, sent.message_id, now)
+                    .await
             }
-            Err(error) => self.apply_failure(job, classify(&error), now).await,
+            Err(error) => self.apply_failure(job, action, classify(&error), now).await,
         }
     }
 
-    /// Binding effects of an acknowledged delivery. Provider message ids are written only here —
-    /// after the Bot API said yes, never from an attempt still in flight.
-    async fn apply_success(
+    /// Retain a known provider ack and retry only its idempotent local transaction.
+    async fn record_known_ack(
         &self,
         job: &QueuedOutboundJob,
         action: WireAction,
         message_id: i64,
         now: i64,
     ) -> Result<(), SenderError> {
-        if let Some(dialogue_id) = job
-            .correlation_id
-            .as_deref()
-            .and_then(|value| value.strip_prefix("telegram-dialogue:"))
-            .and_then(|value| value.parse().ok())
-        {
-            let _ = self
-                .database
-                .stamp_callback_message(dialogue_id, job.bot_id, job.chat_id, message_id, now)
-                .await?;
-        }
-        let Some(operation_id) = job.operation_id else {
-            // A generic send names no operation; it creates no binding traffic at all.
-            return Ok(());
-        };
-        match (job.kind, action) {
-            // A fresh send establishes or rebinds the binding with the returned id.
-            (OutboundJobKind::SendMessage, _)
-            | (OutboundJobKind::EditMessageText, WireAction::Send) => {
-                self.database
-                    .ensure_operation_binding(job.bot_id, operation_id, job.chat_id)
-                    .await?;
-                self.database
-                    .record_send_acknowledged(
-                        job.bot_id,
-                        operation_id,
-                        job.chat_id,
-                        message_id,
-                        now,
-                    )
-                    .await?;
+        for attempt in 0..3 {
+            match self
+                .acknowledgement_store
+                .record(job, action.method(), message_id, now)
+                .await
+            {
+                Ok(()) => {
+                    crate::notifications::record_delivery_outcome(
+                        job.notification_class.as_deref(),
+                        job.attempts,
+                        i32::try_from(self.limits.max_attempts).unwrap_or(i32::MAX),
+                        &DeliveryOutcome::Sent,
+                    );
+                    return Ok(());
+                }
+                Err(error) => {
+                    if attempt == 2 {
+                        return Err(SenderError::Persistence(error));
+                    }
+                    tokio::task::yield_now().await;
+                }
             }
-            // A normal edit keeps its message id; only the render state moves below.
-            (OutboundJobKind::EditMessageText, WireAction::Edit { .. }) => {}
-        }
-        if let Some(revision) = job.revision {
-            // `false` means a newer render already won the race; the Sent settlement stands and
-            // the stale advance is dropped as harmless.
-            let _ = self
-                .database
-                .advance_render(operation_id, job.chat_id, revision, now)
-                .await?;
         }
         Ok(())
     }
@@ -196,6 +204,7 @@ impl OutboundSender {
     async fn apply_failure(
         &self,
         job: &QueuedOutboundJob,
+        action: WireAction,
         decision: Classified,
         now: i64,
     ) -> Result<(), SenderError> {
@@ -231,7 +240,16 @@ impl OutboundSender {
                 self.settle(job, DeliveryOutcome::RetryWithBackoff { delay_secs })
                     .await
             }
-            Classified::Transient | Classified::Sent => {
+            Classified::OutcomeUnknown if matches!(action, WireAction::Send) => {
+                self.settle(
+                    job,
+                    DeliveryOutcome::OutcomeUnknown {
+                        class: "transport_unknown".to_owned(),
+                    },
+                )
+                .await
+            }
+            Classified::OutcomeUnknown | Classified::Transient | Classified::Sent => {
                 // `Sent` is unreachable from `classify`; a bounded retry beats inventing a
                 // settlement for a variant that should never arrive.
                 let exhausted = i64::from(job.attempts) >= i64::from(self.limits.max_attempts);
@@ -298,7 +316,13 @@ impl OutboundSender {
     ) -> Result<(), SenderError> {
         let max_attempts = i32::try_from(self.limits.max_attempts).unwrap_or(i32::MAX);
         self.database
-            .settle_outbound_job(job.id, self.clock.now_secs(), max_attempts, &outcome)
+            .settle_outbound_job(
+                job.id,
+                job.attempts,
+                self.clock.now_secs(),
+                max_attempts,
+                &outcome,
+            )
             .await?;
         crate::notifications::record_delivery_outcome(
             job.notification_class.as_deref(),

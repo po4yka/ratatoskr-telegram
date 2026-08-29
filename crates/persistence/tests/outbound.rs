@@ -540,7 +540,7 @@ fn claim_returns_strict_per_chat_fifo_heads_only() {
         );
 
         // Settling A1 terminally frees the chat: A2 becomes the next head.
-        db.settle_outbound_job(a1, T0 + 4, 3, &DeliveryOutcome::Sent)
+        db.settle_outbound_job(a1, first.attempts, T0 + 4, 3, &DeliveryOutcome::Sent)
             .await
             .expect("the settlement of a1");
         let fifth = db
@@ -610,50 +610,6 @@ fn supersede_marks_stale_ready_jobs_without_touching_in_flight() {
     });
 }
 
-/// A sending row whose lease has expired is reclaimed by a later claim; a fresh lease is not.
-#[test]
-fn lease_expiry_reclaims_sending_rows_after_ttl() {
-    let runtime = tokio::runtime::Runtime::new().expect("test runtime");
-    runtime.block_on(async {
-        let test = database().await;
-        let db = &test.database;
-
-        let id = db
-            .enqueue_outbound_job(&send_job(CHAT_A, "body", "h"), T0)
-            .await
-            .expect("the enqueue");
-
-        let claimed = db
-            .claim_due_outbound_job(T0, 30)
-            .await
-            .expect("the first claim")
-            .expect("the job");
-        assert_eq!(claimed.id, id);
-        assert_eq!(claimed.attempts, 1);
-
-        // One second before the lease runs out: nothing else is claimable.
-        let fresh = db
-            .claim_due_outbound_job(T0 + 29, 30)
-            .await
-            .expect("the mid-lease claim");
-        assert!(fresh.is_none(), "a fresh lease must not be reclaimed early");
-
-        // Past the lease: the same job comes back, attempts counted across the crash boundary.
-        let reclaimed = db
-            .claim_due_outbound_job(T0 + 31, 30)
-            .await
-            .expect("the reclaiming claim")
-            .expect("the expired lease to be reclaimed");
-        assert_eq!(reclaimed.id, id);
-        assert_eq!(
-            reclaimed.attempts, 2,
-            "attempts must count every claim, including reclaims"
-        );
-
-        test.cleanup().await.expect("cleanup");
-    });
-}
-
 /// A transient outcome reschedules into `retry_wait` at now + delay, keeping the attempt count
 /// the claim produced.
 #[test]
@@ -676,6 +632,7 @@ fn retry_reschedules_with_backoff_state() {
 
         db.settle_outbound_job(
             id,
+            claimed.attempts,
             T0 + 5,
             3,
             &DeliveryOutcome::RetryWithBackoff { delay_secs: 120 },
@@ -718,12 +675,14 @@ fn dead_letter_after_bound_attempts() {
             .expect("the enqueue");
 
         // Attempt one fails transiently inside the bound: retry_wait.
-        db.claim_due_outbound_job(T0, 30)
+        let first = db
+            .claim_due_outbound_job(T0, 30)
             .await
             .expect("the first claim")
             .expect("the job");
         db.settle_outbound_job(
             id,
+            first.attempts,
             T0 + 1,
             MAX_ATTEMPTS,
             &DeliveryOutcome::RetryWithBackoff { delay_secs: 10 },
@@ -734,12 +693,14 @@ fn dead_letter_after_bound_attempts() {
 
         // Attempt two lands ON the bound: the next transient outcome dead-letters instead of
         // scheduling an unbounded retry loop.
-        db.claim_due_outbound_job(T0 + 11, 30)
+        let second = db
+            .claim_due_outbound_job(T0 + 11, 30)
             .await
             .expect("the second claim")
             .expect("the rescheduled job");
         db.settle_outbound_job(
             id,
+            second.attempts,
             T0 + 12,
             MAX_ATTEMPTS,
             &DeliveryOutcome::RetryWithBackoff { delay_secs: 10 },
@@ -778,11 +739,12 @@ fn terminal_success_settles_sent() {
             .enqueue_outbound_job(&send_job(CHAT_A, "body", "h"), T0)
             .await
             .expect("the enqueue");
-        db.claim_due_outbound_job(T0, 30)
+        let sent = db
+            .claim_due_outbound_job(T0, 30)
             .await
             .expect("the claim")
             .expect("the job");
-        db.settle_outbound_job(sent_id, T0 + 1, 3, &DeliveryOutcome::Sent)
+        db.settle_outbound_job(sent_id, sent.attempts, T0 + 1, 3, &DeliveryOutcome::Sent)
             .await
             .expect("the sent settlement");
         assert_eq!(job_state(db, sent_id).await, "sent");
@@ -791,13 +753,20 @@ fn terminal_success_settles_sent() {
             .enqueue_outbound_job(&edit_job(CHAT_B, uuid::Uuid::now_v7(), 9), T0)
             .await
             .expect("the enqueue");
-        db.claim_due_outbound_job(T0 + 2, 30)
+        let noop = db
+            .claim_due_outbound_job(T0 + 2, 30)
             .await
             .expect("the claim")
             .expect("the job");
-        db.settle_outbound_job(noop_id, T0 + 3, 3, &DeliveryOutcome::NotModified)
-            .await
-            .expect("the not-modified settlement");
+        db.settle_outbound_job(
+            noop_id,
+            noop.attempts,
+            T0 + 3,
+            3,
+            &DeliveryOutcome::NotModified,
+        )
+        .await
+        .expect("the not-modified settlement");
         assert_eq!(
             job_state(db, noop_id).await,
             "sent",

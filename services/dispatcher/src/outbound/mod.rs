@@ -14,5 +14,6 @@ pub use crate::outbound::classify::{Classified, PermanentClass, classify};
 pub use crate::outbound::clock::{Clock, SystemClock};
 pub use crate::outbound::limiter::{DeliveryLimiter, RateDecision};
 pub use crate::outbound::sender::{
-    BotApiSink, ClientSink, OutboundSender, SenderError, SenderLimits, SentMessage,
+    AcknowledgementFuture, AcknowledgementStore, BotApiSink, ClientSink, OutboundSender,
+    SenderError, SenderLimits, SentMessage,
 };
