@@ -132,3 +132,42 @@ async fn sessions_are_exchanged_once_and_refreshed_before_expiry() {
         "concurrent callers must share one exchange"
     );
 }
+
+#[tokio::test]
+async fn credential_invalidation_is_compare_and_remove() {
+    let (base_url, exchanges) = exchange_harness().await;
+    let clock = FakeClock::starting_now();
+    let source = SessionSource::new(
+        Client::new(&base_url, Duration::from_secs(5)).expect("client"),
+        issuer(),
+        Box::new(clock.clone()),
+    );
+
+    let first = source.credential(SUBJECT).await.expect("first credential");
+    clock.set_to(START_SECS + 13 * 3_600);
+    let refreshed = source
+        .credential(SUBJECT)
+        .await
+        .expect("refreshed credential");
+
+    assert!(
+        !source.invalidate_credential(SUBJECT, &first).await,
+        "a rejected old credential cannot delete the concurrent refresh"
+    );
+    assert_eq!(
+        source.credential(SUBJECT).await.expect("cached refresh"),
+        refreshed
+    );
+    assert_eq!(exchanges.load(Ordering::SeqCst), 2);
+
+    assert!(
+        source.invalidate_credential(SUBJECT, &refreshed).await,
+        "the exact rejected credential is removed"
+    );
+    let after_rejection = source
+        .credential(SUBJECT)
+        .await
+        .expect("replacement credential");
+    assert_ne!(after_rejection, refreshed);
+    assert_eq!(exchanges.load(Ordering::SeqCst), 3);
+}

@@ -6,7 +6,7 @@
 //! session source submissions use; the operation's owning Telegram user comes from its deep-link
 //! intent record, which every accepted capture wrote.
 
-use std::collections::HashMap;
+use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -33,11 +33,9 @@ pub struct OperationFollower {
     database: telegram_persistence::Database,
     feed: Sender<OperationEvent>,
     sessions: Arc<platform_api::session::SessionSource>,
-    /// Streams already opened, across scans. The scan task is its only writer.
-    in_flight: Arc<tokio::sync::Mutex<HashMap<Uuid, bool>>>,
-    /// Operations whose follow has ended one way or another this process lifetime; they are
-    /// never reopened by a later scan.
-    finished: Arc<tokio::sync::Mutex<std::collections::HashSet<Uuid>>>,
+    /// Operations currently owned by a child task. Durable binding state, not this set, decides
+    /// whether a later scan may follow an operation again.
+    in_flight: Arc<tokio::sync::Mutex<HashSet<Uuid>>>,
 }
 
 impl OperationFollower {
@@ -53,7 +51,6 @@ impl OperationFollower {
             feed,
             sessions,
             in_flight: Arc::new(tokio::sync::Mutex::default()),
-            finished: Arc::new(tokio::sync::Mutex::default()),
         }
     }
 
@@ -69,6 +66,7 @@ impl OperationFollower {
             if *shutdown.borrow() || admission_closed.load(std::sync::atomic::Ordering::Acquire) {
                 break;
             }
+            while tasks.try_join_next().is_some() {}
             self.scan_once(&mut tasks, &shutdown, &admission, &admission_closed)
                 .await;
             tokio::select! {
@@ -78,14 +76,15 @@ impl OperationFollower {
                         break;
                     }
                 }
-                completed = tasks.join_next(), if !tasks.is_empty() => {
-                    let _ = completed;
-                }
                 () = tokio::time::sleep(Duration::from_secs(SCAN_INTERVAL_SECS)) => {}
             }
         }
         tasks.abort_all();
         while tasks.join_next().await.is_some() {}
+        // An aborted child cannot run its post-await cleanup. Clear the process-local guard only
+        // after every owned child has joined so a sequential restart of this follower can resume
+        // the same durable nonterminal bindings.
+        self.in_flight.lock().await.clear();
     }
 
     /// Diff the non-terminal bindings against the in-flight set and open what is missing.
@@ -97,7 +96,13 @@ impl OperationFollower {
         admission_closed: &std::sync::atomic::AtomicBool,
     ) {
         let rows = match sqlx::query_scalar::<_, Uuid>(
-            "select distinct operation_id from telegram.message_bindings where not terminal",
+            "select operation_id
+             from (
+                 select distinct on (operation_id) operation_id, terminal
+                 from telegram.message_bindings
+                 order by operation_id, chat_id
+             ) as canonical_bindings
+             where not terminal",
         )
         .fetch_all(self.database.pool())
         .await
@@ -114,8 +119,6 @@ impl OperationFollower {
         }
 
         let mut inflight = self.in_flight.lock().await;
-        let finished = self.finished.lock().await;
-        inflight.retain(|_, done| !*done);
         for operation_id in rows {
             let _admission = admission.read().await;
             if *shutdown.borrow() || admission_closed.load(std::sync::atomic::Ordering::Acquire) {
@@ -124,10 +127,10 @@ impl OperationFollower {
             if inflight.len() >= MAX_STREAMS {
                 break;
             }
-            if inflight.contains_key(&operation_id) || finished.contains(&operation_id) {
+            if inflight.contains(&operation_id) {
                 continue;
             }
-            inflight.insert(operation_id, false);
+            inflight.insert(operation_id);
             let follower = self.clone();
             tasks.spawn(async move {
                 metrics::counter!(
@@ -136,7 +139,6 @@ impl OperationFollower {
                 )
                 .increment(1);
                 follower.follow_one(operation_id).await;
-                follower.finished.lock().await.insert(operation_id);
                 follower.in_flight.lock().await.remove(&operation_id);
             });
         }
@@ -156,50 +158,50 @@ impl OperationFollower {
         true
     }
 
-    /// Follow one operation until its terminal frame, reconnecting with `Last-Event-ID`.
+    /// Follow one operation for one bounded attempt, reconnecting with `Last-Event-ID`.
+    /// Any nonterminal exit remains eligible for a later database scan.
     async fn follow_one(&self, operation_id: Uuid) {
-        let owner = match self
-            .database
-            .find_operation_intent_owner(operation_id)
-            .await
-        {
-            Ok(Some(owner)) => owner.to_string(),
-            Ok(None) => {
-                // A binding without an intent predates this flow or lost its row; there is no
-                // principal to authenticate as, so following it would be guessing.
-                tracing::debug!(
-                    operation = %operation_id,
-                    class = "follow_no_owner",
-                    "no intent names this operation's owner; not followed"
-                );
-                return;
-            }
-            Err(error) => {
-                tracing::warn!(
-                    error = %error,
-                    class = "follow_owner_lookup_failed",
-                    "the intent lookup failed"
-                );
-                return;
-            }
-        };
-        let session = match self.sessions.credential(&owner).await {
-            Ok(session) => session,
-            Err(error) => {
-                tracing::warn!(
-                    error = %error,
-                    class = "follow_session_failed",
-                    "a session could not be exchanged"
-                );
-                return;
-            }
-        };
-
         let mut last_event_id: Option<Uuid> = None;
         // Three consecutive clean closes with no terminal frame mean an operation Platform is
         // not advancing; stop rather than poll it forever.
         let mut clean_closes = 0u32;
         loop {
+            let owner = match self
+                .database
+                .find_operation_intent_owner(operation_id)
+                .await
+            {
+                Ok(Some(owner)) => owner.to_string(),
+                Ok(None) => {
+                    // A binding without an intent has no principal to authenticate as. Return it
+                    // to the bounded scan loop rather than inventing ownership or completion.
+                    tracing::debug!(
+                        operation = %operation_id,
+                        class = "follow_no_owner",
+                        "no intent names this operation's owner; follow deferred"
+                    );
+                    return;
+                }
+                Err(error) => {
+                    tracing::warn!(
+                        error = %error,
+                        class = "follow_owner_lookup_failed",
+                        "the intent lookup failed"
+                    );
+                    return;
+                }
+            };
+            let session = match self.sessions.credential(&owner).await {
+                Ok(session) => session,
+                Err(error) => {
+                    tracing::warn!(
+                        error = %error,
+                        class = "follow_session_failed",
+                        "a session could not be exchanged"
+                    );
+                    return;
+                }
+            };
             let resume = last_event_id.map(|id| id.to_string());
             let opened = self
                 .sessions
@@ -209,6 +211,9 @@ impl OperationFollower {
             let mut stream = match opened {
                 Ok(stream) => stream,
                 Err(error) => {
+                    if matches!(&error, platform_api::PlatformError::Unauthenticated) {
+                        self.sessions.invalidate_credential(&owner, &session).await;
+                    }
                     tracing::warn!(
                         error = %error,
                         class = "follow_open_failed",
@@ -232,7 +237,40 @@ impl OperationFollower {
                 .await
             {
                 Pump::KeepFollowing => {}
-                Pump::Stop | Pump::TerminalThenStop => return,
+                Pump::Stop => return,
+                Pump::ObservedTerminal => {
+                    self.wait_for_durable_terminal(operation_id).await;
+                    return;
+                }
+            }
+            tokio::time::sleep(Duration::from_secs(RESUME_PAUSE_SECS)).await;
+        }
+    }
+
+    /// Retain in-flight ownership after enqueueing a terminal frame until the projection
+    /// consumer makes that outcome durable. This follower task is owned by the dispatcher and is
+    /// force-cancelled on shutdown, so a failed consumer cannot leak a detached task.
+    async fn wait_for_durable_terminal(&self, operation_id: Uuid) {
+        loop {
+            let terminal = sqlx::query_scalar::<_, bool>(
+                "select terminal
+                 from telegram.message_bindings
+                 where operation_id = $1
+                 order by chat_id
+                 limit 1",
+            )
+            .bind(operation_id)
+            .fetch_optional(self.database.pool())
+            .await;
+            match terminal {
+                Ok(Some(true) | None) => return,
+                Ok(Some(false)) => {}
+                Err(error) => tracing::warn!(
+                    error = %error,
+                    operation = %operation_id,
+                    class = "follow_terminal_confirmation_failed",
+                    "durable terminal state could not be confirmed"
+                ),
             }
             tokio::time::sleep(Duration::from_secs(RESUME_PAUSE_SECS)).await;
         }
@@ -272,7 +310,7 @@ impl OperationFollower {
             }
             if terminal {
                 tracing::debug!(operation = %operation_id, "a followed operation reached terminal");
-                return Pump::TerminalThenStop;
+                return Pump::ObservedTerminal;
             }
         }
     }
@@ -282,10 +320,10 @@ impl OperationFollower {
 enum Pump {
     /// Reopen the stream and keep following.
     KeepFollowing,
-    /// The frame flow ended for good this process lifetime.
+    /// This bounded attempt ended. Durable binding state decides whether a later scan resumes it.
     Stop,
-    /// A placeholder variant folded into `Stop` by construction above.
-    TerminalThenStop,
+    /// A terminal frame was admitted to the projection feed and awaits durable confirmation.
+    ObservedTerminal,
 }
 
 /// Map one wire frame onto the internal projection event. Status vocabularies are identical by

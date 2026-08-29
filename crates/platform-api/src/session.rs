@@ -106,6 +106,18 @@ impl SessionSource {
             .to_owned())
     }
 
+    /// Remove a rejected cached credential only when it is still the current entry.
+    pub async fn invalidate_credential(&self, subject: &str, rejected: &str) -> bool {
+        let mut cached = self.cached.lock().await;
+        let is_current = cached
+            .get(subject)
+            .is_some_and(|session| session.credential == rejected);
+        if is_current {
+            cached.remove(subject);
+        }
+        is_current
+    }
+
     /// Session credential plus the canonical internal user it authenticates.
     ///
     /// # Errors
