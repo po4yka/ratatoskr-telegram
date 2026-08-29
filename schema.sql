@@ -371,13 +371,20 @@ create table telegram.dialog_states (
                                                             'expired')),
     payload                jsonb       not null check (jsonb_typeof(payload) = 'object'),
     action_idempotency_key text        not null unique,
+    releasing_bot_id       bigint,
+    releasing_update_id    bigint,
     created_at             timestamptz not null,
     updated_at             timestamptz not null,
     expires_at             timestamptz not null,
     terminal_at            timestamptz,
     check (expires_at > created_at),
     check ((lifecycle = 'active') = (terminal_at is null)),
-    check ((lifecycle = 'completed') = (step = 'completed'))
+    check ((lifecycle = 'completed') = (step = 'completed')),
+    check ((releasing_bot_id is null) = (releasing_update_id is null)),
+    check ((step in ('submitting', 'completed')) =
+           (releasing_bot_id is not null and releasing_update_id is not null)),
+    foreign key (releasing_bot_id, releasing_update_id)
+        references telegram.updates(bot_id, update_id)
 );
 
 create index dialog_states_expiry_idx

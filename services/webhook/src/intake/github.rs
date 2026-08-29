@@ -7,7 +7,7 @@ use ratatoskr_github_contracts::{
     RepositoryActionSkipReason, RepositoryDesiredBackupOutcome, RepositoryMetadataOutcome,
     RepositoryPreviewResponse, RepositoryProviderStarOutcome,
 };
-use telegram_persistence::dialogues::{CallbackRefusal, DecisionTransition};
+use telegram_persistence::dialogues::{CallbackRefusal, DecisionTransition, ReleasingUpdate};
 use telegram_telemetry::metrics::{
     TELEGRAM_DIALOGUE_TRANSITIONS_TOTAL, TELEGRAM_INTERACTION_TOKEN_PRESENTATIONS_TOTAL,
 };
@@ -16,6 +16,16 @@ use super::worker::CaptureContext;
 
 const DIALOGUE_TTL_SECS: i64 = 15 * 60;
 const ATTEMPTS: usize = 2;
+
+/// Durable worker disposition after processing one repository callback.
+pub(super) enum CallbackOutcome {
+    /// The callback and any result projection committed.
+    Processed,
+    /// The callback is permanently unusable or internally invalid.
+    Failed,
+    /// Confirmation released work whose external or local result remains uncertain.
+    Recoverable,
+}
 
 /// Parse exactly one canonical GitHub repository URL.
 pub(super) fn parse_repository_url(text: &str) -> Option<GitHubRepositoryUrl> {
@@ -212,29 +222,38 @@ async fn enqueue(
     dialogue_id: Option<uuid::Uuid>,
     now: i64,
 ) -> Result<(), telegram_persistence::PersistenceError> {
+    let job = message_job(bot_id, chat_id, text, reply_markup, dialogue_id)?;
+    database.enqueue_outbound_job(&job, now).await?;
+    Ok(())
+}
+
+fn message_job(
+    bot_id: i64,
+    chat_id: i64,
+    text: String,
+    reply_markup: Option<serde_json::Value>,
+    dialogue_id: Option<uuid::Uuid>,
+) -> Result<
+    telegram_persistence::outbound_jobs::NewOutboundJob,
+    telegram_persistence::PersistenceError,
+> {
     let payload = telegram_persistence::outbound_jobs::MessagePayload {
         text,
         parse_mode: Some("HTML".to_owned()),
         reply_markup,
     };
     let content_hash = payload.canonical()?;
-    database
-        .enqueue_outbound_job(
-            &telegram_persistence::outbound_jobs::NewOutboundJob {
-                bot_id,
-                chat_id,
-                kind: telegram_persistence::outbound_jobs::OutboundJobKind::SendMessage,
-                payload,
-                content_hash,
-                operation_id: None,
-                revision: None,
-                correlation_id: dialogue_id.map(|id| format!("telegram-dialogue:{id}")),
-                next_attempt_at: None,
-            },
-            now,
-        )
-        .await?;
-    Ok(())
+    Ok(telegram_persistence::outbound_jobs::NewOutboundJob {
+        bot_id,
+        chat_id,
+        kind: telegram_persistence::outbound_jobs::OutboundJobKind::SendMessage,
+        payload,
+        content_hash,
+        operation_id: None,
+        revision: None,
+        correlation_id: dialogue_id.map(|id| format!("telegram-dialogue:{id}")),
+        next_attempt_at: None,
+    })
 }
 
 fn transient(error: &platform_api::PlatformError) -> bool {
@@ -245,6 +264,25 @@ fn transient(error: &platform_api::PlatformError) -> bool {
             | platform_api::PlatformError::RateLimited
             | platform_api::PlatformError::ServerError { .. }
     )
+}
+
+fn recoverable_action_error(error: &platform_api::PlatformError) -> bool {
+    transient(error) || matches!(error, platform_api::PlatformError::Json(_))
+}
+
+const fn platform_failure_class(error: &platform_api::PlatformError) -> &'static str {
+    match error {
+        platform_api::PlatformError::Unauthenticated => "unauthenticated",
+        platform_api::PlatformError::NotFound => "not_found",
+        platform_api::PlatformError::Conflict => "conflict",
+        platform_api::PlatformError::ClientError { .. } => "client_error",
+        platform_api::PlatformError::MalformedFrame => "malformed_frame",
+        platform_api::PlatformError::Network(_) => "network",
+        platform_api::PlatformError::Timeout => "timeout",
+        platform_api::PlatformError::RateLimited => "rate_limited",
+        platform_api::PlatformError::ServerError { .. } => "server_error",
+        platform_api::PlatformError::Json(_) => "invalid_response",
+    }
 }
 
 async fn preview_with_retry(
@@ -387,7 +425,7 @@ async fn selection(
             .await?;
             Ok(Some(true))
         }
-        Err(CallbackRefusal::Invalid) => Ok(None),
+        Err(CallbackRefusal::Invalid | CallbackRefusal::Consumed) => Ok(None),
         Err(refusal) => {
             record_callback_token(callback_refusal_name(refusal));
             record_dialogue_transition(if refusal == CallbackRefusal::Expired {
@@ -431,6 +469,98 @@ async fn action_with_retry(
     Err(last.unwrap_or(platform_api::PlatformError::Timeout))
 }
 
+async fn finish_action_error(
+    database: &telegram_persistence::Database,
+    dialogue_id: uuid::Uuid,
+    releasing_update: ReleasingUpdate,
+    chat_id: i64,
+    error: platform_api::PlatformError,
+    now: i64,
+) -> Result<CallbackOutcome, telegram_persistence::PersistenceError> {
+    if recoverable_action_error(&error) {
+        return Ok(CallbackOutcome::Recoverable);
+    }
+    tracing::warn!(
+        class = platform_failure_class(&error),
+        "Platform permanently refused the confirmed repository action",
+    );
+    let job = message_job(
+        releasing_update.bot_id,
+        chat_id,
+        "<b>Repository action could not be accepted</b>\nNo success is claimed. Start again."
+            .to_owned(),
+        None,
+        Some(dialogue_id),
+    )?;
+    database
+        .complete_repository_dialogue_with_failure_job(dialogue_id, releasing_update, &job, now)
+        .await?;
+    record_dialogue_transition("completed_refusal");
+    Ok(CallbackOutcome::Processed)
+}
+
+async fn execute_confirmed_action(
+    database: &telegram_persistence::Database,
+    action: telegram_persistence::dialogues::ConfirmedAction,
+    releasing_update: ReleasingUpdate,
+    actor: i64,
+    chat: i64,
+    context: &CaptureContext,
+    now: i64,
+) -> Result<CallbackOutcome, telegram_persistence::PersistenceError> {
+    record_dialogue_transition("confirming_to_submitting");
+    let Ok(evidence) =
+        ConfirmationEvidenceRef::parse(&format!("telegram-confirmation:{}", action.dialogue_id))
+    else {
+        return Ok(CallbackOutcome::Failed);
+    };
+    let Ok(key) = RepositoryActionIdempotencyKey::parse(&action.idempotency_key) else {
+        return Ok(CallbackOutcome::Failed);
+    };
+    let dialogue_id = action.dialogue_id;
+    let Ok(request) = RepositoryActionRequest::new(
+        action.mode,
+        action.target,
+        action.account_ref,
+        evidence,
+        key,
+    ) else {
+        return Ok(CallbackOutcome::Failed);
+    };
+    let session = match context.sessions.credential(&actor.to_string()).await {
+        Ok(session) => session,
+        Err(error) => {
+            return finish_action_error(database, dialogue_id, releasing_update, chat, error, now)
+                .await;
+        }
+    };
+    let result = match action_with_retry(context, &session, &request).await {
+        Ok(result) => result,
+        Err(error) => {
+            return finish_action_error(database, dialogue_id, releasing_update, chat, error, now)
+                .await;
+        }
+    };
+    let job = message_job(
+        releasing_update.bot_id,
+        chat,
+        render_result(&result),
+        None,
+        Some(dialogue_id),
+    )?;
+    database
+        .complete_repository_dialogue_with_result_job(
+            dialogue_id,
+            releasing_update,
+            &result,
+            &job,
+            now,
+        )
+        .await?;
+    record_dialogue_transition("completed");
+    Ok(CallbackOutcome::Processed)
+}
+
 #[expect(
     clippy::too_many_arguments,
     reason = "the closed callback presentation is intentionally checked field-by-field"
@@ -438,15 +568,23 @@ async fn action_with_retry(
 async fn decision(
     database: &telegram_persistence::Database,
     bot_id: i64,
+    update_id: i64,
     actor: i64,
     chat: i64,
     message: i64,
     opaque: &str,
     context: &CaptureContext,
     now: i64,
-) -> Result<bool, telegram_persistence::PersistenceError> {
+) -> Result<CallbackOutcome, telegram_persistence::PersistenceError> {
     let transition = database
-        .consume_repository_decision(opaque, bot_id, actor, chat, message, now)
+        .consume_repository_decision(
+            opaque,
+            ReleasingUpdate { bot_id, update_id },
+            actor,
+            chat,
+            message,
+            now,
+        )
         .await?;
     let transition = match transition {
         Ok(transition) => {
@@ -470,9 +608,12 @@ async fn decision(
                 now,
             )
             .await?;
-            return Ok(true);
+            return Ok(CallbackOutcome::Processed);
         }
     };
+    if transition == DecisionTransition::AlreadyCompleted {
+        return Ok(CallbackOutcome::Processed);
+    }
     let DecisionTransition::Confirmed(action) = transition else {
         record_dialogue_transition("cancelled");
         enqueue(
@@ -485,72 +626,43 @@ async fn decision(
             now,
         )
         .await?;
-        return Ok(true);
+        return Ok(CallbackOutcome::Processed);
     };
-    record_dialogue_transition("confirming_to_submitting");
-    let Ok(evidence) =
-        ConfirmationEvidenceRef::parse(&format!("telegram-confirmation:{}", action.dialogue_id))
-    else {
-        return Ok(false);
-    };
-    let Ok(key) = RepositoryActionIdempotencyKey::parse(&action.idempotency_key) else {
-        return Ok(false);
-    };
-    let Ok(request) = RepositoryActionRequest::new(
-        action.mode,
-        action.target,
-        action.account_ref,
-        evidence,
-        key,
-    ) else {
-        return Ok(false);
-    };
-    let session = context.sessions.credential(&actor.to_string()).await.ok();
-    let result = match session {
-        Some(session) => action_with_retry(context, &session, &request).await.ok(),
-        None => None,
-    };
-    let Some(result) = result else {
-        enqueue(database, bot_id, chat, "<b>Repository action outcome unknown</b>\nThe confirmed request used one stable identity; no success is claimed. Try status later.".to_owned(), None, None, now).await?;
-        return Ok(false);
-    };
-    database
-        .complete_repository_dialogue(action.dialogue_id, &result, now)
-        .await?;
-    record_dialogue_transition("completed");
-    enqueue(
+    execute_confirmed_action(
         database,
-        bot_id,
+        action,
+        ReleasingUpdate { bot_id, update_id },
+        actor,
         chat,
-        render_result(&result),
-        None,
-        None,
+        context,
         now,
     )
-    .await?;
-    Ok(true)
+    .await
 }
 
 /// Process one recognized callback. Selection only prompts; only a confirmed token can submit.
 pub(super) async fn handle_callback(
     database: &telegram_persistence::Database,
     bot_id: i64,
+    update_id: i64,
     callback: &bot_api::CallbackQuery,
     context: &CaptureContext,
     now: i64,
-) -> bool {
+) -> CallbackOutcome {
     let Some((actor, chat, message, opaque)) = callback_message(callback) else {
         answer(context, callback).await;
-        return false;
+        return CallbackOutcome::Failed;
     };
     let selected = selection(database, bot_id, actor, chat, message, opaque, now).await;
     answer(context, callback).await;
     match selected {
-        Ok(Some(value)) => value,
-        Ok(None) => decision(database, bot_id, actor, chat, message, opaque, context, now)
-            .await
-            .unwrap_or(false),
-        Err(_) => false,
+        Ok(Some(true)) => CallbackOutcome::Processed,
+        Ok(Some(false)) | Err(_) => CallbackOutcome::Failed,
+        Ok(None) => decision(
+            database, bot_id, update_id, actor, chat, message, opaque, context, now,
+        )
+        .await
+        .unwrap_or(CallbackOutcome::Recoverable),
     }
 }
 

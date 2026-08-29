@@ -3,6 +3,7 @@
 mod repository_decision;
 mod repository_mode;
 
+pub use repository_decision::{CompletionOutcome, ReleasingUpdate};
 use repository_mode::{repository_mode, selection_action};
 
 use ratatoskr_github_contracts::{
@@ -195,6 +196,8 @@ pub enum DecisionTransition {
     Confirmed(ConfirmedAction),
     /// Cancellation won and no provider action may execute.
     Cancelled,
+    /// The same releasing update observed a completion that already committed.
+    AlreadyCompleted,
 }
 
 struct LockedCallbackRow {
@@ -217,6 +220,8 @@ struct LockedCallbackRow {
     expected_dialogue_version: i64,
     token_expires_at: i64,
     consumed_at: Option<i64>,
+    releasing_bot_id: Option<i64>,
+    releasing_update_id: Option<i64>,
 }
 
 impl<'row> sqlx::FromRow<'row, sqlx::postgres::PgRow> for LockedCallbackRow {
@@ -241,6 +246,8 @@ impl<'row> sqlx::FromRow<'row, sqlx::postgres::PgRow> for LockedCallbackRow {
             expected_dialogue_version: row.try_get("expected_dialogue_version")?,
             token_expires_at: row.try_get("token_expires_at")?,
             consumed_at: row.try_get("consumed_at")?,
+            releasing_bot_id: row.try_get("releasing_bot_id")?,
+            releasing_update_id: row.try_get("releasing_update_id")?,
         })
     }
 }
@@ -732,7 +739,8 @@ impl Database {
                     extract(epoch from d.expires_at)::bigint as dialogue_expires_at,
                     t.action, t.expected_dialogue_version,
                     extract(epoch from t.expires_at)::bigint as token_expires_at,
-                    extract(epoch from t.consumed_at)::bigint as consumed_at
+                    extract(epoch from t.consumed_at)::bigint as consumed_at,
+                    d.releasing_bot_id, d.releasing_update_id
              from telegram.interaction_tokens t
              join telegram.dialog_states d on d.id = t.dialogue_id
              where t.token = $1 and t.surface = 'callback' and d.kind = 'github_repository'

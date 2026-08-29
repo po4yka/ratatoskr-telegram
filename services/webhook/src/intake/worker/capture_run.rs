@@ -39,7 +39,7 @@ pub(crate) async fn run_capture(
                 "class" => capture::SubmitClass::AcceptedProjectionPending.as_str(),
             )
             .increment(1);
-            ProcessingOutcome::RetryAcceptedProjection
+            ProcessingOutcome::RetryRecoverableAction
         }
         Err(class) => {
             metrics::counter!(

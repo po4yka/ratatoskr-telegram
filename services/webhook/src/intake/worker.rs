@@ -253,8 +253,8 @@ async fn process_one_with_recovery(
 
         let ProcessingOutcome::Settle(terminal) = outcome else {
             tracing::warn!(
-                class = "accepted_projection_pending",
-                "the accepted capture remains processable for recovery",
+                class = "action_recovery_pending",
+                "the update remains processable"
             );
             if let Err(error) = database
                 .defer_update_retry(
@@ -306,8 +306,8 @@ async fn process_one_with_recovery(
 pub(crate) enum ProcessingOutcome {
     /// Settle and minimize the update in the named terminal state.
     Settle(UpdateState),
-    /// Platform accepted a capture whose local projection has not committed yet.
-    RetryAcceptedProjection,
+    /// Released external work whose required local projection has not committed yet.
+    RetryRecoverableAction,
 }
 
 impl From<UpdateState> for ProcessingOutcome {
@@ -333,12 +333,19 @@ async fn self_domain_action(
         let Some(context) = capture_context else {
             return UpdateState::Processed.into();
         };
-        return if github::handle_callback(database, item.bot_id, callback, context, now_secs())
-            .await
+        return match github::handle_callback(
+            database,
+            item.bot_id,
+            i64::from(item.update.id.0),
+            callback,
+            context,
+            now_secs(),
+        )
+        .await
         {
-            UpdateState::Processed.into()
-        } else {
-            UpdateState::Failed.into()
+            github::CallbackOutcome::Processed => UpdateState::Processed.into(),
+            github::CallbackOutcome::Failed => UpdateState::Failed.into(),
+            github::CallbackOutcome::Recoverable => ProcessingOutcome::RetryRecoverableAction,
         };
     }
     let Some(parts) = message_parts(&item.update.kind) else {
