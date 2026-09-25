@@ -34,6 +34,10 @@ const INTERNAL_USER_ID: &str = "018f0000-0000-7000-8000-00000000abcd";
 const SEED: [u8; 32] = [
     7, 6, 5, 4, 3, 2, 1, 0, 7, 6, 5, 4, 3, 2, 1, 0, 7, 6, 5, 4, 3, 2, 1, 0, 7, 6, 5, 4, 3, 2, 1, 0,
 ];
+// Read-token expiry math is self-contained (`resolve_library_read_intent` only ever compares the
+// `now` a caller hands it against the `expires_at` a caller hands it), so a fixed instant proves the
+// same thing a wall-clock read would without ever going stale.
+const T0: i64 = 1_800_000_000;
 
 #[derive(Default)]
 struct PlatformState {
@@ -235,7 +239,7 @@ impl Fixture {
     }
 
     async fn issue_read_token(&self, analysis_id: uuid::Uuid) -> String {
-        let now = current_unix_time();
+        let now = T0;
         self.database
             .database
             .issue_library_read_intent(
@@ -312,16 +316,6 @@ impl Fixture {
         }
         panic!("update {update_id} did not settle")
     }
-}
-
-fn current_unix_time() -> i64 {
-    i64::try_from(
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("system time")
-            .as_secs(),
-    )
-    .expect("current Unix time")
 }
 
 #[derive(Clone)]
@@ -479,13 +473,7 @@ async fn assert_rendered_tokens_are_owner_scoped(fixture: &Fixture, reply: &str)
                 .bytes()
                 .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
         );
-        let now = i64::try_from(
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .expect("system time")
-                .as_secs(),
-        )
-        .expect("current Unix time");
+        let now = T0;
         let owner_scope = telegram_persistence::interaction_tokens::LibraryReadScope {
             bot_id: BOT_ID,
             telegram_user_id: OWNER,

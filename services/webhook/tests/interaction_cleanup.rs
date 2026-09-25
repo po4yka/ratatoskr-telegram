@@ -2,8 +2,6 @@
 
 #![allow(clippy::expect_used, clippy::panic, reason = "test assertions")]
 
-use std::time::{SystemTime, UNIX_EPOCH};
-
 use ratatoskr_telegram_webhook::intake;
 use telegram_persistence::dialogues::{
     DialogueLifecycle, DialogueScope, GitHubRepositoryDialogue, NewGitHubDialogue,
@@ -12,16 +10,10 @@ use telegram_persistence::test_support::TestDatabase;
 
 const BOT: i64 = 42;
 const OWNER: i64 = 900_700_601;
-
-fn now_secs() -> i64 {
-    i64::try_from(
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("time after epoch")
-            .as_secs(),
-    )
-    .expect("current time fits i64")
-}
+// `run_interaction_cleanup` has no injectable clock; it reads the real wall clock. A fixture
+// already expired at this fixed, permanently-past instant stays expired at any real time this
+// suite will ever run, so the test never has to read the wall clock itself.
+const T0: i64 = 1_600_000_000;
 
 fn scope() -> DialogueScope {
     DialogueScope {
@@ -46,16 +38,15 @@ fn payload() -> GitHubRepositoryDialogue {
 #[tokio::test]
 async fn worker_runs_cleanup_on_startup() {
     let test = TestDatabase::create().await.expect("database");
-    let now = now_secs();
     let dialogue_id = test
         .database
         .create_github_dialogue(
             &NewGitHubDialogue {
                 scope: scope(),
                 payload: payload(),
-                expires_at: now - 1,
+                expires_at: T0 - 1,
             },
-            now - 10,
+            T0 - 10,
         )
         .await
         .expect("stale dialogue");
