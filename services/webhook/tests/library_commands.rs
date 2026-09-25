@@ -34,6 +34,11 @@ const INTERNAL_USER_ID: &str = "018f0000-0000-7000-8000-00000000abcd";
 const SEED: [u8; 32] = [
     7, 6, 5, 4, 3, 2, 1, 0, 7, 6, 5, 4, 3, 2, 1, 0, 7, 6, 5, 4, 3, 2, 1, 0, 7, 6, 5, 4, 3, 2, 1, 0,
 ];
+// Read-token expiry math is self-contained (`resolve_library_read_intent` only ever compares the
+// `now` a caller hands it against the `expires_at` a caller hands it), so a token this file issues
+// itself is issued and resolved at this fixed instant. A token the intake worker issues is stamped
+// by its own wall clock (`now_secs`), and is resolved against the wall clock below.
+const T0: i64 = 1_800_000_000;
 
 #[derive(Default)]
 struct PlatformState {
@@ -235,7 +240,7 @@ impl Fixture {
     }
 
     async fn issue_read_token(&self, analysis_id: uuid::Uuid) -> String {
-        let now = current_unix_time();
+        let now = T0;
         self.database
             .database
             .issue_library_read_intent(
@@ -312,16 +317,6 @@ impl Fixture {
         }
         panic!("update {update_id} did not settle")
     }
-}
-
-fn current_unix_time() -> i64 {
-    i64::try_from(
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("system time")
-            .as_secs(),
-    )
-    .expect("current Unix time")
 }
 
 #[derive(Clone)]
@@ -479,8 +474,10 @@ async fn assert_rendered_tokens_are_owner_scoped(fixture: &Fixture, reply: &str)
                 .bytes()
                 .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
         );
+        // wall-clock: these tokens were issued by the intake worker's own clock (`now_secs`), which has
+        // no injectable replacement, so they can only be resolved against real time.
         let now = i64::try_from(
-            std::time::SystemTime::now()
+            std::time::SystemTime::now() // wall-clock: resolves tokens the worker stamped with real time
                 .duration_since(std::time::UNIX_EPOCH)
                 .expect("system time")
                 .as_secs(),

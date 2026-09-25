@@ -138,7 +138,6 @@ taken at the site with `#[expect(..., reason = "...")]`, never by raising a numb
 
 ```bash
 cargo fetch --locked
-cargo deny check
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets --locked -- -D warnings
 git ls-files -z "*.rs" | xargs -0 -r wc -l | awk '$2 != "total" && $1 > 850 { print; bad = 1 } END { exit bad }'
@@ -152,13 +151,14 @@ The debug build before `cargo test` is not redundant. `services/webhook/tests/bo
 package under test only — it never produces a sibling package's plain binary. Skip this step and
 the boot test fails on any clean checkout.
 
-This list and the step list in `.github/workflows/ci.yml` are the same list. If they drift, this
-document is wrong. That is asserted by a step in the workflow rather than left to whoever edits one
-of the two files.
+This list and the `gate` job's step list in `.github/workflows/ci.yml` are the same list. If they
+drift, this document is wrong. That is asserted by a step in the workflow rather than left to
+whoever edits one of the two files.
 
-`cargo deny check` is in the list because nothing else in the gate reads RustSec. `deny.toml` also
-pins the dependency-source policy, including `required-git-spec = "rev"`, which turns the prose rule
-about branches and tags not pinning into an exit code.
+`cargo deny check` runs in its own `deny` job in the same workflow, not in the gate above, so a new
+RustSec advisory cannot hide a clippy or test failure behind it. `deny.toml` also pins the
+dependency-source policy, including `required-git-spec = "rev"`, which turns the prose rule about
+branches and tags not pinning into an exit code.
 
 ### Test — real
 
