@@ -240,12 +240,19 @@ async fn sender_delivers_one_chat_fifo_under_concurrency() {
     let limiter = Arc::new(DeliveryLimiter::new(30, 0));
     // Generous bound: a limiter deferral consumes an attempt slot by design, and the static
     // early ticks make deferrals likely before the clock steps forward.
-    let sender = Arc::new(make_sender(
-        &db,
-        Arc::clone(&fake),
-        Arc::clone(&clock),
+    // Both loops advance the shared clock, up to 400 ticks in all, while the other may hold a job
+    // in flight. A 30-second lease would expire mid-delivery, the job would be reclaimed, and the
+    // first ack would be refused as stale. Lease loss is covered elsewhere; here it only makes the
+    // FIFO assertion flaky, so the lease outlives every tick this test can take.
+    let sender = Arc::new(OutboundSender::new(
+        Arc::new(db.database.clone()),
+        Arc::clone(&fake) as _,
         Arc::clone(&limiter),
-        10,
+        Arc::clone(&clock) as _,
+        SenderLimits {
+            lease_ttl_secs: 3600,
+            ..limits(10)
+        },
     ));
 
     let mut workers = tokio::task::JoinSet::new();
