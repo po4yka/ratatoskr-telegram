@@ -61,7 +61,8 @@ comment on table telegram.schema_fingerprint is
 -- carries the deployment's decision (`enabled`, `disabled`); it defaults to `enabled` because a
 -- row only exists once something admitted its subject or the owner bootstrap created it.
 -- `internal_user_id` is an unenforced reference into Platform's identity domain — no foreign key
--- crosses a schema boundary — and stays NULL until identity binding lands. The profile snapshot
+-- crosses a schema boundary — and is written by the first Platform session exchange of the sender
+-- (Platform is authoritative; a changed mapping overwrites it). The profile snapshot
 -- columns are display evidence from the update that created the row; they are never treated as
 -- authenticated actor identity.
 create table telegram.identities (
@@ -78,7 +79,7 @@ create table telegram.identities (
 
 comment on table telegram.identities is
     'Telegram users known to this deployment and their access state. internal_user_id is an '
-    'unenforced reference into Platform''s identity domain until binding lands.';
+    'unenforced reference into Platform''s identity domain, written by the sender''s Platform session exchange.';
 
 -- `chats` — one row per chat this deployment has evaluated. Only private conversations are
 -- representable in this version: group and channel support waits for an explicit design, so the

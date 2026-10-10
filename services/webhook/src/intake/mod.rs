@@ -17,7 +17,7 @@ mod library;
 pub mod settings;
 mod worker;
 
-pub use crate::intake::build::build;
+pub use crate::intake::build::{build, build_capture_context};
 pub use crate::intake::worker::{CaptureContext, process_one, run_worker};
 
 use std::sync::Arc;

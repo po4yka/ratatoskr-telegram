@@ -71,7 +71,7 @@ pub enum PlatformError {
     MalformedFrame,
 }
 
-/// What `POST /v1/captures` returns on acceptance.
+/// What a capture route (`POST /v1/captures` or `POST /v1/captures/blobs`) returns on acceptance.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OperationAccepted {
     /// The operation to follow. Replays of the same key return the original id.
@@ -542,23 +542,27 @@ impl Client {
         session: &str,
         submission: &CaptureSubmission,
     ) -> Result<OperationAccepted, PlatformError> {
-        // URL captures keep their exact historical body; blob captures reference stored bytes
-        // instead; provenance is additive so tolerant servers ignore what they do not know.
-        let mut body = match &submission.source {
-            CaptureSource::Url(url) => serde_json::json!({ "url": url }),
+        // A URL capture posts to `/v1/captures`; a blob capture posts the `BlobRef` to its own
+        // route, `/v1/captures/blobs` (XR-021 CONTRACTS S11). The optional `origin` provenance is
+        // an additive member that both routes tolerate and ignore.
+        let (path, mut body) = match &submission.source {
+            CaptureSource::Url(url) => ("/v1/captures", serde_json::json!({ "url": url })),
             CaptureSource::Blob {
                 owner_service,
                 digest_hex,
                 media_type,
                 length_bytes,
-            } => serde_json::json!({
-                "blob": {
-                    "owner_service": owner_service,
-                    "digest": { "algorithm": "sha256", "hex": digest_hex },
-                    "media_type": media_type,
-                    "length_bytes": length_bytes,
-                }
-            }),
+            } => (
+                "/v1/captures/blobs",
+                serde_json::json!({
+                    "blob": {
+                        "owner_service": owner_service,
+                        "digest": { "algorithm": "sha256", "hex": digest_hex },
+                        "media_type": media_type,
+                        "length_bytes": length_bytes,
+                    }
+                }),
+            ),
         };
         if let (Some(map), Some(origin)) = (body.as_object_mut(), submission.origin.as_ref()) {
             map.insert("origin".to_owned(), origin.clone());
@@ -567,7 +571,7 @@ impl Client {
         let response = self
             .send(
                 self.http
-                    .post(self.url("/v1/captures"))
+                    .post(self.url(path))
                     .bearer_auth(session)
                     .header("idempotency-key", &submission.idempotency_key)
                     .json(&body),
@@ -602,7 +606,7 @@ pub enum CaptureSource {
 }
 
 /// One capture submission: the mandatory idempotency key, what to capture, and optional
-/// provenance facts carried additively (servers tolerant of unknown members ignore them today).
+/// provenance facts carried additively (Platform tolerates and ignores unknown members).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CaptureSubmission {
     /// The deterministic per-sender key Platform deduplicates on.

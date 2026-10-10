@@ -2,6 +2,8 @@
 //!
 //! - [`run`] and [`check_config`] — the whole process lifecycle, so the two binaries cannot drift.
 //! - [`admin_router`] — liveness, readiness, metrics and version, on the operator listener only.
+//! - [`identity_binding_hook`] — the session-exchange hook that writes `internal_user_id`, shared by
+//!   both roles.
 //! - [`RuntimeState`] — the facts readiness is computed from.
 //! - [`serve`] and [`drain_and_close`] — the drain-then-close-then-flush sequence.
 //!
@@ -20,6 +22,7 @@
 //! | `78` | `EX_CONFIG` — the configuration is unreadable or invalid; nothing was bound |
 
 mod admin;
+mod identity;
 mod lifecycle;
 mod public;
 mod shutdown;
@@ -33,6 +36,7 @@ use tokio::net::TcpListener;
 use tracing::field::Empty;
 
 pub use crate::admin::admin_router;
+pub use crate::identity::identity_binding_hook;
 pub use crate::lifecycle::{Check, CheckName, CheckReason, CheckState, RuntimeState};
 pub use crate::public::{Background, BackgroundRuntime, PublicContext, PublicRoutes};
 pub use crate::shutdown::{Served, ShutdownOutcome, drain_and_close, serve};

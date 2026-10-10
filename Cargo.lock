@@ -2345,6 +2345,7 @@ dependencies = [
  "metrics-exporter-prometheus",
  "ratatoskr-telegram-core",
  "ratatoskr-telegram-persistence",
+ "ratatoskr-telegram-platform-api",
  "ratatoskr-telegram-telemetry",
  "serde",
  "serde_json",

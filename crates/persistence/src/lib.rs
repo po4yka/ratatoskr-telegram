@@ -116,6 +116,11 @@ pub enum PersistenceError {
     #[error("the outbound acknowledgement does not match the active claim")]
     StaleOutboundAcknowledgement,
 
+    /// A private chat is already bound to a different Telegram actor; the binding is authority for
+    /// delivery, so it is never taken over silently.
+    #[error("the private chat is already bound to another actor")]
+    ChatBoundToAnotherActor,
+
     /// An optimistic notification-preference update named an old version.
     #[error("the notification preference version is stale")]
     StalePreference,

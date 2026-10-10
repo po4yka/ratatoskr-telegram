@@ -148,7 +148,7 @@ fn spawn_raw_sse_server(body: String) -> (Url, Arc<Mutex<Vec<String>>>) {
 /// `submit_capture` posts the key, the bearer, and the URL to `/v1/captures`, and resolves to the
 /// operation id from the 202 body.
 #[tokio::test]
-async fn submit_capture_posts_key_bearer_and_url_and_parses_operation() {
+async fn url_capture_still_posts_to_captures() {
     let operation_id = "018f0000-0000-7000-8000-00000000cafe";
     let harness = Harness::spawn(move |_| {
         (
@@ -186,18 +186,27 @@ async fn submit_capture_posts_key_bearer_and_url_and_parses_operation() {
 }
 
 /// A blob-source capture submits the stored-bytes reference — the `BlobRef` wire shape with the
-/// algorithm fixed at sha256 — and never a fabricated URL member.
+/// algorithm fixed at sha256 — to Platform's blob route and never a fabricated URL member
+/// (XR-021 CONTRACTS S11). The fake Platform accepts only `POST /v1/captures/blobs` and answers
+/// 404 on the URL route, as the real one answers a blob body there with 400.
 #[tokio::test]
-async fn submit_capture_posts_blob_sources_without_a_url_member() {
+async fn blob_capture_posts_the_blobref_to_the_blob_route() {
     let operation_id = "018f0000-0000-7000-8000-00000000cafe";
-    let harness = Harness::spawn(move |_| {
-        (
-            StatusCode::OK,
-            json!({"operation_id": operation_id, "status": "accepted"}),
-        )
+    let harness = Harness::spawn(move |request| {
+        if request.path == "/v1/captures/blobs" {
+            (
+                StatusCode::ACCEPTED,
+                json!({"operation_id": operation_id, "status": "accepted"}),
+            )
+        } else {
+            (
+                StatusCode::NOT_FOUND,
+                json!({"error": {"code": "synthetic", "message": "no such route"}}),
+            )
+        }
     })
     .await;
-    client(&harness.base_url)
+    let accepted = client(&harness.base_url)
         .submit_capture(
             SESSION,
             &CaptureSubmission {
@@ -212,26 +221,29 @@ async fn submit_capture_posts_blob_sources_without_a_url_member() {
             },
         )
         .await
-        .expect("a blob submission must resolve");
+        .expect("a blob submission must resolve on the blob route");
+    assert_eq!(accepted.operation_id.to_string(), operation_id);
 
-    let captured = &harness.requests()[0];
-    let body = captured
-        .body
-        .clone()
-        .expect("the submission carries a body");
+    let requests = harness.requests();
+    assert_eq!(requests.len(), 1, "exactly one request, to the blob route");
+    let captured = &requests[0];
+    assert_eq!(captured.path, "/v1/captures/blobs");
+    assert_eq!(captured.header("idempotency-key"), "blob-key-1");
     assert_eq!(
-        body["blob"],
-        json!({
-            "owner_service": "ratatoskr-telegram",
-            "digest": {"algorithm": "sha256", "hex": "ab".repeat(32)},
-            "media_type": "application/pdf",
-            "length_bytes": 1024
-        }),
-        "{body}"
+        captured.header("authorization"),
+        format!("Bearer {SESSION}")
     );
-    assert!(
-        body.get("url").is_none(),
-        "a blob capture must not fabricate an address: {body}"
+    assert_eq!(
+        captured.body.as_ref(),
+        Some(&json!({
+            "blob": {
+                "owner_service": "ratatoskr-telegram",
+                "digest": {"algorithm": "sha256", "hex": "ab".repeat(32)},
+                "media_type": "application/pdf",
+                "length_bytes": 1024
+            }
+        })),
+        "the body is exactly the BlobRef member and no URL"
     );
 }
 

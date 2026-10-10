@@ -149,6 +149,33 @@ impl Database {
         })
     }
 
+    /// Bind the identity of `telegram_user_id` to the Platform user `internal_user_id`.
+    ///
+    /// Platform is authoritative: a changed mapping overwrites the stored one, and an unchanged
+    /// mapping touches nothing. An unknown Telegram user updates nothing and is not an error; this
+    /// never creates an identity. Returns whether a row changed.
+    ///
+    /// # Errors
+    ///
+    /// [`PersistenceError::Query`] if the statement fails.
+    pub async fn bind_internal_user(
+        &self,
+        telegram_user_id: i64,
+        internal_user_id: Uuid,
+    ) -> Result<bool, PersistenceError> {
+        let result = sqlx::query(
+            "update telegram.identities
+                set internal_user_id = $2, updated_at = now()
+              where telegram_user_id = $1 and internal_user_id is distinct from $2",
+        )
+        .bind(telegram_user_id)
+        .bind(internal_user_id)
+        .execute(&self.pool)
+        .await
+        .map_err(PersistenceError::Query)?;
+        Ok(result.rows_affected() > 0)
+    }
+
     /// The identity for `telegram_user_id`, if the deployment knows it.
     ///
     /// # Errors
@@ -240,13 +267,13 @@ impl Database {
 
     /// Persist the explicit authority that lets `telegram_user_id` receive private notifications
     /// in `chat_id`. The caller invokes this only after the identity and chat access checks pass.
-    /// Replaying the same admitted interaction is idempotent; a chat already bound to another
-    /// actor is refused by the schema's unique constraint.
+    /// Replaying the same admitted interaction is idempotent, including two replays racing each
+    /// other; a chat already bound to another actor is refused.
     ///
     /// # Errors
     ///
-    /// [`PersistenceError::Query`] if the binding does not reference existing admitted records or
-    /// conflicts with another actor's binding.
+    /// [`PersistenceError::Query`] if the binding does not reference existing admitted records;
+    /// [`PersistenceError::ChatBoundToAnotherActor`] if the chat belongs to a different actor.
     pub async fn bind_private_chat(
         &self,
         telegram_user_id: i64,
@@ -257,13 +284,26 @@ impl Database {
             "insert into telegram.private_chat_bindings
                  (telegram_user_id, chat_id, bound_at)
              values ($1, $2, now())
-             on conflict (telegram_user_id, chat_id) do nothing",
+             on conflict do nothing",
         )
         .bind(telegram_user_id)
         .bind(chat_id)
         .execute(&mut *transaction)
         .await
         .map_err(PersistenceError::Query)?;
+        // `on conflict do nothing` names no target on purpose: a replay racing this one trips the
+        // chat's own unique key, not the pair's, and a named target would surface that as an
+        // error. Whoever owns the chat now decides: the same actor is a replay, another is not.
+        let owner: i64 = sqlx::query_scalar(
+            "select telegram_user_id from telegram.private_chat_bindings where chat_id = $1",
+        )
+        .bind(chat_id)
+        .fetch_one(&mut *transaction)
+        .await
+        .map_err(PersistenceError::Query)?;
+        if owner != telegram_user_id {
+            return Err(PersistenceError::ChatBoundToAnotherActor);
+        }
         sqlx::query(
             "insert into telegram.notification_preferences (telegram_user_id, chat_id)
              values ($1, $2)

@@ -2,6 +2,7 @@
 
 use telegram_persistence::{Database, UpdateState};
 
+use super::attachment::{ReplyKind, reply_and_fail};
 use super::{CaptureContext, ProcessingOutcome};
 use crate::intake::capture;
 
@@ -41,14 +42,24 @@ pub(crate) async fn run_capture(
             .increment(1);
             ProcessingOutcome::RetryRecoverableAction
         }
-        Err(class) => {
+        Err(
+            class @ (capture::SubmitClass::TransientExhausted
+            | capture::SubmitClass::PermanentRefusal),
+        ) => {
             metrics::counter!(
                 telegram_telemetry::metrics::TELEGRAM_CAPTURE_SUBMISSIONS_TOTAL,
                 "class" => class.as_str(),
             )
             .increment(1);
             tracing::warn!(class = class.as_str(), "the capture could not be submitted");
-            UpdateState::Failed.into()
+            // The sender hears about every failure that settles the update (S11): one static
+            // reply, then `Failed` whether or not the reply could be stored.
+            let reply = match class {
+                capture::SubmitClass::TransientExhausted => ReplyKind::CaptureUnavailable,
+                capture::SubmitClass::PermanentRefusal
+                | capture::SubmitClass::AcceptedProjectionPending => ReplyKind::CaptureRefused,
+            };
+            reply_and_fail(database, bot_id, chat_id, reply).await
         }
     }
 }

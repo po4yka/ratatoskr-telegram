@@ -17,7 +17,7 @@ use axum::extract::State;
 use axum::http::StatusCode;
 use axum::routing::post;
 use jiff::Timestamp;
-use platform_api::session::{Clock, SessionSource};
+use platform_api::session::{Clock, OnMint, SessionSource};
 use platform_api::{Client, assertion::AssertionIssuer};
 use serde_json::json;
 use url::Url;
@@ -170,4 +170,103 @@ async fn credential_invalidation_is_compare_and_remove() {
         .expect("replacement credential");
     assert_ne!(after_rejection, refreshed);
     assert_eq!(exchanges.load(Ordering::SeqCst), 3);
+}
+
+/// The Platform user id the exchange harness always returns.
+const PLATFORM_USER: &str = "018f0000-0000-7000-8000-00000000abcd";
+
+type Minted = Arc<std::sync::Mutex<Vec<(String, uuid::Uuid)>>>;
+
+/// A hook that records every call it receives.
+fn recording_hook() -> (OnMint, Minted) {
+    let minted: Minted = Arc::default();
+    let sink = Arc::clone(&minted);
+    let hook: OnMint = Arc::new(move |subject, user_id| {
+        let sink = Arc::clone(&sink);
+        Box::pin(async move {
+            sink.lock().expect("minted lock").push((subject, user_id));
+        })
+    });
+    (hook, minted)
+}
+
+/// The hook sees every network exchange exactly once - first mint, refresh, and one shared
+/// re-exchange under concurrency - and never a cache hit (XR-021 CONTRACTS S11).
+#[tokio::test]
+async fn the_on_mint_hook_runs_once_per_network_exchange_and_not_on_cache_hits() {
+    let (base_url, exchanges) = exchange_harness().await;
+    let clock = FakeClock::starting_now();
+    let (hook, minted) = recording_hook();
+    let source = SessionSource::new(
+        Client::new(&base_url, Duration::from_secs(5)).expect("client"),
+        issuer(),
+        Box::new(clock.clone()),
+    )
+    .with_on_mint(hook);
+
+    source.credential(SUBJECT).await.expect("first resolves");
+    source.credential(SUBJECT).await.expect("cache hit");
+    assert_eq!(exchanges.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        *minted.lock().expect("minted lock"),
+        [(SUBJECT.to_owned(), PLATFORM_USER.parse().expect("uuid"))],
+        "one exchange, one hook call carrying the subject and the Platform user"
+    );
+
+    clock.set_to(START_SECS + 13 * 3_600);
+    source.credential(SUBJECT).await.expect("refresh resolves");
+    assert_eq!(exchanges.load(Ordering::SeqCst), 2);
+    assert_eq!(minted.lock().expect("minted lock").len(), 2, "the refresh");
+
+    clock.set_to(START_SECS + 25 * 3_600);
+    let (left, right) = tokio::join!(source.credential(SUBJECT), source.credential(SUBJECT));
+    left.expect("concurrent left");
+    right.expect("concurrent right");
+    assert_eq!(exchanges.load(Ordering::SeqCst), 3);
+    assert_eq!(
+        minted.lock().expect("minted lock").len(),
+        3,
+        "two concurrent callers share one exchange and therefore one hook call"
+    );
+}
+
+/// A hook that hits an error of its own has nowhere to send it but its own telemetry: the
+/// exchange still succeeds and the session is cached, so the caller never notices.
+#[tokio::test]
+async fn a_hook_failure_does_not_fail_the_exchange() {
+    let (base_url, exchanges) = exchange_harness().await;
+    let attempts = Arc::new(AtomicI64::new(0));
+    let counted = Arc::clone(&attempts);
+    let failing: OnMint = Arc::new(move |_subject, _user_id| {
+        let counted = Arc::clone(&counted);
+        Box::pin(async move {
+            // The binding store is down: the hook records the attempt and reports nothing.
+            counted.fetch_add(1, Ordering::SeqCst);
+            let outcome: Result<(), String> = Err("binding store unavailable".to_owned());
+            drop(outcome);
+        })
+    });
+    let source = SessionSource::new(
+        Client::new(&base_url, Duration::from_secs(5)).expect("client"),
+        issuer(),
+        Box::new(FakeClock::starting_now()),
+    )
+    .with_on_mint(failing);
+
+    let credential = source
+        .credential(SUBJECT)
+        .await
+        .expect("the exchange succeeds although the hook had a failure of its own");
+    assert!(!credential.is_empty());
+    assert_eq!(attempts.load(Ordering::SeqCst), 1, "the hook did run");
+    assert_eq!(
+        source.credential(SUBJECT).await.expect("cached"),
+        credential
+    );
+    assert_eq!(exchanges.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        attempts.load(Ordering::SeqCst),
+        1,
+        "a cache hit does not rerun it"
+    );
 }

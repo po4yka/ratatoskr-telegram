@@ -40,6 +40,14 @@ struct CachedSession {
     user_id: uuid::Uuid,
 }
 
+/// What runs after every successful network exchange: the Telegram subject and the Platform user
+/// the new session authenticates. It returns nothing, so it cannot fail the exchange.
+pub type OnMint = Arc<
+    dyn Fn(String, uuid::Uuid) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>
+        + Send
+        + Sync,
+>;
+
 /// Authenticated Platform session facts needed by Telegram adapters.
 #[derive(Debug, Clone)]
 pub struct UserSession {
@@ -60,6 +68,7 @@ pub struct SessionSource {
     clock: Box<dyn Clock>,
     cached: Mutex<HashMap<String, Arc<CachedSession>>>,
     in_flight: Mutex<()>,
+    on_mint: Option<OnMint>,
 }
 
 impl std::fmt::Debug for SessionSource {
@@ -83,7 +92,19 @@ impl SessionSource {
             // A single lock serializes exchanges across ALL senders; contention here is bounded
             // by the owner-only deployment and the exchange is rare (once per sender per hour).
             in_flight: Mutex::new(()),
+            on_mint: None,
         }
+    }
+
+    /// Run `hook` once after every successful network exchange, never on a cache hit.
+    ///
+    /// The hook is awaited after the new session is cached and after the exchange lock is
+    /// released, and it returns nothing, so it can neither fail nor block other senders'
+    /// exchanges (XR-021 CONTRACTS S11).
+    #[must_use]
+    pub fn with_on_mint(mut self, hook: OnMint) -> Self {
+        self.on_mint = Some(hook);
+        self
     }
 
     /// The underlying Platform client, for the calls a session authenticates.
@@ -124,14 +145,21 @@ impl SessionSource {
     ///
     /// [`PlatformError`] if issuance or exchange fails.
     pub async fn session(&self, subject: &str) -> Result<UserSession, PlatformError> {
-        let cached = match self.fresh_entry(subject).await {
-            Some(hit) => hit,
-            None => Arc::new(self.exchange(subject).await?),
-        };
-        Ok(UserSession {
+        if let Some(hit) = self.fresh_entry(subject).await {
+            return Ok(Self::user_session(&hit));
+        }
+        let (session, minted) = self.exchange(subject).await?;
+        if minted && let Some(hook) = &self.on_mint {
+            hook(subject.to_owned(), session.user_id).await;
+        }
+        Ok(Self::user_session(&session))
+    }
+
+    fn user_session(cached: &CachedSession) -> UserSession {
+        UserSession {
             credential: secrecy::SecretString::new(cached.credential.clone().into()),
             user_id: cached.user_id,
-        })
+        }
     }
 
     /// The cached entry for `subject` when it is still inside its refresh margin.
@@ -143,11 +171,12 @@ impl SessionSource {
     }
 
     /// Exchange exactly once per need: concurrent callers queue on one lock and the loser
-    /// re-checks the cache instead of racing the nonce store with a second assertion.
-    async fn exchange(&self, subject: &str) -> Result<CachedSession, PlatformError> {
+    /// re-checks the cache instead of racing the nonce store with a second assertion. The flag is
+    /// true only for the caller whose network exchange minted the returned session.
+    async fn exchange(&self, subject: &str) -> Result<(CachedSession, bool), PlatformError> {
         let _guard = self.in_flight.lock().await;
         if let Some(hit) = self.fresh_entry(subject).await {
-            return Ok((*hit).clone());
+            return Ok(((*hit).clone(), false));
         }
         let now = self.clock.now();
         let token = self
@@ -165,7 +194,7 @@ impl SessionSource {
             .lock()
             .await
             .insert(subject.to_owned(), Arc::clone(&fresh));
-        Ok((*fresh).clone())
+        Ok(((*fresh).clone(), true))
     }
 }
 

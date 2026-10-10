@@ -50,6 +50,13 @@ pub const TELEGRAM_DELIVERY_DURATION_SECONDS: &str = "telegram_delivery_duration
 pub const TELEGRAM_DELIVERY_RETRIES_TOTAL: &str = "telegram_delivery_retries_total";
 /// Capture submission outcomes, by closed safe class.
 pub const TELEGRAM_CAPTURE_SUBMISSIONS_TOTAL: &str = "telegram_capture_submissions_total";
+
+/// `telegram_identity_binding_total{outcome}` — counter. One increment per successful Platform
+/// session exchange, labelled by the closed outcome vocabulary: `bound` (the identity row took a
+/// new Platform user id), `unchanged` (it already carried that id or no row exists), `failed` (the
+/// write errored or the subject was not a Telegram user id). A `failed` rate is the signal that
+/// notification admission is ending with no eligible chat.
+pub const TELEGRAM_IDENTITY_BINDING_TOTAL: &str = "telegram_identity_binding_total";
 /// Follower lifecycle events, by closed safe class (started/resumed/ended/dropped).
 pub const TELEGRAM_OPERATION_FOLLOWS_TOTAL: &str = "telegram_operation_follows_total";
 

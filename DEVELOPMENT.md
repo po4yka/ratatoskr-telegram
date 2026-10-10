@@ -42,16 +42,21 @@ operation, and acceptance pre-creates the message binding, writes an opaque deep
 enqueues exactly one HTML acknowledgment. A dispatcher follower consumes Platform's per-operation
 SSE stream into the existing projection seam (dedupe by frame id, `Last-Event-ID` resume, stop at
 terminal), and terminal renders add the fallback hyperlink plus a Mini App button backed by the
-intent record. Platform outages settle updates as failed after bounded retries; nothing is sent
-for an unaccepted capture.
+intent record. Platform outages settle updates as failed after bounded retries; no acknowledgment
+is sent for an unaccepted capture, and the sender instead gets one static reply that the item was
+not saved (temporarily unavailable, or not accepted). The first network session exchange of a
+sender also writes the Platform user id to `telegram.identities.internal_user_id`, in both roles.
 
 Plan item 6 extends capture intake without moving extraction into Telegram: forwarded text or
-captions contribute their first external link together with bounded forward provenance, while PDFs
-and photos are resolved through the Bot API, streamed into this service's content-addressed blob
-store, hashed as SHA-256, and submitted to Platform as opaque `BlobRef` captures. The only
-accepted document type is `application/pdf`; video, voice, audio, and other document types receive
-one explicit unsupported reply. Declared and streamed byte limits are enforced before and during
-download, and a URL-less terminal render describes the attachment without inventing a link.
+captions contribute their first external link together with bounded forward provenance, while PDF
+documents are resolved through the Bot API, streamed into this service's content-addressed blob
+store, hashed as SHA-256, and submitted to Platform's blob capture route as opaque `BlobRef`
+captures. The only accepted attachment type is a document of `application/pdf`; photos (refusal-only
+until an OCR capture path exists), video, voice, audio, and other document types receive one
+explicit static unsupported reply, and a capture that Platform cannot take or an attachment that
+cannot be read gets one static reply saying the item was not saved. Declared and streamed byte
+limits are enforced before and during download, and a URL-less terminal render describes the
+attachment without inventing a link.
 
 Plan item 7 added the Platform-backed GitHub preview and explicit metadata/track/star confirmation
 flow. Plan item 8 moved that flow onto the generalized `dialog_states` and `interaction_tokens`
@@ -89,7 +94,8 @@ An authorized private chat uses deterministic settings commands:
 The known class vocabulary is rendered by `/settings`; an unknown future contract class inherits
 only the global switch. Quiet hours are UTC. A custom user window overrides a producer hint,
 `disabled` ignores it, and `inherit` accepts it. A notification is admitted only through the
-explicit internal-user/private-chat binding written by the authorization gate. Telegram exposes
+explicit internal-user/private-chat binding: the internal user is written by the first Platform
+session exchange of the sender, the private chat by the authorization gate. Telegram exposes
 no `/admin`, `/dbinfo`, `/dbverify`, or process-health bot command: operators use the private
 health and metrics listeners, while `/status <operation>` remains user-facing operation status.
 
@@ -227,10 +233,11 @@ kill -TERM <pid>
 ```
 
 Both roles demand their database URL **and** the `RATATOSKR__PLATFORM__` section since item 5:
-`BASE_URL` (default `http://127.0.0.1:9463`, https off loopback only), `TIMEOUT_SECONDS`,
-`AUDIENCE`, and `ASSERTION_SIGNING_KEY` (64 hex chars = one Ed25519 seed; SECRET). Either role
-refuses to start when any of these is missing, beside every other requirement the report names. The dispatcher's outbound
-workers start after database preparation and drain in-flight delivery on shutdown; a job left
+`BASE_URL` (default `http://127.0.0.1:8080`, the allocated Edge listener; https off loopback only),
+`TIMEOUT_SECONDS`, `AUDIENCE` (default `edge`, the audience Edge accepts), and
+`ASSERTION_SIGNING_KEY` (64 hex chars = one Ed25519 seed; SECRET). Either role refuses to start
+when the signing key is missing, an audience is set empty, or any other requirement fails, and the
+report names every violation. The dispatcher's outbound workers start after database preparation and drain in-flight delivery on shutdown; a job left
 `sending` by a crashed process is reclaimed after `RATATOSKR__DISPATCHER__LEASE_TTL_SECS`.
 
 The webhook attachment path also owns `RATATOSKR__INGESTION__BLOB_ROOT`: an absolute, durable

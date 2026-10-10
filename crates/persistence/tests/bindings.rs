@@ -289,3 +289,158 @@ fn ensuring_a_chat_creates_private_enabled_and_is_equally_stable() {
         test.cleanup().await.expect("cleanup");
     });
 }
+
+/// The Platform user id is written once, a repeat changes nothing (not even `updated_at`), and a
+/// Telegram user without an identity row updates nothing and creates nothing (XR-021 S11).
+#[test]
+fn bind_internal_user_sets_the_column_and_is_idempotent() {
+    let runtime = tokio::runtime::Runtime::new().expect("test runtime");
+    runtime.block_on(async {
+        let test = database().await;
+        let db = &test.database;
+        db.ensure_identity(700_100_200, &IdentityProfile::default())
+            .await
+            .expect("the identity");
+        let platform_user = uuid::Uuid::now_v7();
+
+        assert!(
+            db.bind_internal_user(700_100_200, platform_user)
+                .await
+                .expect("the first bind"),
+            "the first bind changes the row"
+        );
+        let stored = db
+            .find_identity(700_100_200)
+            .await
+            .expect("the find")
+            .expect("the identity");
+        assert_eq!(stored.internal_user_id, Some(platform_user));
+        let first_touch: (String,) = sqlx::query_as(
+            "select extract(epoch from updated_at)::text from telegram.identities
+             where telegram_user_id = 700100200",
+        )
+        .fetch_one(db.pool())
+        .await
+        .expect("updated_at");
+
+        assert!(
+            !db.bind_internal_user(700_100_200, platform_user)
+                .await
+                .expect("the repeat"),
+            "an unchanged mapping changes nothing"
+        );
+        let second_touch: (String,) = sqlx::query_as(
+            "select extract(epoch from updated_at)::text from telegram.identities
+             where telegram_user_id = 700100200",
+        )
+        .fetch_one(db.pool())
+        .await
+        .expect("updated_at");
+        assert_eq!(
+            first_touch, second_touch,
+            "a no-op bind must not touch the row"
+        );
+
+        assert!(
+            !db.bind_internal_user(700_100_999, platform_user)
+                .await
+                .expect("a missing identity is not an error"),
+            "no row, no change"
+        );
+        assert_eq!(
+            db.find_identity(700_100_999).await.expect("the find"),
+            None,
+            "binding never creates an identity"
+        );
+        test.cleanup().await.expect("cleanup");
+    });
+}
+
+/// Platform is authoritative: a changed mapping overwrites the stored one.
+#[test]
+fn bind_internal_user_overwrites_a_changed_platform_mapping() {
+    let runtime = tokio::runtime::Runtime::new().expect("test runtime");
+    runtime.block_on(async {
+        let test = database().await;
+        let db = &test.database;
+        db.ensure_identity(700_100_200, &IdentityProfile::default())
+            .await
+            .expect("the identity");
+        let first = uuid::Uuid::now_v7();
+        let second = uuid::Uuid::now_v7();
+        db.bind_internal_user(700_100_200, first)
+            .await
+            .expect("the first bind");
+
+        assert!(
+            db.bind_internal_user(700_100_200, second)
+                .await
+                .expect("the changed mapping"),
+            "a changed mapping is a change"
+        );
+        let stored = db
+            .find_identity(700_100_200)
+            .await
+            .expect("the find")
+            .expect("the identity");
+        assert_eq!(stored.internal_user_id, Some(second));
+        test.cleanup().await.expect("cleanup");
+    });
+}
+
+/// Replaying one admitted interaction concurrently binds the same private chat once and fails
+/// nobody: two updates from the same sender race through the access gate, and the loser of the
+/// insert must see the winner's row instead of the schema's unique-chat violation.
+#[test]
+fn concurrent_replays_of_one_private_chat_binding_all_succeed() {
+    let runtime = tokio::runtime::Runtime::new().expect("test runtime");
+    runtime.block_on(async {
+        let test = database().await;
+        let db = &test.database;
+        db.ensure_identity(700_100_200, &IdentityProfile::default())
+            .await
+            .expect("the identity");
+        for chat_id in 900_700_600..900_700_700_i64 {
+            db.ensure_chat(chat_id).await.expect("the chat");
+            let (first, second) = tokio::join!(
+                db.bind_private_chat(700_100_200, chat_id),
+                db.bind_private_chat(700_100_200, chat_id),
+            );
+            first.expect("the first concurrent replay is idempotent");
+            second.expect("the second concurrent replay is idempotent");
+        }
+        test.cleanup().await.expect("cleanup");
+    });
+}
+
+/// A chat already bound to another actor is still refused; making replays idempotent must not
+/// turn a conflicting actor into a silent no-op.
+#[test]
+fn a_chat_bound_to_another_actor_is_still_refused() {
+    let runtime = tokio::runtime::Runtime::new().expect("test runtime");
+    runtime.block_on(async {
+        let test = database().await;
+        let db = &test.database;
+        for user in [700_100_200_i64, 700_100_201] {
+            db.ensure_identity(user, &IdentityProfile::default())
+                .await
+                .expect("the identity");
+        }
+        db.ensure_chat(900_700_600).await.expect("the chat");
+        db.bind_private_chat(700_100_200, 900_700_600)
+            .await
+            .expect("the first actor binds");
+        let refusal = db
+            .bind_private_chat(700_100_201, 900_700_600)
+            .await
+            .expect_err("a second actor must not take over a bound chat");
+        assert!(
+            matches!(
+                refusal,
+                telegram_persistence::PersistenceError::ChatBoundToAnotherActor
+            ),
+            "{refusal:?}"
+        );
+        test.cleanup().await.expect("cleanup");
+    });
+}

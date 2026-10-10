@@ -126,11 +126,10 @@ pub async fn build(context: PublicContext) -> Result<BackgroundRuntime, Telegram
         &platform.audience,
     )
     .map_err(|error| TelegramError::internal(Subsystem::Platform, error))?;
-    let sessions = Arc::new(platform_api::session::SessionSource::new(
-        platform_client,
-        issuer,
-        Box::new(PlatformClock),
-    ));
+    let sessions = Arc::new(
+        platform_api::session::SessionSource::new(platform_client, issuer, Box::new(PlatformClock))
+            .with_on_mint(telegram_http::identity_binding_hook(database.clone())),
+    );
 
     let username = bot_api.username.clone();
     let mut runtime = spawn_runtime_with(

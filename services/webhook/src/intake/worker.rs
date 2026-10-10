@@ -10,12 +10,12 @@
 //! The task is detached by design: after the shutdown grace window closes, queued-but-unprocessed
 //! items remain processable in the database rather than silently gone.
 
+mod attachment;
 mod capture_run;
 
 use std::sync::Arc;
 use std::time::Duration;
 
-use ratatoskr_identifiers::MediaType;
 use ratatoskr_telegram_blob_store::BlobStore;
 use telegram_persistence::{Database, UpdateState};
 use telegram_telemetry::metrics::{
@@ -31,6 +31,7 @@ use crate::intake::github;
 use crate::intake::intent;
 use crate::intake::library;
 use crate::intake::settings::{self, SettingsResult};
+use attachment::{MessageAttachment, handle_attachment, message_attachment};
 
 const INTERACTION_CLEANUP_BATCH: u32 = 100;
 const INTERACTION_CLEANUP_INTERVAL: Duration = Duration::from_mins(1);
@@ -498,127 +499,6 @@ const fn token_refusal_name(
     }
 }
 
-/// Handle the attachment alternative after URL parsing: supported files enter the bounded blob
-/// path; unsupported kinds and declared oversize inputs receive one durable, truthful response.
-async fn handle_attachment(
-    database: &Database,
-    bot_id: i64,
-    parts: &MessageParts<'_>,
-    context: &CaptureContext,
-) -> ProcessingOutcome {
-    let Some(choice) = select_attachment(parts.attachment.as_ref(), context.max_attachment_bytes)
-    else {
-        return UpdateState::Unsupported.into();
-    };
-    let choice = match choice {
-        Ok(choice) => choice,
-        Err(reply) => {
-            return enqueue_reply(database, bot_id, parts.chat_id, reply)
-                .await
-                .into();
-        }
-    };
-
-    let file = match context.bot_api.get_file(&choice.file_id).await {
-        Ok(file) => file,
-        Err(error) => {
-            tracing::warn!(error = %error, class = "attachment_file_resolution_failed", "Bot API file resolution failed");
-            return UpdateState::Failed.into();
-        }
-    };
-    let mut download = match context.bot_api.download_file(&file.path).await {
-        Ok(download) => download,
-        Err(error) => {
-            tracing::warn!(error = %error, class = "attachment_download_failed", "Bot API attachment download failed");
-            return UpdateState::Failed.into();
-        }
-    };
-    let Ok(media_type) = MediaType::parse(&choice.media_type) else {
-        return UpdateState::Failed.into();
-    };
-    let blob = match context
-        .blobs
-        .store(
-            &media_type,
-            &mut download,
-            Some(context.max_attachment_bytes),
-        )
-        .await
-    {
-        Ok(blob) => blob,
-        Err(error) => {
-            tracing::warn!(error = %error, class = "attachment_store_failed", "attachment blob storage failed");
-            return UpdateState::Failed.into();
-        }
-    };
-    let metadata = telegram_persistence::interaction_tokens::IntentMetadata {
-        forward: parts.forward.clone(),
-        blob: Some(telegram_persistence::interaction_tokens::BlobCapture {
-            owner_service: blob.owner_service.as_str().to_owned(),
-            algorithm: "sha256".to_owned(),
-            digest_hex: blob.digest.hex.as_str().to_owned(),
-            media_type: blob.media_type.as_str().to_owned(),
-            length_bytes: blob.length_bytes,
-        }),
-    };
-    let source = platform_api::CaptureSource::Blob {
-        owner_service: blob.owner_service.as_str().to_owned(),
-        digest_hex: blob.digest.hex.as_str().to_owned(),
-        media_type: blob.media_type.as_str().to_owned(),
-        length_bytes: blob.length_bytes,
-    };
-    capture_run::run_capture(
-        database,
-        bot_id,
-        parts.chat_id,
-        parts.sender_id,
-        source,
-        context,
-        Some(metadata),
-    )
-    .await
-}
-
-/// Pick the largest photo that can enter the configured budget; a document has one declared size.
-fn select_attachment(
-    attachment: Option<&MessageAttachment>,
-    limit: u64,
-) -> Option<Result<AttachmentChoice, ReplyKind>> {
-    match attachment? {
-        MessageAttachment::Document {
-            file_id,
-            declared_bytes,
-            media_type,
-        } if *declared_bytes <= limit => Some(Ok(AttachmentChoice {
-            file_id: file_id.clone(),
-            media_type: media_type.clone(),
-        })),
-        MessageAttachment::Document { .. } => Some(Err(ReplyKind::TooLarge { limit })),
-        MessageAttachment::Photos(photos) => photos
-            .iter()
-            .filter(|photo| photo.declared_bytes <= limit)
-            .max_by_key(|photo| photo.declared_bytes)
-            .map(|photo| {
-                Ok(AttachmentChoice {
-                    file_id: photo.file_id.clone(),
-                    media_type: "image/jpeg".to_owned(),
-                })
-            })
-            .or(Some(Err(ReplyKind::TooLarge { limit }))),
-        MessageAttachment::Unsupported => Some(Err(ReplyKind::Unsupported)),
-    }
-}
-
-/// Persist a single static reply. It deliberately does not touch Platform or Bot API directly.
-async fn enqueue_reply(
-    database: &Database,
-    bot_id: i64,
-    chat_id: i64,
-    reply: ReplyKind,
-) -> UpdateState {
-    enqueue_text(database, bot_id, chat_id, &reply.body()).await
-}
-
 /// Persist one bounded HTML reply without touching Telegram directly.
 pub(super) async fn enqueue_text(
     database: &Database,
@@ -657,34 +537,9 @@ pub(super) async fn enqueue_text(
     }
 }
 
-/// Static response classes: no untrusted MIME, filename, or Telegram content reaches the reply.
-enum ReplyKind {
-    Unsupported,
-    TooLarge { limit: u64 },
-}
-
-impl ReplyKind {
-    fn body(&self) -> String {
-        match self {
-            Self::Unsupported => {
-                "<b>Unsupported attachment</b>\nSend a PDF document or photo; video, voice, and audio are not supported yet.".to_owned()
-            }
-            Self::TooLarge { limit } => format!(
-                "<b>Attachment too large</b>\nSend a PDF document or photo up to {limit} bytes."
-            ),
-        }
-    }
-}
-
 /// A worker timestamp only schedules a ready outbound job; no Telegram request occurs here.
 pub(super) fn now_secs() -> i64 {
     jiff::Timestamp::now().as_second()
-}
-
-/// The selected file ready for a Bot API `getFile` request.
-struct AttachmentChoice {
-    file_id: String,
-    media_type: String,
 }
 
 /// The pieces of a message update the domain action reads: its text, sender, chat, caption, and
@@ -696,23 +551,6 @@ struct MessageParts<'a> {
     chat_id: i64,
     forward: Option<telegram_persistence::interaction_tokens::CaptureOrigin>,
     attachment: Option<MessageAttachment>,
-}
-
-/// The minimized attachment metadata Telegram supplies before a download starts.
-enum MessageAttachment {
-    Document {
-        file_id: String,
-        declared_bytes: u64,
-        media_type: String,
-    },
-    Photos(Vec<PhotoCandidate>),
-    Unsupported,
-}
-
-/// One photo rendition Telegram made available on the message.
-struct PhotoCandidate {
-    file_id: String,
-    declared_bytes: u64,
 }
 
 fn message_parts(kind: &bot_api::UpdateKind) -> Option<MessageParts<'_>> {
@@ -730,50 +568,6 @@ fn message_parts(kind: &bot_api::UpdateKind) -> Option<MessageParts<'_>> {
         forward: message.forward_origin().and_then(minimize_origin),
         attachment: message_attachment(message),
     })
-}
-
-/// Identify supported attachment metadata without downloading it. All unsupported media shares
-/// one static reply; only its existence is relevant, not untrusted provider labels.
-fn message_attachment(message: &bot_api::Message) -> Option<MessageAttachment> {
-    if let Some(document) = message.document() {
-        #[expect(
-            clippy::redundant_closure_for_method_calls,
-            reason = "Mime is a Teloxide-owned type; keeping its crate out of this boundary avoids a direct transitive dependency"
-        )]
-        let Some(media_type) = document.mime_type.as_ref().map(|mime| mime.essence_str()) else {
-            return Some(MessageAttachment::Unsupported);
-        };
-        return Some(if media_type == "application/pdf" {
-            MessageAttachment::Document {
-                file_id: document.file.id.0.clone(),
-                declared_bytes: u64::from(document.file.size),
-                media_type: media_type.to_owned(),
-            }
-        } else {
-            MessageAttachment::Unsupported
-        });
-    }
-    if let Some(photos) = message.photo() {
-        return Some(MessageAttachment::Photos(
-            photos
-                .iter()
-                .map(|photo| PhotoCandidate {
-                    file_id: photo.file.id.0.clone(),
-                    declared_bytes: u64::from(photo.file.size),
-                })
-                .collect(),
-        ));
-    }
-    if message.voice().is_some()
-        || message.video().is_some()
-        || message.audio().is_some()
-        || message.animation().is_some()
-        || message.video_note().is_some()
-        || message.sticker().is_some()
-    {
-        return Some(MessageAttachment::Unsupported);
-    }
-    None
 }
 
 /// Provenance for a URL capture contains only the forward facts and never a blob marker.

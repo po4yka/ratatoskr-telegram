@@ -6,10 +6,12 @@
 > The service admits and deduplicates secure Bot API
 > updates, enforces the private owner access gate, submits URL captures to Platform, and projects
 > their progress through a durable outbound queue. Item 6 also captures forwarded external links
-> with minimized provenance and accepts bounded PDFs/photos: they stream through the Bot API into
-> a Telegram-owned content-addressed blob store, are SHA-256 hashed, and reach Platform as opaque
-> `BlobRef` references. Unsupported video, voice, audio, and document types receive one truthful
-> response; extraction and transcription remain outside this repository. GitHub confirmations now
+> with minimized provenance and accepts bounded PDF documents: they stream through the Bot API into
+> a Telegram-owned content-addressed blob store, are SHA-256 hashed, and reach Platform's blob
+> capture route as opaque `BlobRef` references. Photos and every other attachment type (video,
+> voice, audio, other documents) receive one truthful static reply; images are refused until an
+> OCR capture path exists, and every capture or attachment failure now tells the sender the item
+> was not saved. Extraction and transcription remain outside this repository. GitHub confirmations now
 > use durable versioned dialogues and exact 64-character, scope-bound, single-use callback tokens;
 > `/start` carries only the same kind of opaque server-side intent. It also consumes the fixed
 > Platform notification subject, applies private-chat preferences and quiet hours, and dispatches
@@ -88,6 +90,8 @@ downloaded attachment bytes before their BlobRef handoff. It defaults to
 absolute service-owned path. The local path is not a Platform contract and is never included in an
 intent, log, or Telegram message.
 
+The shipped single-host profile sets the root to `/mnt/nvme/ratatoskr/blobs/ratatoskr-telegram` on the durable device, owned by the webhook user and group-readable by `ratatoskr-telegram-blobs` (setgid `2750`, unit `UMask=0027`, see `deploy/README.md`). The extractor mounts the same directory read-only and reads Telegram-owned bytes by `BlobRef` (owner, sha256 digest, length) without any transfer service; it never writes, renames, or deletes there.
+
 ### `ratatoskr-telegram-dispatcher`
 
 The dispatcher, live since item 4:
@@ -131,7 +135,7 @@ The bot accepts several explicit article inputs:
 - `/article <url>`;
 - a forwarded channel message containing a URL;
 - several URLs in one interaction;
-- a PDF document or photo;
+- a PDF document (photos and other file types are refused with one static reply);
 - forwarded or pasted text saved as a note/source.
 
 Typical flow:

@@ -89,6 +89,7 @@ pub async fn build(context: PublicContext) -> Result<Router, TelegramError> {
     let capture = build_capture_context(
         &context.config.platform,
         client,
+        &database,
         context.config.ingestion.max_attachment_bytes,
         context.config.ingestion.blob_root.as_path(),
     )?;
@@ -104,13 +105,17 @@ pub async fn build(context: PublicContext) -> Result<Router, TelegramError> {
 
 /// Build the Platform half of the domain action from validated configuration.
 ///
+/// The session source it returns binds the sender's Platform user id to their identity row on
+/// every network exchange (XR-021 CONTRACTS S11). Public so tests drive the production wiring.
+///
 /// # Errors
 ///
 /// A [`TelegramError::Internal`] labelled `platform` when the client stack cannot be built or
 /// the configured signing key does not decode — both unreachable behind validation V16/V17.
-fn build_capture_context(
+pub fn build_capture_context(
     platform: &telegram_core::PlatformConfig,
     bot_api: bot_api::Client,
+    database: &telegram_persistence::Database,
     max_attachment_bytes: u64,
     blob_root: &Path,
 ) -> Result<intake::worker::CaptureContext, TelegramError> {
@@ -128,7 +133,8 @@ fn build_capture_context(
         client,
         issuer,
         Box::new(platform_api::session::SystemClock),
-    );
+    )
+    .with_on_mint(telegram_http::identity_binding_hook(database.clone()));
     // This service owns its bytes. Deployment mounts this durable root; inability to prepare it
     // refuses startup rather than accepting attachments that cannot be handed off safely.
     let blobs = ratatoskr_telegram_blob_store::BlobStore::open(blob_root)

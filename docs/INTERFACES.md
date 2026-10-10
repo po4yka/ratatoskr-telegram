@@ -19,7 +19,7 @@ Send/edit/delete/answer-callback/file operations through a dispatcher with per-c
 
 ## Platform/domain
 
-Identity assertion exchange; operation creation/status; article capture; typed library
+Identity assertion exchange (each successful network exchange also binds the sender's Platform user id to `telegram.identities.internal_user_id`); operation creation/status; article capture (`POST /v1/captures` for URLs, `POST /v1/captures/blobs` for stored PDF documents referenced by `BlobRef`; photos and other attachment types are refused locally with a static reply and never reach Platform; a capture that Platform refuses or cannot take gets a static "could not save" or "temporarily unavailable" reply); typed library
 `GET /v1/library/search` and idempotent `PUT /v1/library/items/{analysis_id}/read-state`; and typed
 GitHub repository preview/action calls through Platform's authenticated `/v1/gh/repositories`
 gateway. Telegram checks `library.search` before querying and independently checks
