@@ -8,22 +8,32 @@ Receiving document and photo attachments from an authorized private chat as firs
 
 ### Requirement: Attachments are gated on type and declared size before download
 
-An authorized private message carrying a document SHALL be ingested only when its MIME type is in the supported allowlist (`application/pdf`) or it is a photo (largest available size, `image/jpeg`); any other media kind - video, voice, audio, animation, video note, sticker, or a document of an unlisted MIME type - SHALL produce exactly one explicit HTML reply stating that the input type is not supported yet and what is supported, and SHALL settle the update without any Platform call. A document or photo whose Bot API-declared byte size exceeds the configured ingestion limit SHALL receive one explicit reply naming the limit, and no file transfer SHALL start.
+An authorized private message carrying a document SHALL be ingested only when its MIME type is `application/pdf`. Every other input - a photo, a document of any other MIME type or with none, video, voice, audio, animation, video note, or a sticker - SHALL produce exactly one static HTML reply stating that the type is not supported and that a PDF document with a text layer is what is supported, and SHALL settle the update without any Platform call. Photos are refused on purpose: image capture needs an OCR subsystem and is a separate follow-up. A PDF whose Bot API-declared byte size exceeds the configured ingestion limit SHALL receive one explicit reply naming the limit, and no file transfer SHALL start.
 
 #### Scenario: A PDF document is accepted for ingestion
 
 - **WHEN** an enabled sender in a private chat sends a document with MIME type `application/pdf` whose declared size is within the configured limit
 - **THEN** the update proceeds to download and submission, not to an unsupported reply
 
+#### Scenario: A photo is refused with the static reply
+
+- **WHEN** an enabled sender sends a photo
+- **THEN** exactly one outbound reply carries the static unsupported body, no Bot API file request, session exchange or capture call is made, and the update settles processed
+
+#### Scenario: A non-PDF document is refused with the static reply
+
+- **WHEN** an enabled sender sends a document whose MIME type is not `application/pdf`
+- **THEN** exactly one outbound reply carries the static unsupported body and no Platform call is made
+
 #### Scenario: A voice message gets an explicit truthful reply
 
 - **WHEN** an enabled sender sends a voice message
-- **THEN** exactly one outbound reply states the type is not supported yet, no session exchange or capture call reaches Platform, and the update settles
+- **THEN** exactly one outbound reply states the type is not supported, no session exchange or capture call reaches Platform, and the update settles
 
 #### Scenario: An oversized document is refused before any transfer
 
-- **WHEN** a document's declared `file_size` exceeds the configured ingestion limit
-- **THEN** one reply names the refusal class and the update settles with no file download request issued to the Bot API harness
+- **WHEN** a PDF's declared `file_size` exceeds the configured ingestion limit
+- **THEN** one reply names the limit and the update settles with no file download request issued to the Bot API harness
 
 ### Requirement: Attachment bytes are downloaded inside a bounded budget and hashed while streaming
 
@@ -53,16 +63,40 @@ Stored attachment bytes SHALL be written to a telegram-owned content-addressed s
 - **WHEN** the store is asked to verify a previously stored attachment against its published BlobRef
 - **THEN** verification passes on owner, algorithm, digest, media type, and length
 
-### Requirement: A stored attachment submits as a capture referencing the blob
+### Requirement: A stored PDF submits as a capture on the blob route
 
-A successfully stored attachment SHALL submit the same idempotent capture operation flow as a URL capture, except the submitted payload references the stored BlobRef instead of a URL and carries the attachment's media type; acknowledgment, binding, intent record, projection follow, and failure degradation all behave exactly as for URL captures.
+A successfully stored PDF SHALL submit the same idempotent capture operation flow as a URL capture, except that the request goes to Platform's blob route `POST /v1/captures/blobs` with a body whose `blob` member is the stored BlobRef (owner service, sha256 digest, media type, byte length) instead of a URL; acknowledgment, binding, intent record and projection follow behave exactly as for URL captures. URL captures continue to use `POST /v1/captures`.
 
-#### Scenario: A stored photo becomes a blob-referencing capture
+#### Scenario: A stored PDF becomes a blob-referencing capture
 
-- **WHEN** an authorized sender sends a photo within the limits and storage succeeds
-- **THEN** one capture submission carries the stored BlobRef (owner service of this deployment, sha256 digest, image media type, byte length) and no fabricated URL, and the chat receives exactly one bound acknowledgment
+- **WHEN** an authorized sender sends a PDF within the limits and storage succeeds
+- **THEN** Platform receives exactly one `POST /v1/captures/blobs` carrying the stored BlobRef and no URL, none is sent to `POST /v1/captures`, and the chat receives exactly one bound acknowledgment
+
+#### Scenario: A URL capture keeps its route
+
+- **WHEN** an authorized sender sends a bare URL
+- **THEN** Platform receives the capture on `POST /v1/captures` with a `url` member
 
 #### Scenario: Storage failure fails the update truthfully
 
-- **WHEN** the blob store cannot accept the downloaded bytes within the attempt bounds
-- **THEN** the update settles failed with a safe storage class and no capture submission names a blob that was never durably stored
+- **WHEN** the blob store cannot accept the downloaded bytes, or the file cannot be resolved or downloaded, or its media type cannot be parsed
+- **THEN** exactly one static reply says the attachment could not be read and asks the sender to resend it, the update settles failed, and no capture submission names a blob that was never durably stored
+
+### Requirement: Every capture failure produces one static reply
+
+When a capture submission ends in a transient class after its bounded retries, the sender SHALL receive one static reply that the service is temporarily unavailable and the item was not saved. When it ends in a permanent refusal, the sender SHALL receive one static reply that the item could not be saved. The reply SHALL be enqueued before the update settles `failed`; a failure to enqueue the reply SHALL NOT change that state. An accepted capture whose local projection is still pending SHALL keep its retry path and SHALL NOT produce a failure reply. No reply SHALL contain content derived from the failure, the request, or Platform's answer.
+
+#### Scenario: Platform refuses the capture permanently
+
+- **WHEN** Platform answers a capture with a permanent refusal
+- **THEN** one static could-not-save reply is enqueued and the update settles failed after exactly one attempt
+
+#### Scenario: Platform is unavailable
+
+- **WHEN** Platform answers a capture with a transient failure on every bounded attempt
+- **THEN** one static temporarily-unavailable reply is enqueued and the update settles failed
+
+#### Scenario: The reply cannot be enqueued
+
+- **WHEN** a capture fails and the reply insert also errors
+- **THEN** the update still settles failed
