@@ -20,8 +20,8 @@ use telegram_core::config;
 const VALID_KEY: &str = "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20";
 const AUDIENCE_TEST: &str = "ratatoskr-edge-test";
 
-/// The section parses with its documented defaults; validation then demands the secrets, which
-/// proves parsing reached it and the defaults are the development-harness values.
+/// The section parses with its documented defaults; validation then demands the signing key, which
+/// proves parsing reached it. The audience now has a default, so only the key is named.
 #[test]
 fn platform_section_parses_with_defaults_and_unknown_keys_refused() {
     Jail::expect_with(|jail| {
@@ -34,9 +34,12 @@ fn platform_section_parses_with_defaults_and_unknown_keys_refused() {
             RuntimeRole::Dispatcher,
             config::figment(RuntimeRole::Dispatcher),
         )
-        .expect_err("the empty secrets must be refused");
+        .expect_err("the empty signing key must be refused");
         let report = error.report(RuntimeRole::Dispatcher);
-        assert!(report.contains("platform.audience"), "{report}");
+        assert!(
+            !report.contains("platform.audience"),
+            "the audience defaults to edge and must not be demanded: {report}"
+        );
         assert!(
             report.contains("platform.assertion_signing_key"),
             "{report}"
@@ -105,7 +108,7 @@ fn platform_value_rules_violations_name_keys_without_echoing_secrets() {
     });
 }
 
-/// Both runtime roles demand the Platform section's audience and signing key.
+/// Both runtime roles demand the Platform section's signing key; the audience defaults to `edge`.
 #[test]
 fn both_roles_require_the_platform_section() {
     for role in [RuntimeRole::Webhook, RuntimeRole::Dispatcher] {
@@ -128,9 +131,9 @@ fn both_roles_require_the_platform_section() {
                 .unwrap_or_else(|| panic!("an unconfigured platform section must refuse"));
             let report = error.report(role);
             assert!(
-                report.contains("platform.audience")
-                    && report.contains("platform.assertion_signing_key"),
-                "{role} must name both platform secrets:\n{report}"
+                report.contains("platform.assertion_signing_key")
+                    && !report.contains("platform.audience"),
+                "{role} must name the signing key and not the defaulted audience:\n{report}"
             );
             Ok(())
         });
@@ -177,4 +180,30 @@ fn a_configured_platform_section_validates() {
             Ok(())
         });
     }
+}
+
+/// The compiled defaults name the allocated Edge: its public API listener and the fixed audience
+/// Edge accepts (XR-021 CONTRACTS S11). The unallocated 9463 and an empty audience are gone.
+#[test]
+fn defaults_target_the_allocated_edge_listener() {
+    let platform = config::PlatformConfig::default();
+    assert_eq!(platform.base_url.as_str(), "http://127.0.0.1:8080/");
+    assert_eq!(platform.audience, "edge");
+}
+
+/// The default audience never lets an explicitly empty value through: V16 still refuses it.
+#[test]
+fn an_explicitly_empty_audience_is_still_refused() {
+    Jail::expect_with(|jail| {
+        jail.clear_env();
+        jail.set_env("RATATOSKR__PLATFORM__AUDIENCE", "");
+        let error = config::load_from(
+            RuntimeRole::Dispatcher,
+            config::figment(RuntimeRole::Dispatcher),
+        )
+        .expect_err("an empty audience must be refused");
+        let report = error.report(RuntimeRole::Dispatcher);
+        assert!(report.contains("platform.audience"), "{report}");
+        Ok(())
+    });
 }

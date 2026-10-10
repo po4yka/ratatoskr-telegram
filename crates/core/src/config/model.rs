@@ -185,12 +185,14 @@ impl Default for BotApiConfig {
 
 /// The Platform public-API endpoint, the assertion audience, and this service's signing half.
 ///
-/// Defaults are development-harness values; both roles' validation (V17) demands the audience and
-/// a usable signing key so an unconfigured process refuses before binding anything.
+/// The defaults name the allocated Edge (XR-021 CONTRACTS S11): its public API listener and the
+/// fixed audience the Edge binary accepts. Both roles' validation (V17) still demands a usable
+/// signing key, and an explicitly empty audience stays refused, so an unconfigured process refuses
+/// before binding anything.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PlatformConfig {
-    /// `RATATOSKR__PLATFORM__BASE_URL`. Default `http://127.0.0.1:9463`, the development harness.
+    /// `RATATOSKR__PLATFORM__BASE_URL`. Default `http://127.0.0.1:8080`, the allocated Edge listener.
     ///
     /// Rule V9's loopback-only plain-`http` allowance applies here exactly as to the Bot API.
     #[serde(default = "default_platform_base_url")]
@@ -201,8 +203,9 @@ pub struct PlatformConfig {
     pub timeout_seconds: u64,
 
     /// `RATATOSKR__PLATFORM__AUDIENCE`. The listener identity assertions may be redeemed at.
-    /// SECRET-free but deployment-specific; empty default is refused where required.
-    #[serde(default)]
+    /// SECRET-free. Default `edge`, the fixed audience of the Edge binary; an explicitly empty
+    /// value is refused (rules V16 and V17).
+    #[serde(default = "default_platform_audience")]
     pub audience: String,
 
     /// `RATATOSKR__PLATFORM__ASSERTION_SIGNING_KEY`. The Ed25519 seed as 64 hex characters.
@@ -221,7 +224,7 @@ impl Default for PlatformConfig {
         Self {
             base_url: default_platform_base_url(),
             timeout_seconds: default_platform_timeout_seconds(),
-            audience: String::default(),
+            audience: default_platform_audience(),
             assertion_signing_key: SecretString::default(),
             assertion_signing_key_file: None,
         }
@@ -234,7 +237,11 @@ fn default_platform_base_url() -> Url {
         clippy::expect_used,
         reason = "a compile-time constant URL cannot fail to parse"
     )]
-    Url::parse("http://127.0.0.1:9463").expect("the documented default parses")
+    Url::parse("http://127.0.0.1:8080").expect("the documented default parses")
+}
+
+fn default_platform_audience() -> String {
+    "edge".to_owned()
 }
 
 const fn default_platform_timeout_seconds() -> u64 {

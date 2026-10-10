@@ -170,3 +170,91 @@ fn deployment_profile_refuses_role_or_schema_drift() {
         );
     }
 }
+
+/// The shipped examples name the audience Edge accepts and the port the workspace allocates to
+/// Edge (XR-021 CONTRACTS S11); the old audience and the unallocated default are gone.
+#[test]
+fn shipped_examples_target_the_allocated_edge() {
+    for (role, example) in [
+        ("webhook", read("systemd/webhook.conf.example")),
+        ("dispatcher", read("systemd/dispatcher.conf.example")),
+    ] {
+        let lines: Vec<&str> = example.lines().collect();
+        for expected in [
+            "RATATOSKR__PLATFORM__AUDIENCE=edge",
+            "RATATOSKR__PLATFORM__BASE_URL=http://127.0.0.1:8080",
+        ] {
+            assert!(
+                lines.contains(&expected),
+                "{role} example lacks exactly {expected}\n{example}"
+            );
+        }
+        assert!(
+            !example.contains("ratatoskr-platform"),
+            "{role} example still names the old audience\n{example}"
+        );
+    }
+}
+
+/// `.env.example` documents the compiled listener default, not another service's operator port
+/// (XR-021 CONTRACTS S05: 9469 belongs to channel-digests).
+#[test]
+fn env_example_documents_the_compiled_listener_defaults() {
+    let example = std::fs::read_to_string(root().join(".env.example")).expect(".env.example");
+    assert!(
+        example.contains("RATATOSKR__WEBHOOK__BIND=127.0.0.1:8182"),
+        "the webhook bind default is not documented as 127.0.0.1:8182"
+    );
+    assert!(
+        example.contains("Default 127.0.0.1:8182"),
+        "the webhook bind comment does not state the default 127.0.0.1:8182"
+    );
+    assert!(
+        !example.contains("9469"),
+        "9469 is channel-digests' API operator port and must not appear"
+    );
+}
+
+/// The attachment root lives on the durable device and is group-readable so the extractor can read
+/// Telegram-owned bytes by `BlobRef` without a transfer service (XR-021 CONTRACTS S11). The unit
+/// keeps its existing `/var/lib` write path; the new root is added beside it.
+#[test]
+fn attachment_root_is_on_the_durable_device_and_group_readable() {
+    const ROOT: &str = "/mnt/nvme/ratatoskr/blobs/ratatoskr-telegram";
+    let webhook_env = read("systemd/webhook.conf.example");
+    let webhook = read("systemd/ratatoskr-telegram-webhook.service");
+    let guide = read("README.md");
+
+    assert!(
+        webhook_env
+            .lines()
+            .any(|line| line == format!("RATATOSKR__INGESTION__BLOB_ROOT={ROOT}")),
+        "the attachment root is not on the durable device\n{webhook_env}"
+    );
+    let read_write = webhook
+        .lines()
+        .find(|line| line.starts_with("ReadWritePaths="))
+        .expect("the unit declares ReadWritePaths");
+    assert!(
+        read_write.starts_with("ReadWritePaths=/var/lib/ratatoskr-telegram")
+            && read_write.split_whitespace().any(|path| path == ROOT),
+        "ReadWritePaths does not list the attachment root: {read_write}"
+    );
+    assert!(webhook.contains("\nUMask=0027\n"), "UMask is not 0027");
+    let groups = webhook
+        .lines()
+        .find(|line| line.starts_with("SupplementaryGroups="))
+        .expect("the unit declares SupplementaryGroups");
+    assert!(
+        groups
+            .split_whitespace()
+            .any(|group| group.trim_start_matches("SupplementaryGroups=")
+                == "ratatoskr-telegram-blobs"),
+        "SupplementaryGroups lacks ratatoskr-telegram-blobs: {groups}"
+    );
+    assert!(
+        guide.contains("-o ratatoskr-telegram-webhook -g ratatoskr-telegram-blobs -m 2750")
+            && guide.contains(ROOT),
+        "the guide does not document the setgid 2750 install step"
+    );
+}

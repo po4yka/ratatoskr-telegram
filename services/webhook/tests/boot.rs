@@ -404,11 +404,16 @@ fn check_config_exits_zero_when_valid_and_78_when_invalid() {
         "webhook.secret_token",
         "database.url",
         "access.owner_telegram_user_id",
-        "platform.audience",
         "platform.assertion_signing_key",
     ] {
         assert!(report.contains(required), "{required} not named:\n{report}");
     }
+    // The audience defaults to the Edge's fixed `edge` (XR-021 CONTRACTS S11), so a missing value
+    // is no longer a violation.
+    assert!(
+        !report.contains("platform.audience"),
+        "the defaulted audience must not be demanded:\n{report}"
+    );
 
     // Fully configured, the webhook validates too.
     let configured = Command::new(built_binary("ratatoskr-telegram-webhook"))

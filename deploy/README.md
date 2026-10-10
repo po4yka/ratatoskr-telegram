@@ -18,12 +18,16 @@ members of that narrow group. The webhook secret is `root:ratatoskr-telegram-web
 NATS credentials are `root:ratatoskr-telegram-dispatcher 0640`. Directories remain root-owned and
 not group-writable. Logs stay on NVMe under `/mnt/nvme/ratatoskr/logs`.
 
+Both examples target the allocated Edge: `RATATOSKR__PLATFORM__AUDIENCE=edge` (the fixed audience of the Edge binary) and `RATATOSKR__PLATFORM__BASE_URL=http://127.0.0.1:8080` (Edge's public API listener in the workspace port allocation).
+
 After creating the named service users/groups and provisioning PostgreSQL/NATS under the workspace
 profile, an authorized operator installs the non-secret artifacts explicitly:
 
 ```console
 $ sudo install -d -o root -g root -m 0755 /etc/ratatoskr /etc/ratatoskr/secrets
 $ sudo install -d -o root -g root -m 0755 /mnt/nvme/ratatoskr/logs
+$ sudo groupadd --system ratatoskr-telegram-blobs
+$ sudo install -d -o ratatoskr-telegram-webhook -g ratatoskr-telegram-blobs -m 2750 /mnt/nvme/ratatoskr/blobs/ratatoskr-telegram
 $ sudo install -o root -g root -m 0755 target/release/ratatoskr-telegram-webhook /usr/local/bin/
 $ sudo install -o root -g root -m 0755 target/release/ratatoskr-telegram-dispatcher /usr/local/bin/
 $ sudo install -o root -g root -m 0644 deploy/systemd/*.service /etc/systemd/system/
@@ -69,3 +73,9 @@ On Linux, additionally run `systemd-analyze verify` against both units after sup
 referenced users/files in an isolated verifier. Installation, firewall changes, webhook
 registration, credential rotation and process starts are explicit operator writes and are not
 performed by repository validation.
+
+### Attachment blob root
+
+The webhook stages PDF attachments in `/mnt/nvme/ratatoskr/blobs/ratatoskr-telegram` (`RATATOSKR__INGESTION__BLOB_ROOT` in the webhook example), on the durable device rather than the boot device. The unit lists the path in `ReadWritePaths`, runs with `UMask=0027`, and carries `ratatoskr-telegram-blobs` in `SupplementaryGroups`. The directory is created with `install -d -o ratatoskr-telegram-webhook -g ratatoskr-telegram-blobs -m 2750` as shown above: the setgid bit makes every new blob file inherit the group, and the mode gives that group read and traverse access only.
+
+The extractor runs with `SupplementaryGroups=ratatoskr-telegram-blobs` and `ReadOnlyPaths=/mnt/nvme/ratatoskr/blobs/ratatoskr-telegram`, and reads Telegram-owned bytes by `BlobRef` (owner, sha256 digest, length). It never writes, renames, or deletes there, and no filesystem path crosses a service boundary. If the group does not exist or the extractor is not a member, its runs fail with `blob_unreadable`; that is host state no repository can apply.

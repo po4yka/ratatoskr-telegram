@@ -9,7 +9,7 @@ StartLimitIntervalSec=0
 Type=exec
 User=ratatoskr-telegram-webhook
 Group=ratatoskr-telegram-webhook
-SupplementaryGroups=ratatoskr ratatoskr-telegram-secrets
+SupplementaryGroups=ratatoskr ratatoskr-telegram-secrets ratatoskr-telegram-blobs
 EnvironmentFile=/etc/ratatoskr/telegram-webhook.conf
 ExecStartPre=/usr/local/bin/ratatoskr-telegram-webhook check-config
 ExecStartPre=/usr/local/bin/ratatoskr-telegram-webhook check-schema
@@ -28,7 +28,7 @@ TasksMax=128
 
 NoNewPrivileges=yes
 ProtectSystem=strict
-ReadWritePaths=/var/lib/ratatoskr-telegram /mnt/nvme/ratatoskr/logs
+ReadWritePaths=/var/lib/ratatoskr-telegram /mnt/nvme/ratatoskr/logs /mnt/nvme/ratatoskr/blobs/ratatoskr-telegram
 ProtectHome=yes
 PrivateTmp=yes
 PrivateDevices=yes
@@ -49,7 +49,7 @@ SystemCallFilter=@system-service
 SystemCallErrorNumber=EPERM
 CapabilityBoundingSet=
 AmbientCapabilities=
-UMask=0077
+UMask=0027
 
 [Install]
 WantedBy=multi-user.target
