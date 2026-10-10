@@ -42,24 +42,38 @@ pub(crate) async fn run_capture(
             .increment(1);
             ProcessingOutcome::RetryRecoverableAction
         }
-        Err(
-            class @ (capture::SubmitClass::TransientExhausted
-            | capture::SubmitClass::PermanentRefusal),
-        ) => {
-            metrics::counter!(
-                telegram_telemetry::metrics::TELEGRAM_CAPTURE_SUBMISSIONS_TOTAL,
-                "class" => class.as_str(),
+        Err(class @ capture::SubmitClass::TransientExhausted) => {
+            refuse(
+                database,
+                bot_id,
+                chat_id,
+                class,
+                ReplyKind::CaptureUnavailable,
             )
-            .increment(1);
-            tracing::warn!(class = class.as_str(), "the capture could not be submitted");
-            // The sender hears about every failure that settles the update (S11): one static
-            // reply, then `Failed` whether or not the reply could be stored.
-            let reply = match class {
-                capture::SubmitClass::TransientExhausted => ReplyKind::CaptureUnavailable,
-                capture::SubmitClass::PermanentRefusal
-                | capture::SubmitClass::AcceptedProjectionPending => ReplyKind::CaptureRefused,
-            };
-            reply_and_fail(database, bot_id, chat_id, reply).await
+            .await
+        }
+        Err(class @ capture::SubmitClass::PermanentRefusal) => {
+            refuse(database, bot_id, chat_id, class, ReplyKind::CaptureRefused).await
         }
     }
+}
+
+/// Count, log, and settle a capture Platform did not accept: the sender hears about every such
+/// failure (S11) through one static reply, then the update is `Failed` whether or not the reply
+/// could be stored. Each class names its own reply at the call site, so a class that must not
+/// reach this path cannot be given a misleading one.
+async fn refuse(
+    database: &Database,
+    bot_id: i64,
+    chat_id: i64,
+    class: capture::SubmitClass,
+    reply: ReplyKind,
+) -> ProcessingOutcome {
+    metrics::counter!(
+        telegram_telemetry::metrics::TELEGRAM_CAPTURE_SUBMISSIONS_TOTAL,
+        "class" => class.as_str(),
+    )
+    .increment(1);
+    tracing::warn!(class = class.as_str(), "the capture could not be submitted");
+    reply_and_fail(database, bot_id, chat_id, reply).await
 }
