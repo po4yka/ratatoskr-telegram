@@ -76,7 +76,8 @@ fn generate_creates_a_private_seed_file_and_never_overwrites_it() {
     assert_eq!(content.len(), 65);
     assert!(content.ends_with('\n'));
     assert!(
-        content[..64]
+        content
+            .trim_end()
             .bytes()
             .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)),
         "64 lowercase hex characters",

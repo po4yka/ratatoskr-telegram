@@ -232,6 +232,11 @@ curl -si http://127.0.0.1:8182/webhook \
 # validate a configuration without starting anything (exit 0 or 78)
 cargo run -p ratatoskr-telegram-webhook -- check-config
 
+# generate the Platform assertion seed once (mode 0600, never overwritten) and print the base64
+# public key Edge needs as RATATOSKR__IDENTITY__ASSERTION_KEY; `public <path>` prints it again
+cargo run -p ratatoskr-telegram-webhook -- assertion-key generate "$PWD/.local/assertion-seed"
+cargo run -p ratatoskr-telegram-webhook -- assertion-key public "$PWD/.local/assertion-seed"
+
 # stop cleanly; readiness flips to 503 during the drain while the listener still answers
 kill -TERM <pid>
 ```

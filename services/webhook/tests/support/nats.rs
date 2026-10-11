@@ -92,31 +92,30 @@ impl Drop for NatsFixture {
     }
 }
 
+/// The broker configuration: an administrator standing in for Edge, and the Telegram user exactly
+/// as `deploy/nats/identity.conf` ships it (XR-021 CONTRACTS R3-01), so a drift between the
+/// shipped stanza and what the dispatcher needs fails these boot tests too.
 fn nats_config(admin: &nkeys::KeyPair, telegram: &nkeys::KeyPair) -> String {
+    const PLACEHOLDER: &str = "UREPLACE_ME_WITH_THE_PUBLIC_NKEY_OF_RATATOSKR_TELEGRAM_XXXX";
+    let stanza = include_str!("../../../../deploy/nats/identity.conf");
+    assert!(
+        stanza.contains(PLACEHOLDER),
+        "the Telegram stanza lost its placeholder"
+    );
     format!(
-        r#"
+        r"
 port: 4222
 host: 0.0.0.0
 jetstream {{ store_dir: /data }}
 authorization {{
   users: [
     {{ nkey: {} }},
-    {{
-      nkey: {}
-      permissions: {{
-        publish: {{ allow: [
-          "$JS.API.CONSUMER.INFO.ratatoskr_events.ratatoskr_telegram_notifications",
-          "$JS.API.CONSUMER.MSG.NEXT.ratatoskr_events.ratatoskr_telegram_notifications",
-          "$JS.ACK.ratatoskr_events.ratatoskr_telegram_notifications.>"
-        ] }}
-        subscribe: {{ allow: ["_INBOX.>"] }}
-      }}
-    }}
+    {}
   ]
 }}
-"#,
+",
         admin.public_key(),
-        telegram.public_key(),
+        stanza.replace(PLACEHOLDER, &telegram.public_key()),
     )
 }
 

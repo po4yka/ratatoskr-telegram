@@ -125,15 +125,15 @@ fn public_refuses_a_malformed_seed_without_echoing_it() {
         let output = webhook(&["assertion-key", "public", path_argument(&seed)]);
         assert_ne!(output.status.code(), Some(0), "{name} must be refused");
         assert!(output.stdout.is_empty(), "{name}: nothing on stdout");
-        let seen = streams(&output);
+        let printed = streams(&output);
         let text = content.trim();
         assert!(
-            text.is_empty() || !seen.contains(text),
-            "{name}: the seed text was echoed: {seen}"
+            text.is_empty() || !printed.contains(text),
+            "{name}: the seed text was echoed: {printed}"
         );
         assert!(
-            seen.contains("assertion-key: "),
-            "{name}: the refusal names the command: {seen}"
+            printed.contains("assertion-key: "),
+            "{name}: the refusal names the command: {printed}"
         );
     }
     let missing = webhook(&[

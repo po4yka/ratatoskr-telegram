@@ -19,7 +19,7 @@ use telegram_telemetry::metrics::{
 
 /// The reply namespace of this identity. Platform's ACL lets the Telegram stanza subscribe to
 /// `_INBOX_telegram.>` and nothing else (XR-021 CONTRACTS.md section R3-01), so every connection
-/// the dispatcher opens sets it with `custom_inbox_prefix`; with the default prefix no JetStream
+/// the dispatcher opens sets it with `custom_inbox_prefix`; with the default prefix no `JetStream`
 /// reply would be delivered and each request would time out.
 const INBOX_PREFIX: &str = "_INBOX_telegram";
 
