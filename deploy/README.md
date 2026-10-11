@@ -10,12 +10,14 @@ dependencies. Listener bind addresses, the trusted cloudflared route, and the ta
 remain authoritative for ingress. A deployment that needs narrower directional egress must enforce
 it in a host network policy without pinning provider-controlled DNS answers in these shared units.
 
-Install the binaries in `/usr/local/bin`, the two examples in `/etc/ratatoskr`, four root-owned
-secret files under `/etc/ratatoskr/secrets`, the logrotate policy in `/etc/logrotate.d`, and the
-units in `/etc/systemd/system`. Environment files are `root:<role-group> 0640`. The shared bot
+Install the binaries in `/usr/local/bin`, the two examples in `/etc/ratatoskr`, three root-owned
+secret files under `/etc/ratatoskr/secrets`, the dispatcher's NATS seed at
+`/etc/ratatoskr/telegram.nkey` (where Platform's NATS README and every other service of the fleet
+install theirs, `/etc/ratatoskr/<identity>.nkey`), the logrotate policy in `/etc/logrotate.d`, and
+the units in `/etc/systemd/system`. Environment files are `root:<role-group> 0640`. The shared bot
 token and Platform signing key are `root:ratatoskr-telegram-secrets 0640`; both service users are
 members of that narrow group. The webhook secret is `root:ratatoskr-telegram-webhook 0640`, and the
-NATS credentials are `root:ratatoskr-telegram-dispatcher 0640`. Directories remain root-owned and
+NATS seed is `root:ratatoskr-telegram-dispatcher 0640`. Directories remain root-owned and
 not group-writable. Logs stay on NVMe under `/mnt/nvme/ratatoskr/logs`.
 
 Both examples target the allocated Edge: `RATATOSKR__PLATFORM__AUDIENCE=edge` (the fixed audience of the Edge binary) and `RATATOSKR__PLATFORM__BASE_URL=http://127.0.0.1:8080` (Edge's public API listener in the workspace port allocation).
@@ -36,7 +38,13 @@ $ sudo install -o root -g ratatoskr-telegram-webhook -m 0640 deploy/systemd/webh
 $ sudo install -o root -g ratatoskr-telegram-dispatcher -m 0640 deploy/systemd/dispatcher.conf.example /etc/ratatoskr/telegram-dispatcher.conf
 ```
 
-Replace every `CHANGE-ME`, provision the four secret files with the ownership described above,
+Install the seed that Platform issued for the `ratatoskr-telegram` NATS identity (the source path is wherever the operator holds it, never in this repository):
+
+```console
+$ sudo install -m 0640 -o root -g ratatoskr-telegram-dispatcher <issued-telegram-seed-file> /etc/ratatoskr/telegram.nkey
+```
+
+Replace every `CHANGE-ME`, provision the three secret files under `/etc/ratatoskr/secrets` with the ownership described above,
 and let Platform provision the fixed `ratatoskr_telegram_notifications` durable before enabling
 the dispatcher. Validate both effective configurations and the fresh schema contract without
 binding listeners:

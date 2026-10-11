@@ -258,3 +258,38 @@ fn attachment_root_is_on_the_durable_device_and_group_readable() {
         "the guide does not document the setgid 2750 install step"
     );
 }
+
+/// The dispatcher's NATS seed is installed at `/etc/ratatoskr/<identity>.nkey`, where Platform's
+/// NATS README and every other service of the fleet put theirs (XR-021 CONTRACTS R2-10). The bot
+/// token and the assertion signing key keep their `/etc/ratatoskr/secrets/` paths.
+#[test]
+fn dispatcher_example_installs_the_seed_where_the_fleet_does() {
+    const SEED: &str = "/etc/ratatoskr/telegram.nkey";
+    let dispatcher_env = read("systemd/dispatcher.conf.example");
+    let guide = read("README.md");
+
+    assert!(
+        dispatcher_env
+            .lines()
+            .any(|line| line == format!("RATATOSKR__NOTIFICATION_BUS__CREDENTIALS_FILE={SEED}")),
+        "the dispatcher example does not point the seed at {SEED}\n{dispatcher_env}"
+    );
+    assert!(
+        guide.contains("install -m 0640 -o root -g ratatoskr-telegram-dispatcher")
+            && guide.contains(SEED),
+        "the guide does not install the seed at {SEED} for the dispatcher group"
+    );
+    assert!(
+        !format!("{dispatcher_env}\n{guide}").contains("secrets/telegram.nkey"),
+        "a stale seed path under /etc/ratatoskr/secrets remains"
+    );
+    for kept in [
+        "RATATOSKR__BOT_API__TOKEN_FILE=/etc/ratatoskr/secrets/telegram-bot-token",
+        "RATATOSKR__PLATFORM__ASSERTION_SIGNING_KEY_FILE=/etc/ratatoskr/secrets/telegram-platform-signing-key",
+    ] {
+        assert!(
+            dispatcher_env.lines().any(|line| line == kept),
+            "{kept} moved out of /etc/ratatoskr/secrets"
+        );
+    }
+}
