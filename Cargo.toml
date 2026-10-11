@@ -99,6 +99,7 @@ sha2 = "0.10.9"
 # `jiff` matches Platform's timestamp type so claim instants serialize identically.
 ed25519-dalek = { version = "2.2.0", default-features = false, features = ["fast", "zeroize"] }
 base64        = "0.22.1"
+getrandom     = "0.3.4"      # the OS random bytes of a freshly generated assertion seed
 jiff          = { version = "0.2.15", default-features = false, features = ["std", "serde"] }
 
 # ---- identifiers ----

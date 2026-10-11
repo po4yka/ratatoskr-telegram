@@ -10,6 +10,7 @@
 //! construction and never renders in errors or logs.
 
 pub mod assertion;
+pub mod assertion_key;
 pub mod session;
 
 pub use session::{Clock, SessionSource};

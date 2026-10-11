@@ -121,11 +121,11 @@ pub async fn build(context: PublicContext) -> Result<BackgroundRuntime, Telegram
         Duration::from_secs(platform.timeout_seconds),
     )
     .map_err(|error| TelegramError::internal(Subsystem::Platform, error))?;
-    let issuer = platform_api::assertion::AssertionIssuer::from_seed(
-        &decode_seed(platform.assertion_signing_key.expose_secret())?,
-        &platform.audience,
-    )
-    .map_err(|error| TelegramError::internal(Subsystem::Platform, error))?;
+    let seed =
+        platform_api::assertion_key::decode_seed(platform.assertion_signing_key.expose_secret())
+            .map_err(|error| TelegramError::internal(Subsystem::Platform, error))?;
+    let issuer = platform_api::assertion::AssertionIssuer::from_seed(&seed, &platform.audience)
+        .map_err(|error| TelegramError::internal(Subsystem::Platform, error))?;
     let sessions = Arc::new(
         platform_api::session::SessionSource::new(platform_client, issuer, Box::new(PlatformClock))
             .with_on_mint(telegram_http::identity_binding_hook(database.clone())),
@@ -154,35 +154,6 @@ pub async fn build(context: PublicContext) -> Result<BackgroundRuntime, Telegram
         "dispatcher workers started",
     );
     Ok(runtime.into_background_runtime())
-}
-
-fn decode_seed(hex_key: &str) -> Result<[u8; 32], TelegramError> {
-    let digit = |character: u8| match character {
-        b'0'..=b'9' => Some(character - b'0'),
-        b'a'..=b'f' => Some(character - b'a' + 10),
-        _ => None,
-    };
-    let bytes = hex_key.as_bytes();
-    let byte_len_ok = bytes.len() == 64;
-    let hex_ok = bytes.iter().all(|b| digit(*b).is_some());
-    if !byte_len_ok || !hex_ok {
-        return Err(TelegramError::internal(
-            Subsystem::Platform,
-            std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "the assertion signing key must be 64 hex characters",
-            ),
-        ));
-    }
-    let mut seed = [0u8; 32];
-    for (slot, pair) in seed.iter_mut().zip(bytes.chunks_exact(2)) {
-        if let [high, low] = pair {
-            let high = digit(*high).unwrap_or(0);
-            let low = digit(*low).unwrap_or(0);
-            *slot = (high << 4) | low;
-        }
-    }
-    Ok(seed)
 }
 
 /// Assemble the workers over prepared components and spawn them. Exposed so tests can drive the

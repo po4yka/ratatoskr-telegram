@@ -7,8 +7,8 @@ Environment for every command: `export CARGO_INCREMENTAL=0 CARGO_PROFILE_DEV_DEB
 
 ## 2. The assertion key command (CONTRACTS R3-12 rules 1 and 2)
 
-- [ ] 2.1 RED: add `services/webhook/tests/assertion_key.rs` (`public_prints_the_rfc_8032_vector`, `generate_writes_a_private_seed_and_prints_its_public_key`, `public_refuses_a_malformed_seed_without_echoing_it`, `an_unknown_subcommand_is_refused`) and the unit test `crates/platform-api` `the_public_key_matches_the_signer`, with a signature-only `assertion_key` module returning neutral values; run them and confirm they fail on their assertions.
-- [ ] 2.2 GREEN: implement `generate`, `public_key_base64` and the shared `decode_seed` in `crates/platform-api/src/assertion_key.rs`, have both service builds call it, add the `assertion-key` arm to `services/webhook/src/main.rs`; rerun.
+- [x] 2.1 RED: add `services/webhook/tests/assertion_key.rs` (`public_prints_the_rfc_8032_vector`, `generate_writes_a_private_seed_and_prints_its_public_key`, `public_refuses_a_malformed_seed_without_echoing_it`, `an_unknown_subcommand_is_refused`) and the unit test `crates/platform-api` `the_public_key_matches_the_signer`, with a signature-only `assertion_key` module returning neutral values; run them and confirm they fail on their assertions.
+- [x] 2.2 GREEN: implement `generate`, `public_key_base64` and the shared `decode_seed` in `crates/platform-api/src/assertion_key.rs`, have both service builds call it, add the `assertion-key` arm to `services/webhook/src/main.rs`; rerun.
 
 ## 3. The procedure (CONTRACTS R3-12 rule 3)
 

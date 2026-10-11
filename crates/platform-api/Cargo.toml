@@ -22,12 +22,14 @@ uuid.workspace     = true
 secrecy.workspace  = true
 ed25519-dalek.workspace = true
 base64.workspace   = true
+getrandom.workspace = true
 jiff.workspace     = true
 ratatoskr-github-contracts.workspace = true
 
 [dev-dependencies]
 axum.workspace    = true
 tokio = { workspace = true, features = ["rt", "macros"] }
+tempfile.workspace = true
 
 [lints]
 workspace = true

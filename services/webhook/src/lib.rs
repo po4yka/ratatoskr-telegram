@@ -7,6 +7,7 @@
 //!
 //! Nothing here parses commands or touches domain state — that is plan items 3+.
 
+pub mod assertion_key_command;
 pub mod intake;
 
 /// The webhook runtime role this package compiles.

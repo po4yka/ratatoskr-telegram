@@ -121,7 +121,9 @@ pub fn build_capture_context(
 ) -> Result<intake::worker::CaptureContext, TelegramError> {
     use secrecy::ExposeSecret as _;
 
-    let seed = decode_seed(platform.assertion_signing_key.expose_secret())?;
+    let seed =
+        platform_api::assertion_key::decode_seed(platform.assertion_signing_key.expose_secret())
+            .map_err(|error| TelegramError::internal(Subsystem::Platform, error))?;
     let issuer = platform_api::assertion::AssertionIssuer::from_seed(&seed, &platform.audience)
         .map_err(|error| TelegramError::internal(Subsystem::Platform, error))?;
     let client = platform_api::Client::new(
@@ -145,39 +147,4 @@ pub fn build_capture_context(
         blobs,
         max_attachment_bytes,
     ))
-}
-
-/// Decode the configured 64-hex-character Ed25519 seed into its 32 bytes.
-fn decode_seed(hex_key: &str) -> Result<[u8; 32], TelegramError> {
-    fn digit(character: u8) -> Option<u8> {
-        match character {
-            b'0'..=b'9' => Some(character - b'0'),
-            b'a'..=b'f' => Some(character - b'a' + 10),
-            b'A'..=b'F' => Some(character - b'A' + 10),
-            _ => None,
-        }
-    }
-    let bytes = hex_key.as_bytes();
-    if bytes.len() != 64 || !bytes.iter().all(u8::is_ascii_hexdigit) {
-        return Err(TelegramError::internal(
-            Subsystem::Platform,
-            std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "the assertion signing key must be 64 hex characters",
-            ),
-        ));
-    }
-    let mut seed = [0u8; 32];
-    for (slot, pair) in seed.iter_mut().zip(bytes.chunks_exact(2)) {
-        if let [high, low] = pair {
-            let Some(high) = digit(*high) else {
-                continue;
-            };
-            let Some(low) = digit(*low) else {
-                continue;
-            };
-            *slot = (high << 4) | low;
-        }
-    }
-    Ok(seed)
 }
