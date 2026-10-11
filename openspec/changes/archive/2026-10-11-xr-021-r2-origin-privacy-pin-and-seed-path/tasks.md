@@ -16,4 +16,4 @@ Environment for every command: `export CARGO_INCREMENTAL=0 CARGO_PROFILE_DEV_DEB
 
 ## 4. Final gate
 
-- [ ] 4.1 Run the repository gate from `DEVELOPMENT.md` and `.github/workflows/ci.yml`, `cargo deny --locked check` and `openspec validate --all --strict`; archive this change when every task above is ticked.
+- [x] 4.1 Run the repository gate from `DEVELOPMENT.md` and `.github/workflows/ci.yml`, `cargo deny --locked check` and `openspec validate --all --strict`; archive this change when every task above is ticked.
