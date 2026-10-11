@@ -632,6 +632,101 @@ async fn forwarded_message_with_link_submits_capture_with_origin() {
     assert_eq!(outbound_job_count(&fixture).await, 1);
 }
 
+/// A forwarded PDF: the `forward` member is the only provenance that may reach Platform inside
+/// `origin` (XR-021 CONTRACTS R2-17). The attachment facts are the `blob` member's job and stay
+/// Telegram-local everywhere else; a PDF that is not a forward sends no `origin` at all.
+#[tokio::test]
+async fn a_forwarded_pdf_sends_only_the_forward_member_as_origin() {
+    let (base_url, state) = platform_harness(CaptureAnswer::Accept).await;
+    let fixture = Fixture::create(&base_url, CaptureAnswer::Accept, Arc::clone(&state)).await;
+
+    let mut forwarded = pdf_document_update(9_901, "pdf-forwarded", 128);
+    forwarded["message"]["forward_origin"] = json!({
+        "type": "channel",
+        "chat": {"id": -100_200_300, "type": "channel", "title": "Synthetic Channel"},
+        "message_id": 77,
+        "date": 1_700_000_000_i64,
+    });
+    fixture.deliver(forwarded).await;
+    assert_eq!(fixture.settled_state(9_901).await, "processed");
+    assert_eq!(
+        *state.capture_paths.lock().expect("path lock"),
+        ["/v1/captures/blobs"]
+    );
+
+    let attachment = state
+        .attachment_bytes
+        .lock()
+        .expect("attachment lock")
+        .clone();
+    let digest = format!("{:x}", Sha256::digest(&attachment));
+    let body = state
+        .last_capture_body
+        .lock()
+        .expect("body lock")
+        .clone()
+        .expect("a capture body was posted");
+    assert_eq!(
+        body["blob"],
+        json!({
+            "owner_service": "ratatoskr-telegram",
+            "digest": {"algorithm": "sha256", "hex": digest},
+            "media_type": "application/pdf",
+            "length_bytes": attachment.len(),
+        }),
+        "the blob member is unchanged: {body}"
+    );
+    assert_eq!(
+        body["origin"],
+        json!({"forward": {"kind": "channel", "chat_id": -100_200_300, "message_id": 77,
+                           "sent_at_secs": 1_700_000_000}}),
+        "origin carries the forward provenance and nothing else: {body}"
+    );
+    let origin = body["origin"].to_string();
+    for forbidden in [
+        "blob",
+        "owner_service",
+        "digest",
+        "media_type",
+        "length_bytes",
+        "algorithm",
+    ] {
+        assert!(
+            !origin.contains(forbidden),
+            "origin leaks attachment fact {forbidden}: {origin}"
+        );
+    }
+
+    // The Telegram-local intent row still stores the full metadata.
+    let metadata: Value = sqlx::query_scalar(
+        "select payload->'metadata' from telegram.interaction_tokens where operation_id = $1",
+    )
+    .bind(OPERATION_ID.parse::<uuid::Uuid>().expect("synthetic uuid"))
+    .fetch_one(fixture.database.pool())
+    .await
+    .expect("the attachment intent row");
+    assert_eq!(metadata["forward"]["kind"], "channel");
+    assert_eq!(metadata["blob"]["owner_service"], "ratatoskr-telegram");
+    assert_eq!(metadata["blob"]["digest_hex"], digest);
+
+    // A PDF that is not a forward sends no `origin` member at all.
+    fixture
+        .deliver(pdf_document_update(9_902, "pdf-plain", 128))
+        .await;
+    assert_eq!(fixture.settled_state(9_902).await, "processed");
+    let plain = state
+        .last_capture_body
+        .lock()
+        .expect("body lock")
+        .clone()
+        .expect("a second capture body was posted");
+    assert!(
+        plain.get("origin").is_none(),
+        "a forward-less PDF sends no origin: {plain}"
+    );
+    assert!(plain.get("blob").is_some());
+}
+
 /// The first link in a forward wins; a forward without any link settles unsupported.
 #[tokio::test]
 async fn first_forwarded_link_wins_and_linkless_forwards_stay_unsupported() {

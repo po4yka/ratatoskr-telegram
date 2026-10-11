@@ -69,14 +69,7 @@ pub(crate) async fn submit(
     // Platform replays the original operation, and an existing live binding means the chat
     // already holds the acknowledgment for it.
     let key = key_for_source(telegram_user_id, &source);
-    // Blob facts are the capture source itself, not provenance. Only a forwarded origin crosses
-    // the Platform boundary; attachment metadata remains in Telegram-owned intent persistence.
-    let origin = metadata
-        .as_ref()
-        .filter(|metadata| metadata.forward.is_some())
-        .map(serde_json::to_value)
-        .transpose()
-        .map_err(|_| SubmitClass::TransientExhausted)?;
+    let origin = origin_of(metadata.as_ref()).map_err(|_| SubmitClass::TransientExhausted)?;
     let accepted: platform_api::OperationAccepted = submit_with_retries(
         client,
         &session,
@@ -132,6 +125,22 @@ pub(crate) async fn submit(
         .map_err(|_| SubmitClass::AcceptedProjectionPending)?;
 
     Ok(AcceptedCapture { operation_id })
+}
+
+/// The `origin` member of a submission: the forward provenance and nothing else.
+///
+/// Blob facts are the capture source itself, not provenance, so they cross the Platform boundary
+/// only as the `blob` member; the attachment metadata stays in Telegram-owned intent persistence
+/// (XR-021 CONTRACTS R2-17). A capture without a forward sends no `origin`.
+fn origin_of(
+    metadata: Option<&telegram_persistence::interaction_tokens::IntentMetadata>,
+) -> Result<Option<serde_json::Value>, serde_json::Error> {
+    metadata
+        .and_then(|metadata| metadata.forward.as_ref())
+        .map(|forward| {
+            serde_json::to_value(std::collections::BTreeMap::from([("forward", forward)]))
+        })
+        .transpose()
 }
 
 /// Derive the idempotency source without letting a Bot API file identifier escape this boundary.
