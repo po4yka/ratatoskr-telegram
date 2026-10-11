@@ -293,3 +293,47 @@ fn dispatcher_example_installs_the_seed_where_the_fleet_does() {
         );
     }
 }
+
+/// The assertion key has a documented procedure: generate once on the host with the webhook
+/// binary, install the seed for the shared secrets group, and paste the printed public key into
+/// the Edge configuration (XR-021 CONTRACTS R3-12). Each example points at the section beside the
+/// key-file line.
+#[test]
+fn the_deploy_readme_documents_the_assertion_key_procedure() {
+    const KEY_FILE: &str = "/etc/ratatoskr/secrets/telegram-platform-signing-key";
+    let guide = read("README.md");
+    assert!(
+        guide.contains("## Platform assertion key"),
+        "the guide has no Platform assertion key section"
+    );
+    for needed in [
+        "ratatoskr-telegram-webhook assertion-key generate",
+        "ratatoskr-telegram-webhook assertion-key public",
+        KEY_FILE,
+        "root:ratatoskr-telegram-secrets 0640",
+        "RATATOSKR__IDENTITY__ASSERTION_KEY",
+        "/etc/ratatoskr/edge.conf",
+    ] {
+        assert!(guide.contains(needed), "the guide does not name {needed}");
+    }
+    for (role, example) in [
+        ("webhook", read("systemd/webhook.conf.example")),
+        ("dispatcher", read("systemd/dispatcher.conf.example")),
+    ] {
+        let lines: Vec<&str> = example.lines().collect();
+        let index = lines
+            .iter()
+            .position(|line| {
+                *line == format!("RATATOSKR__PLATFORM__ASSERTION_SIGNING_KEY_FILE={KEY_FILE}")
+            })
+            .unwrap_or_else(|| panic!("{role} example lost the key file line"));
+        let pointer = index.checked_sub(1).and_then(|before| lines.get(before));
+        assert!(
+            pointer.is_some_and(
+                |line| line.starts_with('#') && line.contains("Platform assertion key")
+            ),
+            "{role} example does not point at the Platform assertion key section above the key \
+             file line\n{example}"
+        );
+    }
+}

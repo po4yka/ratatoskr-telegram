@@ -12,8 +12,8 @@ Environment for every command: `export CARGO_INCREMENTAL=0 CARGO_PROFILE_DEV_DEB
 
 ## 3. The procedure (CONTRACTS R3-12 rule 3)
 
-- [ ] 3.1 RED: add `services/webhook/tests/deployment_profile.rs::the_deploy_readme_documents_the_assertion_key_procedure`; run it and confirm it fails on the missing section.
-- [ ] 3.2 GREEN: add the "Platform assertion key" section to `deploy/README.md` and a pointer in each example; rerun.
+- [x] 3.1 RED: add `services/webhook/tests/deployment_profile.rs::the_deploy_readme_documents_the_assertion_key_procedure`; run it and confirm it fails on the missing section.
+- [x] 3.2 GREEN: add the "Platform assertion key" section to `deploy/README.md` and a pointer in each example; rerun.
 
 ## 4. Provisioning (CONTRACTS R3-11)
 

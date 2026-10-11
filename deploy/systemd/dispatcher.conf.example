@@ -4,6 +4,7 @@ RATATOSKR__DATABASE__URL=postgres://ratatoskr_telegram:CHANGE-ME@127.0.0.1:5432/
 RATATOSKR__BOT_API__TOKEN_FILE=/etc/ratatoskr/secrets/telegram-bot-token
 RATATOSKR__PLATFORM__AUDIENCE=edge
 RATATOSKR__PLATFORM__BASE_URL=http://127.0.0.1:8080
+# Generate this seed once, with the webhook binary, and give Edge its public key: see "Platform assertion key" in deploy/README.md.
 RATATOSKR__PLATFORM__ASSERTION_SIGNING_KEY_FILE=/etc/ratatoskr/secrets/telegram-platform-signing-key
 RATATOSKR__NOTIFICATION_BUS__ENDPOINT=nats://127.0.0.1:4222
 RATATOSKR__NOTIFICATION_BUS__STREAM=ratatoskr_events

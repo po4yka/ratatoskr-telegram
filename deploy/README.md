@@ -87,3 +87,21 @@ performed by repository validation.
 The webhook stages PDF attachments in `/mnt/nvme/ratatoskr/blobs/ratatoskr-telegram` (`RATATOSKR__INGESTION__BLOB_ROOT` in the webhook example), on the durable device rather than the boot device. The unit lists the path in `ReadWritePaths`, runs with `UMask=0027`, and carries `ratatoskr-telegram-blobs` in `SupplementaryGroups`. The directory is created with `install -d -o ratatoskr-telegram-webhook -g ratatoskr-telegram-blobs -m 2750` as shown above: the setgid bit makes every new blob file inherit the group, and the mode gives that group read and traverse access only.
 
 The extractor runs with `SupplementaryGroups=ratatoskr-telegram-blobs` and `ReadOnlyPaths=/mnt/nvme/ratatoskr/blobs/ratatoskr-telegram`, and reads Telegram-owned bytes by `BlobRef` (owner, sha256 digest, length). It never writes, renames, or deletes there, and no filesystem path crosses a service boundary. If the group does not exist or the extractor is not a member, its runs fail with `blob_unreadable`; that is host state no repository can apply.
+
+### Platform assertion key
+
+The webhook and the dispatcher sign short-lived identity assertions with one Ed25519 seed, and Edge verifies them with the matching public key. The seed is a file of 64 lowercase hexadecimal characters and one newline (`RATATOSKR__PLATFORM__ASSERTION_SIGNING_KEY_FILE`); the public key is the base64 (standard alphabet, padded) form that Edge reads as `RATATOSKR__IDENTITY__ASSERTION_KEY`. Without that variable Edge leaves `telegram.mini_app` unavailable and `/v1/sessions/telegram` refuses every exchange with 401. The key is generated once, with the webhook binary; the dispatcher binary has no such command and reads the same file through the shared secrets group.
+
+```console
+$ sudo /usr/local/bin/ratatoskr-telegram-webhook assertion-key generate /etc/ratatoskr/secrets/telegram-platform-signing-key
+$ sudo chown root:ratatoskr-telegram-secrets /etc/ratatoskr/secrets/telegram-platform-signing-key
+$ sudo chmod 0640 /etc/ratatoskr/secrets/telegram-platform-signing-key
+```
+
+`generate` creates the file exclusively with mode `0600`, refuses to replace an existing file, and prints only the public key; the final two commands give the seed its deployed ownership, `root:ratatoskr-telegram-secrets 0640`. To print the public key of an installed seed again, or to derive it on another host:
+
+```console
+$ sudo /usr/local/bin/ratatoskr-telegram-webhook assertion-key public /etc/ratatoskr/secrets/telegram-platform-signing-key
+```
+
+Set the printed line as `RATATOSKR__IDENTITY__ASSERTION_KEY=<public key>` in the Edge configuration file, `/etc/ratatoskr/edge.conf`, and restart Edge. Neither command ever prints the seed. Rotating the key means removing the old seed file deliberately, running `generate` again and updating `/etc/ratatoskr/edge.conf` in the same step, because Edge refuses assertions signed by a seed it no longer has the public half of.
