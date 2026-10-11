@@ -88,6 +88,17 @@ The webhook stages PDF attachments in `/mnt/nvme/ratatoskr/blobs/ratatoskr-teleg
 
 The extractor runs with `SupplementaryGroups=ratatoskr-telegram-blobs` and `ReadOnlyPaths=/mnt/nvme/ratatoskr/blobs/ratatoskr-telegram`, and reads Telegram-owned bytes by `BlobRef` (owner, sha256 digest, length). It never writes, renames, or deletes there, and no filesystem path crosses a service boundary. If the group does not exist or the extractor is not a member, its runs fail with `blob_unreadable`; that is host state no repository can apply.
 
+### PostgreSQL role
+
+Both services connect to Ratatoskr's one database, `ratatoskr` on port 5432, as the role `ratatoskr_telegram`; their `telegram` schema is created by the webhook's `check-schema` step. Provision in this order: Edge first, then `deploy/postgres/role.sql`, then the Telegram services. Platform's `01-database-and-roles.sql` creates the database, Edge is started once, and Platform's `02-grants.sql` follows; `role.sql` is then run once by a PostgreSQL administrator against that database, and the password is set separately so that no credential enters the repository:
+
+```console
+$ sudo -u postgres psql --file deploy/postgres/role.sql
+$ sudo -u postgres psql --command '\password ratatoskr_telegram'
+```
+
+Put the same password in `RATATOSKR__DATABASE__URL` of both configuration files in place of `CHANGE-ME`. The role cannot create databases or roles, has no rights on schema `public`, and may create only its own schema.
+
 ### Platform assertion key
 
 The webhook and the dispatcher sign short-lived identity assertions with one Ed25519 seed, and Edge verifies them with the matching public key. The seed is a file of 64 lowercase hexadecimal characters and one newline (`RATATOSKR__PLATFORM__ASSERTION_SIGNING_KEY_FILE`); the public key is the base64 (standard alphabet, padded) form that Edge reads as `RATATOSKR__IDENTITY__ASSERTION_KEY`. Without that variable Edge leaves `telegram.mini_app` unavailable and `/v1/sessions/telegram` refuses every exchange with 401. The key is generated once, with the webhook binary; the dispatcher binary has no such command and reads the same file through the shared secrets group.

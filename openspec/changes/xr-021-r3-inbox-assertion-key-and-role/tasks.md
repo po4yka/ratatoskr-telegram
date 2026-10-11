@@ -17,8 +17,8 @@ Environment for every command: `export CARGO_INCREMENTAL=0 CARGO_PROFILE_DEV_DEB
 
 ## 4. Provisioning (CONTRACTS R3-11)
 
-- [ ] 4.1 RED: add `services/webhook/tests/deployment_profile.rs::the_role_file_creates_the_role_both_examples_name`; run it and confirm it fails because `deploy/postgres/role.sql` does not exist.
-- [ ] 4.2 GREEN: add `deploy/postgres/role.sql` and the provisioning-order paragraph in `deploy/README.md`; rerun.
+- [x] 4.1 RED: add `services/webhook/tests/deployment_profile.rs::the_role_file_creates_the_role_both_examples_name`; run it and confirm it fails because `deploy/postgres/role.sql` does not exist.
+- [x] 4.2 GREEN: add `deploy/postgres/role.sql` and the provisioning-order paragraph in `deploy/README.md`; rerun.
 
 ## 5. Final gate
 

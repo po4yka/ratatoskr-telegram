@@ -337,3 +337,65 @@ fn the_deploy_readme_documents_the_assertion_key_procedure() {
         );
     }
 }
+
+/// Both examples name the one role and database that `deploy/postgres/role.sql` provisions: the
+/// webhook and the dispatcher share `ratatoskr_telegram` on `ratatoskr`, port 5432 (XR-021
+/// CONTRACTS R3-11). The file creates a restricted login role and revokes its public-schema rights.
+#[test]
+fn the_role_file_creates_the_role_both_examples_name() {
+    let role_file = read("postgres/role.sql");
+    let guide = read("README.md");
+    let mut named = Vec::new();
+    for (name, example) in [
+        ("webhook", read("systemd/webhook.conf.example")),
+        ("dispatcher", read("systemd/dispatcher.conf.example")),
+    ] {
+        let url = example
+            .lines()
+            .find_map(|line| line.strip_prefix("RATATOSKR__DATABASE__URL="))
+            .unwrap_or_else(|| panic!("{name} example has no database URL"));
+        let rest = url
+            .strip_prefix("postgres://")
+            .unwrap_or_else(|| panic!("{name} database URL is not postgres://"));
+        let (credentials, location) = rest.split_once('@').expect("credentials and location");
+        let (role, _password) = credentials.split_once(':').expect("role and password");
+        let (host_port, database) = location.split_once('/').expect("host and database");
+        assert_eq!(
+            host_port, "127.0.0.1:5432",
+            "{name} must use the target host's port"
+        );
+        named.push((role.to_owned(), database.to_owned()));
+    }
+    assert_eq!(
+        named[0], named[1],
+        "the webhook and the dispatcher share one role"
+    );
+    let (role, database) = &named[0];
+    assert_eq!(
+        (role.as_str(), database.as_str()),
+        ("ratatoskr_telegram", "ratatoskr")
+    );
+
+    for needed in [
+        format!("create role {role} login"),
+        format!("alter role {role} nosuperuser nocreatedb nocreaterole noreplication nobypassrls;"),
+        format!("grant connect, create on database {database} to {role};"),
+        format!("\\connect {database}"),
+        format!("revoke all on schema public from {role};"),
+    ] {
+        assert!(role_file.contains(&needed), "role.sql lacks: {needed}");
+    }
+    assert!(
+        !role_file.to_lowercase().contains("password '"),
+        "role.sql must not carry a credential; the password is set with \\password"
+    );
+    assert!(
+        guide.contains("deploy/postgres/role.sql")
+            && guide.contains("\\password ratatoskr_telegram"),
+        "the guide does not describe running role.sql and setting the password"
+    );
+    assert!(
+        guide.contains("Edge first, then `deploy/postgres/role.sql`, then the Telegram services"),
+        "the guide must state the provisioning order"
+    );
+}
