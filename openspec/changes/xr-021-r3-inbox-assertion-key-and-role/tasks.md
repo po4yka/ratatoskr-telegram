@@ -2,8 +2,8 @@ Environment for every command: `export CARGO_INCREMENTAL=0 CARGO_PROFILE_DEV_DEB
 
 ## 1. Inbox prefix (CONTRACTS R3-01)
 
-- [ ] 1.1 RED: add `services/dispatcher/tests/inbox_prefix.rs::the_notification_consumer_completes_jetstream_requests_under_its_inbox_prefix` (a broker whose only user is the stanza of `deploy/nats/identity.conf`, an admin fixture connection creating `ratatoskr_events` and the durable, then `open_preprovisioned_consumer_at`, one published message fetched and acknowledged); run it and confirm it fails because the request times out under the default inbox prefix. The stanza file is a configuration input the test needs to start, so it is added with the test.
-- [ ] 1.2 GREEN: add `const INBOX_PREFIX: &str = "_INBOX_telegram"` applied with `custom_inbox_prefix`, add the CI step that puts `nats-server` on `PATH`, say so in `DEVELOPMENT.md`; rerun the test and the existing notification tests. Name the break in the commit body.
+- [x] 1.1 RED: add `services/dispatcher/tests/inbox_prefix.rs::the_notification_consumer_completes_jetstream_requests_under_its_inbox_prefix` (a broker whose only user is the stanza of `deploy/nats/identity.conf`, an admin fixture connection creating `ratatoskr_events` and the durable, then `open_preprovisioned_consumer_at`, one published message fetched and acknowledged); run it and confirm it fails because the request times out under the default inbox prefix. The stanza file is a configuration input the test needs to start, so it is added with the test.
+- [x] 1.2 GREEN: add `const INBOX_PREFIX: &str = "_INBOX_telegram"` applied with `custom_inbox_prefix`, add the CI step that puts `nats-server` on `PATH`, say so in `DEVELOPMENT.md`; rerun the test and the existing notification tests. Name the break in the commit body.
 
 ## 2. The assertion key command (CONTRACTS R3-12 rules 1 and 2)
 

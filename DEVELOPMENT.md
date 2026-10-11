@@ -184,6 +184,10 @@ cargo test -p ratatoskr-telegram-webhook --test boot
 The suite creates disposable databases named after each test and drops them afterwards. The
 notification durable test also creates and removes its exact stream/consumer fixture on the
 configured disposable JetStream server.
+`services/dispatcher/tests/inbox_prefix.rs` additionally starts its own `nats-server` that enforces
+the Telegram stanza of `deploy/nats/identity.conf`, so the `nats-server` binary must be on `PATH`
+(`brew install nats-server`, or copy it out of the pinned container as the `Put nats-server on PATH`
+step of `.github/workflows/ci.yml` does); a missing binary fails the test.
 `TELEGRAM_TEST_DATABASE_URL` names the server they are created on; unset, it defaults to
 `postgres://telegram:telegram@127.0.0.1:5432/telegram`, which is what `compose.yaml` serves. A test
 that cannot reach a server FAILS rather than skips: a suite that silently passes without a database

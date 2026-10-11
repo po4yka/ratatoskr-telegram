@@ -17,6 +17,12 @@ use telegram_telemetry::metrics::{
     TELEGRAM_NOTIFICATION_BACKLOG, TELEGRAM_NOTIFICATION_EVENTS_TOTAL, TELEGRAM_NOTIFICATION_LAG,
 };
 
+/// The reply namespace of this identity. Platform's ACL lets the Telegram stanza subscribe to
+/// `_INBOX_telegram.>` and nothing else (XR-021 CONTRACTS.md section R3-01), so every connection
+/// the dispatcher opens sets it with `custom_inbox_prefix`; with the default prefix no JetStream
+/// reply would be delivered and each request would time out.
+const INBOX_PREFIX: &str = "_INBOX_telegram";
+
 /// Safe startup failure class with no endpoint, path, provider response, or credential detail.
 #[derive(Debug, Clone, Copy, thiserror::Error)]
 pub enum NotificationBusError {
@@ -154,7 +160,8 @@ async fn open_preprovisioned_consumer_at(
     if seed.is_empty() || seed.lines().count() != 1 {
         return Err(NotificationBusError::Credentials);
     }
-    let options = async_nats::ConnectOptions::with_nkey(seed.to_owned());
+    let options =
+        async_nats::ConnectOptions::with_nkey(seed.to_owned()).custom_inbox_prefix(INBOX_PREFIX);
     let client = options
         .connect(config.endpoint.as_str())
         .await

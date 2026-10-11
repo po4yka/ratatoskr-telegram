@@ -44,6 +44,8 @@ ratatoskr-telegram-persistence = { workspace = true, features = ["test-support"]
 axum.workspace = true
 uuid.workspace = true
 tokio = { workspace = true, features = ["rt", "macros"] }
+nkeys = "0.4.5"
+tempfile.workspace = true
 
 [lints]
 workspace = true

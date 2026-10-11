@@ -81,6 +81,15 @@ jobs:
       - name: Start disposable JetStream for notification-consumer tests
         run: docker run --detach --rm --name telegram-ci-nats --publish 4222:4222 nats@sha256:d4ac35882ac65aff236cd65b9d3fa4d24332c681e1a85f94eedccd3cdd65b1da --jetstream --store_dir=/data
 
+      # `inbox_prefix.rs` starts its own authorization-enabled broker to prove the dispatcher
+      # completes JetStream requests under the Telegram stanza of `deploy/nats/identity.conf`, so
+      # the server binary must be on PATH. It is the one the container above already runs.
+      - name: Put nats-server on PATH
+        run: |
+          mkdir -p "$RUNNER_TEMP/bin"
+          docker cp telegram-ci-nats:/usr/local/bin/nats-server "$RUNNER_TEMP/bin/nats-server"
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+
       - run: cargo fetch --locked
 
       - run: cargo fmt --all -- --check
