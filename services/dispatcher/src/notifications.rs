@@ -8,7 +8,7 @@ use futures_util::StreamExt as _;
 use metrics::{counter, gauge};
 use ratatoskr_event_envelope::EventEnvelope;
 use ratatoskr_notification_contracts::{NotificationPriority, NotificationRaised};
-use telegram_core::config::NotificationBusConfig;
+use telegram_core::config::{NOTIFICATION_ACK_WAIT_SECONDS, NotificationBusConfig};
 use telegram_persistence::notification_delivery::{
     NewNotificationDelivery, NotificationAdmissionResult, NotificationDecisionOutcome,
 };
@@ -202,7 +202,7 @@ pub fn verify_consumer(
     if actual.durable_name.as_deref() != Some(config.durable.as_str())
         || actual.filter_subject != config.subject
         || actual.ack_policy != jetstream::consumer::AckPolicy::Explicit
-        || actual.ack_wait != Duration::from_secs(config.ack_wait_seconds)
+        || actual.ack_wait != Duration::from_secs(NOTIFICATION_ACK_WAIT_SECONDS)
         || actual.deliver_subject.is_some()
         || actual.deliver_policy != jetstream::consumer::DeliverPolicy::All
         || actual.replay_policy != jetstream::consumer::ReplayPolicy::Instant

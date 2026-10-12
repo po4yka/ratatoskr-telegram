@@ -11,6 +11,7 @@ RATATOSKR__NOTIFICATION_BUS__STREAM=ratatoskr_events
 RATATOSKR__NOTIFICATION_BUS__DURABLE=ratatoskr_telegram_notifications
 RATATOSKR__NOTIFICATION_BUS__SUBJECT=evt.platform.notification.raised.v1
 RATATOSKR__NOTIFICATION_BUS__FETCH_BATCH=32
+# Edge provisions the ratatoskr_telegram_notifications durable with an ack wait of 30 seconds, and any other value stops the dispatcher at startup; the key exists only to state it.
 RATATOSKR__NOTIFICATION_BUS__ACK_WAIT_SECONDS=30
 RATATOSKR__NOTIFICATION_BUS__CREDENTIALS_FILE=/etc/ratatoskr/telegram.nkey
 RATATOSKR__TELEMETRY__LOG_FORMAT=json

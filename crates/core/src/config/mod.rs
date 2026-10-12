@@ -27,8 +27,8 @@ use figment::providers::{Env, Serialized};
 
 pub use crate::config::model::{
     AccessConfig, AdminConfig, BotApiConfig, DatabaseConfig, DispatcherConfig, LogFormat,
-    NotificationBusConfig, OtlpConfig, PlatformConfig, ShutdownConfig, TelegramConfig,
-    TelemetryConfig, WebhookConfig,
+    NOTIFICATION_ACK_WAIT_SECONDS, NotificationBusConfig, OtlpConfig, PlatformConfig,
+    ShutdownConfig, TelegramConfig, TelemetryConfig, WebhookConfig,
 };
 pub use crate::config::validate::{SHUTDOWN_CEILING_SECONDS, Violation};
 use crate::role::RuntimeRole;

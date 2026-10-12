@@ -14,7 +14,7 @@ use tracing_subscriber::EnvFilter;
 
 use secrecy::ExposeSecret;
 
-use crate::config::model::{self, TelegramConfig};
+use crate::config::model::{self, NOTIFICATION_ACK_WAIT_SECONDS, TelegramConfig};
 use crate::role::RuntimeRole;
 
 /// One startup-rule violation.
@@ -133,11 +133,11 @@ fn notification_bus_violations(role: RuntimeRole, config: &TelegramConfig) -> Ve
             rule: "must be 1..=256",
         });
     }
-    if bus.ack_wait_seconds == 0 || bus.ack_wait_seconds > 600 {
+    if bus.ack_wait_seconds != NOTIFICATION_ACK_WAIT_SECONDS {
         found.push(Violation {
             key: "notification_bus.ack_wait_seconds",
             env_var: "RATATOSKR__NOTIFICATION_BUS__ACK_WAIT_SECONDS",
-            rule: "must be 1..=600",
+            rule: "must equal 30: Edge fixes the ratatoskr_telegram_notifications durable at 30 seconds (XR-021 S04) and the dispatcher refuses any other value",
         });
     }
     if role == RuntimeRole::Dispatcher {

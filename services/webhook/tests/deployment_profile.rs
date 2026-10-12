@@ -399,3 +399,40 @@ fn the_role_file_creates_the_role_both_examples_name() {
         "the guide must state the provisioning order"
     );
 }
+
+/// Edge fixes the notification durable's ack wait at 30 seconds and the dispatcher refuses any
+/// other value, so the example states the number and why, and the guide names the key
+/// (XR-021 CONTRACTS R4-08 rule 4).
+#[test]
+fn the_dispatcher_example_states_why_the_ack_wait_is_thirty() {
+    const SETTING: &str = "RATATOSKR__NOTIFICATION_BUS__ACK_WAIT_SECONDS=30";
+    let example = read("systemd/dispatcher.conf.example");
+    let guide = read("README.md");
+    let lines: Vec<&str> = example.lines().collect();
+    let index = lines
+        .iter()
+        .position(|line| *line == SETTING)
+        .unwrap_or_else(|| panic!("the dispatcher example does not set {SETTING}\n{example}"));
+    let comment = index
+        .checked_sub(1)
+        .and_then(|before| lines.get(before))
+        .copied()
+        .unwrap_or_default();
+    assert!(
+        comment.starts_with('#')
+            && comment.contains("ratatoskr_telegram_notifications")
+            && comment.contains("30 seconds")
+            && comment.contains("any other value stops the dispatcher"),
+        "the line above the ack wait does not explain it: {comment:?}"
+    );
+    for needed in [
+        "RATATOSKR__NOTIFICATION_BUS__ACK_WAIT_SECONDS",
+        "ratatoskr_telegram_notifications",
+        "30 seconds",
+    ] {
+        assert!(
+            guide.contains(needed),
+            "the guide does not mention {needed}"
+        );
+    }
+}

@@ -21,8 +21,8 @@ Environment for every command: `export CARGO_INCREMENTAL=0 CARGO_PROFILE_DEV_DEB
 
 ## 4. The ack wait is stated (CONTRACTS R4-08 rule 4)
 
-- [ ] 4.1 RED: add `crates/core/tests/notification_config.rs::an_ack_wait_other_than_thirty_is_refused` and the deployment-profile case for the dispatcher example comment and the guide; run them and confirm they fail on the accepted 29 and 31 and the missing comment.
-- [ ] 4.2 GREEN: add `NOTIFICATION_ACK_WAIT_SECONDS`, use it in the default, the validator and the dispatcher durable check, add the comment to `dispatcher.conf.example` and the sentence to `deploy/README.md`; rerun. Name the break in the commit body.
+- [x] 4.1 RED: add `crates/core/tests/notification_config.rs::an_ack_wait_other_than_thirty_is_refused` and the deployment-profile case for the dispatcher example comment and the guide; run them and confirm they fail on the accepted 29 and 31 and the missing comment.
+- [x] 4.2 GREEN: add `NOTIFICATION_ACK_WAIT_SECONDS`, use it in the default, the validator and the dispatcher durable check, add the comment to `dispatcher.conf.example` and the sentence to `deploy/README.md`; rerun. Name the break in the commit body.
 
 ## 5. Final gate
 

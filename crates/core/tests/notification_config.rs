@@ -46,7 +46,6 @@ fn seed_dispatcher(jail: &mut Jail, credentials: &std::path::Path) {
         "evt.platform.notification.raised.v1",
     );
     jail.set_env("RATATOSKR__NOTIFICATION_BUS__FETCH_BATCH", "32");
-    jail.set_env("RATATOSKR__NOTIFICATION_BUS__ACK_WAIT_SECONDS", "30");
     jail.set_env(
         "RATATOSKR__NOTIFICATION_BUS__CREDENTIALS_FILE",
         credentials.to_string_lossy().as_ref(),
@@ -125,6 +124,62 @@ fn wildcard_zero_remote_plaintext_and_conflicting_secret_sources_are_refused() {
         .report(RuntimeRole::Dispatcher);
         assert!(report.contains("bot_api.token"), "{report}");
         assert!(!report.contains("secret-value") && !report.contains("file-secret"));
+        Ok(())
+    });
+}
+
+/// Edge provisions the `ratatoskr_telegram_notifications` durable with a 30 second ack wait and
+/// the dispatcher refuses any other value, so configuration states 30 and refuses everything else
+/// (XR-021 CONTRACTS R4-08 rule 4). The default is 30.
+#[test]
+fn an_ack_wait_other_than_thirty_is_refused() {
+    let credentials = credential_fixture("ack-wait-nats-creds");
+    for refused in ["0", "29", "31", "600", "601"] {
+        Jail::expect_with(|jail| {
+            seed_dispatcher(jail, &credentials);
+            jail.set_env("RATATOSKR__NOTIFICATION_BUS__ACK_WAIT_SECONDS", refused);
+            let report = config::load_from(
+                RuntimeRole::Dispatcher,
+                config::figment(RuntimeRole::Dispatcher),
+            )
+            .expect_err("an ack wait other than 30 must be refused")
+            .report(RuntimeRole::Dispatcher);
+            assert!(
+                report.contains("notification_bus.ack_wait_seconds"),
+                "{report}"
+            );
+            assert!(
+                report.contains("ratatoskr_telegram_notifications"),
+                "the message must name Edge's fixed durable: {report}"
+            );
+            Ok(())
+        });
+    }
+
+    Jail::expect_with(|jail| {
+        seed_dispatcher(jail, &credentials);
+        jail.set_env("RATATOSKR__NOTIFICATION_BUS__ACK_WAIT_SECONDS", "30");
+        let loaded = config::load_from(
+            RuntimeRole::Dispatcher,
+            config::figment(RuntimeRole::Dispatcher),
+        )
+        .expect("30 is accepted");
+        assert_eq!(loaded.notification_bus.ack_wait_seconds, 30);
+        Ok(())
+    });
+
+    Jail::expect_with(|jail| {
+        seed_dispatcher(jail, &credentials);
+        let loaded = config::load_from(
+            RuntimeRole::Dispatcher,
+            config::figment(RuntimeRole::Dispatcher),
+        )
+        .expect("the default is accepted");
+        assert_eq!(
+            loaded.notification_bus.ack_wait_seconds,
+            config::NOTIFICATION_ACK_WAIT_SECONDS,
+            "the default is the constant"
+        );
         Ok(())
     });
 }

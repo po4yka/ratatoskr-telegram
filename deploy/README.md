@@ -116,3 +116,7 @@ $ sudo /usr/local/bin/ratatoskr-telegram-webhook assertion-key public /etc/ratat
 ```
 
 Set the printed line as `RATATOSKR__IDENTITY__ASSERTION_KEY=<public key>` in the Edge configuration file, `/etc/ratatoskr/edge.conf`, and restart Edge. Neither command ever prints the seed. Rotating the key means removing the old seed file deliberately, running `generate` again and updating `/etc/ratatoskr/edge.conf` in the same step, because Edge refuses assertions signed by a seed it no longer has the public half of.
+
+### Notification ack wait
+
+Edge provisions the `ratatoskr_telegram_notifications` durable consumer with an ack wait of 30 seconds, and the dispatcher verifies that durable at startup without ever repairing it. `RATATOSKR__NOTIFICATION_BUS__ACK_WAIT_SECONDS` therefore exists only to state that value: it must be 30, any other value stops the dispatcher at configuration validation, and the example sets it to 30 for that reason.

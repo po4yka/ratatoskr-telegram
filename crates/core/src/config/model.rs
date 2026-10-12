@@ -311,6 +311,12 @@ pub struct NotificationBusConfig {
     pub credentials_file: Option<PathBuf>,
 }
 
+/// The ack wait, in seconds, of the `ratatoskr_telegram_notifications` durable. Edge provisions the
+/// durable at this value (XR-021 S04) and the dispatcher refuses to verify any other, so the
+/// default, the validation rule and the dispatcher's durable check all read this one constant
+/// (XR-021 CONTRACTS R4-08).
+pub const NOTIFICATION_ACK_WAIT_SECONDS: u64 = 30;
+
 impl Default for NotificationBusConfig {
     fn default() -> Self {
         Self {
@@ -342,7 +348,7 @@ const fn default_notification_fetch_batch() -> u32 {
     32
 }
 const fn default_notification_ack_wait_seconds() -> u64 {
-    30
+    NOTIFICATION_ACK_WAIT_SECONDS
 }
 
 const fn default_max_body_bytes() -> u32 {
