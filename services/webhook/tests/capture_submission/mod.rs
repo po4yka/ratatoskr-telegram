@@ -22,8 +22,12 @@ pub(super) fn ledger_verdict(
         .unwrap_or_default()
         .to_owned();
     let mut ledger = state.ledger.lock().expect("ledger lock");
-    match ledger.iter().position(|(known, _)| *known == key) {
-        Some(index) if ledger[index].1 == body => Some(ledger_operation_id(index)),
+    match ledger
+        .iter()
+        .enumerate()
+        .find(|(_, (known, _))| *known == key)
+    {
+        Some((index, (_, first_body))) if first_body == body => Some(ledger_operation_id(index)),
         Some(_) => None,
         None => {
             ledger.push((key, body.to_vec()));
@@ -35,12 +39,17 @@ pub(super) fn ledger_verdict(
 /// A PDF document forwarded from a channel.
 fn forwarded_pdf_update(update_id: i64, file_id: &str, file_size: u64) -> Value {
     let mut update = pdf_document_update(update_id, file_id, file_size);
-    update["message"]["forward_origin"] = json!({
-        "type": "channel",
-        "chat": {"id": -100_200_300, "type": "channel", "title": "Synthetic Channel"},
-        "message_id": 77,
-        "date": 1_700_000_000_i64,
-    });
+    if let Some(message) = update.get_mut("message").and_then(Value::as_object_mut) {
+        message.insert(
+            "forward_origin".to_owned(),
+            json!({
+                "type": "channel",
+                "chat": {"id": -100_200_300, "type": "channel", "title": "Synthetic Channel"},
+                "message_id": 77,
+                "date": 1_700_000_000_i64,
+            }),
+        );
+    }
     update
 }
 
@@ -59,8 +68,10 @@ async fn assert_two_accepted_operations(
     assert_eq!(fixture.settled_state(second_update).await, "processed");
     assert_eq!(state.capture_calls.load(Ordering::SeqCst), 2);
     let keys = state.idempotency_keys.lock().expect("keys lock").clone();
-    assert_eq!(keys.len(), 2);
-    assert_ne!(keys[0], keys[1], "another body is another key: {keys:?}");
+    let [first, second] = keys.as_slice() else {
+        panic!("two submissions carry two keys: {keys:?}");
+    };
+    assert_ne!(first, second, "another body is another key");
     let bodies = outbound_bodies(fixture).await;
     assert_eq!(bodies.len(), 2, "two acknowledgments: {bodies:?}");
     assert!(
@@ -138,10 +149,12 @@ async fn the_same_message_sent_twice_converges_on_one_operation() {
     assert_eq!(fixture.settled_state(10_024).await, "processed");
 
     let keys = state.idempotency_keys.lock().expect("keys lock").clone();
-    assert_eq!(keys.len(), 4);
-    assert_eq!(keys[0], keys[1], "the same forwarded link derives one key");
-    assert_eq!(keys[2], keys[3], "the same file derives one key");
-    assert_ne!(keys[0], keys[2]);
+    let [link, link_again, file, file_again] = keys.as_slice() else {
+        panic!("four submissions carry four keys: {keys:?}");
+    };
+    assert_eq!(link, link_again, "the same forwarded link derives one key");
+    assert_eq!(file, file_again, "the same file derives one key");
+    assert_ne!(link, file);
     assert_eq!(state.ledger.lock().expect("ledger lock").len(), 2);
     assert_eq!(
         outbound_bodies(&fixture)

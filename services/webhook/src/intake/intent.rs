@@ -258,11 +258,11 @@ mod tests {
         )
     }
 
-    fn forward(message_id: i64) -> Option<serde_json::Value> {
-        Some(serde_json::json!({
+    fn forward(message_id: i64) -> serde_json::Value {
+        serde_json::json!({
             "forward": {"kind": "channel", "chat_id": -100_200_300, "message_id": message_id,
                          "sent_at_secs": 1_700_000_000}
-        }))
+        })
     }
 
     #[test]
@@ -297,12 +297,12 @@ mod tests {
     fn two_different_bodies_never_share_a_key_and_the_same_body_always_does() {
         let build: [fn() -> platform_api::CaptureSubmission; 9] = [
             || url_submission(900_700_601, "https://example.test/a", None),
-            || url_submission(900_700_601, "https://example.test/a", forward(77)),
-            || url_submission(900_700_601, "https://example.test/a", forward(78)),
+            || url_submission(900_700_601, "https://example.test/a", Some(forward(77))),
+            || url_submission(900_700_601, "https://example.test/a", Some(forward(78))),
             || url_submission(900_700_601, "https://example.test/b", None),
             || url_submission(900_700_602, "https://example.test/a", None),
             || blob_submission(900_700_601, "application/pdf", 1_024, None),
-            || blob_submission(900_700_601, "application/pdf", 1_024, forward(77)),
+            || blob_submission(900_700_601, "application/pdf", 1_024, Some(forward(77))),
             || blob_submission(900_700_601, "application/x-pdf", 1_024, None),
             || blob_submission(900_700_601, "application/pdf", 2_048, None),
         ];
@@ -340,7 +340,7 @@ mod tests {
     #[test]
     fn the_key_is_the_documented_digest_over_the_request_parts() {
         use sha2::{Digest as _, Sha256};
-        let submission = url_submission(900_700_601, "https://example.test/a", forward(77));
+        let submission = url_submission(900_700_601, "https://example.test/a", Some(forward(77)));
         let (path, body) = submission.request_parts();
         let mut input = b"capture.v2|900700601|".to_vec();
         input.extend_from_slice(path.as_bytes());

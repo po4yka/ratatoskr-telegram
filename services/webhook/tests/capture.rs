@@ -230,7 +230,6 @@ fn capture_route(
                 )
             };
             match answer {
-                CaptureAnswer::Accept => accepted(OPERATION_ID),
                 CaptureAnswer::Ledger => {
                     match capture_submission::ledger_verdict(&state, &headers, &body) {
                         Some(operation_id) => accepted(&operation_id),
@@ -239,11 +238,12 @@ fn capture_route(
                 }
                 CaptureAnswer::ConflictAlways => refusal(StatusCode::CONFLICT),
                 CaptureAnswer::ConflictOnce if call == 1 => refusal(StatusCode::CONFLICT),
-                CaptureAnswer::ConflictOnce => accepted(OPERATION_ID),
                 CaptureAnswer::RejectFirstSession if bearer.ends_with("-1") => {
                     refusal(StatusCode::UNAUTHORIZED)
                 }
-                CaptureAnswer::RejectFirstSession => accepted(OPERATION_ID),
+                CaptureAnswer::Accept
+                | CaptureAnswer::ConflictOnce
+                | CaptureAnswer::RejectFirstSession => accepted(OPERATION_ID),
                 CaptureAnswer::RefuseAuth => refusal(StatusCode::UNAUTHORIZED),
                 CaptureAnswer::RefuseBadRequest => refusal(StatusCode::BAD_REQUEST),
                 CaptureAnswer::Unavailable => refusal(StatusCode::SERVICE_UNAVAILABLE),
