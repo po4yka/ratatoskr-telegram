@@ -12,10 +12,11 @@
 pub mod assertion;
 pub mod assertion_key;
 pub mod session;
+mod stream;
 
 pub use session::{Clock, SessionSource};
+pub use stream::EventStream;
 
-use std::str::FromStr as _;
 use std::time::Duration;
 
 use serde::Deserialize;
@@ -23,6 +24,10 @@ use url::Url;
 use uuid::Uuid;
 
 const MAX_JSON_RESPONSE_BYTES: usize = 256 * 1024;
+
+/// How long a progress stream may stay silent before it ends: three of Platform's 15 second
+/// keep-alive intervals.
+pub const PLATFORM_STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(45);
 
 pub use ratatoskr_github_contracts::{
     RepositoryActionRequest, RepositoryActionResult, RepositoryPreviewRequest,
@@ -36,7 +41,8 @@ pub enum PlatformError {
     /// The request never completed: connection refused, reset, TLS, DNS.
     #[error("the platform request failed at the transport level")]
     Network(#[source] reqwest::Error),
-    /// The whole-call timeout elapsed before an answer.
+    /// A call exceeded its whole-call timeout, or a progress stream stayed silent for
+    /// [`PLATFORM_STREAM_IDLE_TIMEOUT`].
     #[error("the platform request exceeded its timeout")]
     Timeout,
     /// Platform refused the credential, uniformly: missing, unknown, revoked, expired, or
@@ -96,153 +102,6 @@ pub struct ProgressFrame {
     pub observed_at_secs: i64,
 }
 
-/// A live Server-Sent-Events stream of one operation's progress.
-#[derive(Debug)]
-pub struct EventStream {
-    response: Option<reqwest::Response>,
-    parser: SseParser,
-    terminal_seen: bool,
-}
-
-impl EventStream {
-    /// The next frame, or `None` once the terminal frame has been delivered and nothing
-    /// remains.
-    ///
-    /// # Errors
-    ///
-    /// [`PlatformError`] if the transport or a frame fails mid-stream.
-    pub async fn next_frame(&mut self) -> Result<Option<ProgressFrame>, PlatformError> {
-        loop {
-            if self.terminal_seen {
-                return Ok(None);
-            }
-            if let Some(frame) = self.parser.next_progress_frame()? {
-                self.terminal_seen |= frame.status.is_terminal();
-                return Ok(Some(frame));
-            }
-            let Some(response) = self.response.as_mut() else {
-                return Ok(None);
-            };
-            match response.chunk().await {
-                Ok(Some(bytes)) => self.parser.feed(&bytes),
-                Ok(None) => {
-                    self.response = None;
-                    return Ok(None);
-                }
-                Err(error) => {
-                    return Err(if error.is_timeout() {
-                        PlatformError::Timeout
-                    } else {
-                        PlatformError::Network(error)
-                    });
-                }
-            }
-        }
-    }
-}
-
-/// An incremental `text/event-stream` parser over arbitrarily chunked bytes. Comments are
-/// skipped, multi-line data joins with newlines, and only `progress` events surface.
-#[derive(Default, Debug)]
-struct SseParser {
-    buffer: String,
-}
-
-impl SseParser {
-    fn feed(&mut self, bytes: &[u8]) {
-        self.buffer.push_str(&String::from_utf8_lossy(bytes));
-    }
-
-    /// The next complete `progress` frame, or `None` when more bytes are needed.
-    fn next_progress_frame(&mut self) -> Result<Option<ProgressFrame>, PlatformError> {
-        loop {
-            let Some((event_end, consumed)) = complete_event(&self.buffer) else {
-                return Ok(None);
-            };
-            let raw: String = self.buffer.drain(..consumed).collect();
-            let Some(event_text) = raw.get(..event_end) else {
-                return Err(PlatformError::MalformedFrame);
-            };
-            // A comment or another event name parses to None; keep scanning.
-            if let Some(frame) = parse_sse_event(event_text)? {
-                return Ok(Some(frame));
-            }
-        }
-    }
-}
-
-/// Find one complete event in `buffer`: the text before its blank-line terminator and the total
-/// number of bytes the terminator consumes. Handles both `\n` and `\r\n` framing in one pass,
-/// so whichever terminator comes first wins.
-fn complete_event(buffer: &str) -> Option<(usize, usize)> {
-    let bytes = buffer.as_bytes();
-    for (index, byte) in bytes.iter().enumerate() {
-        if *byte != b'\n' {
-            continue;
-        }
-        match (bytes.get(index + 1), bytes.get(index + 2)) {
-            (Some(b'\n'), _) => return Some((index, index + 2)),
-            (Some(b'\r'), Some(b'\n')) => return Some((index, index + 3)),
-            _ => {}
-        }
-    }
-    None
-}
-
-/// Parse one event's text into a frame: `None` for comments and non-`progress` names.
-fn parse_sse_event(event: &str) -> Result<Option<ProgressFrame>, PlatformError> {
-    let mut id: Option<String> = None;
-    let mut name: Option<String> = None;
-    let mut data_lines: Vec<&str> = Vec::new();
-    for line in event.lines() {
-        let line = line.strip_suffix('\r').unwrap_or(line);
-        if line.is_empty() || line.starts_with(':') {
-            continue;
-        }
-        let (field, value) = match line.split_once(':') {
-            Some((field, value)) => (field, value.strip_prefix(' ').unwrap_or(value)),
-            None => (line, ""),
-        };
-        match field {
-            "id" => id = Some(value.to_owned()),
-            "event" => name = Some(value.to_owned()),
-            "data" => data_lines.push(value),
-            _ => {}
-        }
-    }
-    if name.as_deref() != Some("progress") || data_lines.is_empty() {
-        return Ok(None);
-    }
-    let wire: FrameWire =
-        serde_json::from_str(&data_lines.join("\n")).map_err(|_| PlatformError::MalformedFrame)?;
-    let event_id = id.ok_or(PlatformError::MalformedFrame)?;
-    let observed = jiff::Timestamp::from_str(&wire.observed_at)
-        .map_err(|_| PlatformError::MalformedFrame)?
-        .as_second();
-    Ok(Some(ProgressFrame {
-        event_id: event_id
-            .parse()
-            .map_err(|_| PlatformError::MalformedFrame)?,
-        status: OperationStatus::parse(&wire.status)?,
-        stage: wire.stage,
-        progress_percent: wire.progress_percent,
-        message: wire.message,
-        observed_at_secs: observed,
-    }))
-}
-
-#[derive(Deserialize)]
-struct FrameWire {
-    status: String,
-    #[serde(default)]
-    stage: Option<String>,
-    #[serde(default)]
-    progress_percent: Option<u8>,
-    #[serde(default)]
-    message: Option<String>,
-    observed_at: String,
-}
-
 /// The closed lifecycle vocabulary Platform serves. An unknown value refuses to parse rather
 /// than being guessed into the nearest known state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -295,25 +154,54 @@ impl OperationStatus {
 /// The typed client. Cheap to clone; every call carries its own session credential.
 #[derive(Debug, Clone)]
 pub struct Client {
+    /// Every request/response call: bounded as a whole by the call timeout.
     http: reqwest::Client,
+    /// The progress stream only: no total timeout, a connect bound and a read-idle bound.
+    stream_http: reqwest::Client,
     base_url: Url,
 }
 
 impl Client {
-    /// Build a client against `base_url` with a whole-call timeout.
+    /// Build a client against `base_url` with a whole-call timeout for request/response calls and
+    /// [`PLATFORM_STREAM_IDLE_TIMEOUT`] for the progress stream.
     ///
     /// # Errors
     ///
     /// [`PlatformError::Network`] if the underlying HTTP client cannot build, which in practice
     /// means TLS backend initialization failed.
     pub fn new(base_url: &Url, timeout: Duration) -> Result<Self, PlatformError> {
+        Self::with_timeouts(base_url, timeout, PLATFORM_STREAM_IDLE_TIMEOUT)
+    }
+
+    /// Build a client with both bounds named: `call` for every request/response call, `idle` for
+    /// the progress stream. [`Client::new`] passes [`PLATFORM_STREAM_IDLE_TIMEOUT`]; tests pass a
+    /// short value.
+    ///
+    /// # Errors
+    ///
+    /// [`PlatformError::Network`] if the underlying HTTP client cannot build.
+    pub fn with_timeouts(
+        base_url: &Url,
+        call: Duration,
+        idle: Duration,
+    ) -> Result<Self, PlatformError> {
         let http = reqwest::ClientBuilder::new()
-            .timeout(timeout)
+            .timeout(call)
+            .use_rustls_tls()
+            .build()
+            .map_err(PlatformError::Network)?;
+        // A total timeout covers the response body, so it would cut every stream at the call
+        // timeout although Platform holds it open with keep-alives. The read timeout resets on
+        // every received chunk and ends a stream that has gone silent.
+        let stream_http = reqwest::ClientBuilder::new()
+            .connect_timeout(call)
+            .read_timeout(idle)
             .use_rustls_tls()
             .build()
             .map_err(PlatformError::Network)?;
         Ok(Self {
             http,
+            stream_http,
             base_url: base_url.clone(),
         })
     }
@@ -420,18 +308,14 @@ impl Client {
         last_event_id: Option<&str>,
     ) -> Result<EventStream, PlatformError> {
         let mut builder = self
-            .http
+            .stream_http
             .get(self.url(&format!("/v1/operations/{operation_id}/events")))
             .bearer_auth(session);
         if let Some(last) = last_event_id {
             builder = builder.header("last-event-id", last);
         }
         let response = self.send(builder).await?;
-        Ok(EventStream {
-            response: Some(response),
-            parser: SseParser::default(),
-            terminal_seen: false,
-        })
+        Ok(EventStream::new(response))
     }
 
     /// Read one operation snapshot. Replays of the same key return the original operation.
