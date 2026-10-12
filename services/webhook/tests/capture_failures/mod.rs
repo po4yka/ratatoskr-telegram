@@ -58,9 +58,11 @@ async fn a_platform_permanent_refusal_enqueues_a_could_not_save_reply() {
     assert_eq!(outbound_bodies(&fixture).await, [REFUSED_BODY]);
 }
 
-/// A credential refusal is as permanent as any other refusal and gets the same static reply.
+/// Platform rejecting the credential twice in a row is as permanent as any other refusal: the
+/// rejected session is dropped and exchanged again once (XR-021 CONTRACTS R4-08 rule 3), and the
+/// second rejection settles with the same static reply.
 #[tokio::test]
-async fn permanent_refusal_settles_immediately() {
+async fn a_second_401_in_a_row_is_a_permanent_refusal() {
     let (base_url, state) = platform_harness(CaptureAnswer::RefuseAuth).await;
     let fixture = Fixture::create(&base_url, CaptureAnswer::RefuseAuth, Arc::clone(&state)).await;
     fixture
@@ -68,11 +70,78 @@ async fn permanent_refusal_settles_immediately() {
         .await;
     assert_eq!(fixture.settled_state(9_501).await, "failed");
     assert_eq!(
+        state.exchange_calls.load(Ordering::SeqCst),
+        2,
+        "the rejected session is exchanged again exactly once"
+    );
+    assert_eq!(
         state.capture_calls.load(Ordering::SeqCst),
-        1,
-        "a permanent class must not retry"
+        2,
+        "one attempt per credential, then the refusal is final"
     );
     assert_eq!(outbound_bodies(&fixture).await, [REFUSED_BODY]);
+}
+
+/// A revoked or lost Platform session is dropped from the cache, a fresh one is exchanged, and
+/// the capture succeeds on that one extra attempt instead of failing until the cache ages out.
+#[tokio::test]
+async fn a_rejected_session_is_exchanged_again_and_the_capture_succeeds() {
+    let (base_url, state) = platform_harness(CaptureAnswer::RejectFirstSession).await;
+    let fixture = Fixture::create(
+        &base_url,
+        CaptureAnswer::RejectFirstSession,
+        Arc::clone(&state),
+    )
+    .await;
+    fixture
+        .deliver(message_update(9_511, "https://example.test/article"))
+        .await;
+    assert_eq!(fixture.settled_state(9_511).await, "processed");
+    assert_eq!(state.exchange_calls.load(Ordering::SeqCst), 2);
+    assert_eq!(
+        *state.bearers.lock().expect("bearer lock"),
+        [
+            "Bearer synthetic-session-credential-1",
+            "Bearer synthetic-session-credential-2"
+        ],
+        "the second attempt carries the freshly exchanged credential"
+    );
+    let operation: uuid::Uuid = OPERATION_ID.parse().expect("synthetic uuid");
+    assert_eq!(binding_count(&fixture, operation).await, 1);
+    assert_eq!(outbound_job_count(&fixture).await, 1);
+
+    // The fresh credential is cached: the next capture neither exchanges nor is rejected.
+    fixture
+        .deliver(message_update(9_512, "https://example.test/other"))
+        .await;
+    assert_eq!(fixture.settled_state(9_512).await, "processed");
+    assert_eq!(state.exchange_calls.load(Ordering::SeqCst), 2);
+    assert_eq!(state.capture_calls.load(Ordering::SeqCst), 3);
+}
+
+/// The same recovery for an attachment: the bytes are fetched and stored once, and only the
+/// submission is repeated under the new credential.
+#[tokio::test]
+async fn a_rejected_session_is_exchanged_again_for_a_blob_capture_too() {
+    let (base_url, state) = platform_harness(CaptureAnswer::RejectFirstSession).await;
+    let fixture = Fixture::create(
+        &base_url,
+        CaptureAnswer::RejectFirstSession,
+        Arc::clone(&state),
+    )
+    .await;
+    fixture
+        .deliver(pdf_document_update(9_521, "pdf-rejected-session", 128))
+        .await;
+    assert_eq!(fixture.settled_state(9_521).await, "processed");
+    assert_eq!(state.exchange_calls.load(Ordering::SeqCst), 2);
+    assert_eq!(
+        *state.capture_paths.lock().expect("path lock"),
+        ["/v1/captures/blobs", "/v1/captures/blobs"]
+    );
+    assert_eq!(state.get_file_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(state.download_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(outbound_job_count(&fixture).await, 1);
 }
 
 /// With the key tied to the body, a conflict can only mean "still in flight": it is retried

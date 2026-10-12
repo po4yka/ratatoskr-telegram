@@ -37,14 +37,17 @@ role only); bootstrap is insert-if-absent, so an operator-disabled owner survive
 Plan item 5 added the first product slice. The webhook worker parses authorized private-message
 text into bare-URL or `/summarize` capture intents, authenticates to Platform by exchanging
 short-lived Ed25519-signed assertions (cached per sender until near expiry), and submits captures
-under deterministic idempotency keys - resending one link converges on Platform's original
-operation, and acceptance pre-creates the message binding, writes an opaque deep-link intent, and
-enqueues exactly one HTML acknowledgment. A dispatcher follower consumes Platform's per-operation
+under idempotency keys derived from the exact request body (sender, route and body bytes) - sending
+one message twice converges on Platform's original operation, while the same content forwarded is a
+separate operation - and acceptance pre-creates the message binding, writes an opaque deep-link
+intent, and enqueues exactly one HTML acknowledgment. A dispatcher follower consumes Platform's per-operation
 SSE stream into the existing projection seam (dedupe by frame id, `Last-Event-ID` resume, stop at
 terminal), and terminal renders add the fallback hyperlink plus a Mini App button backed by the
 intent record. Platform outages settle updates as failed after bounded retries; no acknowledgment
 is sent for an unaccepted capture, and the sender instead gets one static reply that the item was
-not saved (temporarily unavailable, or not accepted). The first network session exchange of a
+not saved (temporarily unavailable, or not accepted). A Platform conflict is retried like any
+transient class, and a rejected session credential is dropped, exchanged again and the capture
+submitted once more before the refusal is final. The first network session exchange of a
 sender also writes the Platform user id to `telegram.identities.internal_user_id`, in both roles.
 
 Plan item 6 extends capture intake without moving extraction into Telegram: forwarded text or

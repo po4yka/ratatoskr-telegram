@@ -59,19 +59,13 @@ pub(crate) async fn submit(
     metadata: Option<telegram_persistence::interaction_tokens::IntentMetadata>,
 ) -> Result<AcceptedCapture, SubmitClass> {
     let subject = telegram_user_id.to_string();
-    let session = sessions
-        .credential(&subject)
-        .await
-        .map_err(|error| classify(&error))?;
-    let client = sessions.client();
 
     // Resending a link whose operation is already tracked must not duplicate the message:
     // Platform replays the original operation, and an existing live binding means the chat
     // already holds the acknowledgment for it.
     let origin = origin_of(metadata.as_ref()).map_err(|_| SubmitClass::TransientExhausted)?;
     let submission = intent::capture_submission(telegram_user_id, source.clone(), origin);
-    let accepted: platform_api::OperationAccepted =
-        submit_with_retries(client, &session, &submission).await?;
+    let accepted = submit_with_session(sessions, &subject, &submission).await?;
     let operation_id = accepted.operation_id;
 
     let now = now_secs();
@@ -144,12 +138,52 @@ fn source_url(source: &platform_api::CaptureSource) -> Option<String> {
     }
 }
 
+/// How one bounded submission pass ended without an acceptance.
+enum Pass {
+    /// Platform rejected the bearer credential itself.
+    CredentialRejected,
+    /// Any other failure, already classified.
+    Failed(SubmitClass),
+}
+
+/// Submit under the sender's cached Platform session. When Platform rejects that credential (it
+/// was revoked, or lost with a Platform database), drop it, but only while it is still the
+/// current cache entry, exchange a fresh session and submit once more before calling the refusal
+/// permanent (XR-021 CONTRACTS R4-08 rule 3). The second pass is separate from the
+/// transient-class bound, and URL and blob captures both go through here.
+async fn submit_with_session(
+    sessions: &platform_api::session::SessionSource,
+    subject: &str,
+    submission: &platform_api::CaptureSubmission,
+) -> Result<platform_api::OperationAccepted, SubmitClass> {
+    let session = sessions
+        .credential(subject)
+        .await
+        .map_err(|error| classify(&error))?;
+    match submit_with_retries(sessions.client(), &session, submission).await {
+        Ok(accepted) => return Ok(accepted),
+        Err(Pass::Failed(class)) => return Err(class),
+        Err(Pass::CredentialRejected) => {}
+    }
+    sessions.invalidate_credential(subject, &session).await;
+    let fresh = sessions
+        .credential(subject)
+        .await
+        .map_err(|error| classify(&error))?;
+    submit_with_retries(sessions.client(), &fresh, submission)
+        .await
+        .map_err(|pass| match pass {
+            Pass::CredentialRejected => SubmitClass::PermanentRefusal,
+            Pass::Failed(class) => class,
+        })
+}
+
 /// One submission with the transient-class retry bound around it.
 async fn submit_with_retries(
     client: &platform_api::Client,
     session: &str,
     submission: &platform_api::CaptureSubmission,
-) -> Result<platform_api::OperationAccepted, SubmitClass> {
+) -> Result<platform_api::OperationAccepted, Pass> {
     let mut last = SubmitClass::TransientExhausted;
     for attempt in 0..SUBMIT_ATTEMPTS {
         if attempt > 0 {
@@ -157,11 +191,14 @@ async fn submit_with_retries(
         }
         match client.submit_capture(session, submission).await {
             Ok(accepted) => return Ok(accepted),
+            Err(platform_api::PlatformError::Unauthenticated) => {
+                return Err(Pass::CredentialRejected);
+            }
             Err(error) if is_transient(&error) => last = SubmitClass::TransientExhausted,
-            Err(_) => return Err(SubmitClass::PermanentRefusal),
+            Err(_) => return Err(Pass::Failed(SubmitClass::PermanentRefusal)),
         }
     }
-    Err(last)
+    Err(Pass::Failed(last))
 }
 
 /// The closed split between "wait and try again" and "stop now".

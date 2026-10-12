@@ -68,6 +68,8 @@ enum CaptureAnswer {
     ConflictAlways,
     /// `409` on the first attempt, then `202`.
     ConflictOnce,
+    /// `401` for the first minted session credential, `202` for every later one.
+    RejectFirstSession,
 }
 #[derive(Default)]
 struct PlatformState {
@@ -238,6 +240,10 @@ fn capture_route(
                 CaptureAnswer::ConflictAlways => refusal(StatusCode::CONFLICT),
                 CaptureAnswer::ConflictOnce if call == 1 => refusal(StatusCode::CONFLICT),
                 CaptureAnswer::ConflictOnce => accepted(OPERATION_ID),
+                CaptureAnswer::RejectFirstSession if bearer.ends_with("-1") => {
+                    refusal(StatusCode::UNAUTHORIZED)
+                }
+                CaptureAnswer::RejectFirstSession => accepted(OPERATION_ID),
                 CaptureAnswer::RefuseAuth => refusal(StatusCode::UNAUTHORIZED),
                 CaptureAnswer::RefuseBadRequest => refusal(StatusCode::BAD_REQUEST),
                 CaptureAnswer::Unavailable => refusal(StatusCode::SERVICE_UNAVAILABLE),

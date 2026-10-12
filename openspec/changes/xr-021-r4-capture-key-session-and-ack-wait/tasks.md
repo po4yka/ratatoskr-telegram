@@ -16,8 +16,8 @@ Environment for every command: `export CARGO_INCREMENTAL=0 CARGO_PROFILE_DEV_DEB
 
 ## 3. A rejected credential is dropped and the capture retried once (CONTRACTS R4-08 rule 3)
 
-- [ ] 3.1 RED: add `a_rejected_session_is_exchanged_again_and_the_capture_succeeds` (URL and blob), `a_second_401_in_a_row_is_a_permanent_refusal` and `an_invalidation_never_removes_a_newer_credential`; run them and confirm the first fails because the cached credential is never dropped.
-- [ ] 3.2 GREEN: invalidate, exchange and submit once more on `PlatformError::Unauthenticated` in `capture::submit`; update `permanent_refusal_settles_immediately` to the new attempt count; rerun.
+- [x] 3.1 RED: add `a_rejected_session_is_exchanged_again_and_the_capture_succeeds` (URL and blob), `a_second_401_in_a_row_is_a_permanent_refusal` and `an_invalidation_never_removes_a_newer_credential`; run them and confirm the first fails because the cached credential is never dropped.
+- [x] 3.2 GREEN: invalidate, exchange and submit once more on `PlatformError::Unauthenticated` in `capture::submit`; update `permanent_refusal_settles_immediately` to the new attempt count; rerun.
 
 ## 4. The ack wait is stated (CONTRACTS R4-08 rule 4)
 

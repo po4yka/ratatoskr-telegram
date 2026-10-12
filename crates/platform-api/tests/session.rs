@@ -172,6 +172,44 @@ async fn credential_invalidation_is_compare_and_remove() {
     assert_eq!(exchanges.load(Ordering::SeqCst), 3);
 }
 
+/// Two callers that were rejected with the same old credential: the first drops it and exchanges
+/// a new one, the second finds the cache already holds a newer credential, so its invalidation
+/// removes nothing and no third exchange happens (XR-021 CONTRACTS R4-08 rule 3).
+#[tokio::test]
+async fn an_invalidation_never_removes_a_newer_credential() {
+    let (base_url, exchanges) = exchange_harness().await;
+    let source = SessionSource::new(
+        Client::new(&base_url, Duration::from_secs(5)).expect("client"),
+        issuer(),
+        Box::new(FakeClock::starting_now()),
+    );
+
+    let rejected = source.credential(SUBJECT).await.expect("first credential");
+    assert!(
+        source.invalidate_credential(SUBJECT, &rejected).await,
+        "the first rejection removes the current credential"
+    );
+    let replacement = source
+        .credential(SUBJECT)
+        .await
+        .expect("replacement credential");
+    assert_ne!(replacement, rejected);
+
+    assert!(
+        !source.invalidate_credential(SUBJECT, &rejected).await,
+        "the second caller's rejection must not remove the newer credential"
+    );
+    assert_eq!(
+        source.credential(SUBJECT).await.expect("cached"),
+        replacement
+    );
+    assert_eq!(
+        exchanges.load(Ordering::SeqCst),
+        2,
+        "two exchanges in total, none for the stale invalidation"
+    );
+}
+
 /// The Platform user id the exchange harness always returns.
 const PLATFORM_USER: &str = "018f0000-0000-7000-8000-00000000abcd";
 
