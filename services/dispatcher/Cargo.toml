@@ -46,6 +46,7 @@ uuid.workspace = true
 tokio = { workspace = true, features = ["rt", "macros"] }
 nkeys = "0.4.5"
 tempfile.workspace = true
+tracing-subscriber.workspace = true
 
 [lints]
 workspace = true

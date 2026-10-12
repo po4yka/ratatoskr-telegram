@@ -20,6 +20,7 @@ use platform_api::session::Clock;
 use ratatoskr_telegram_dispatcher::follow::OperationFollower;
 use telegram_persistence::test_support::TestDatabase;
 use uuid::Uuid;
+mod slow_stream;
 
 const AUDIENCE: &str = "ratatoskr-edge-test";
 const SEED: [u8; 32] = [
