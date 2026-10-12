@@ -65,7 +65,7 @@ Stored attachment bytes SHALL be written to a telegram-owned content-addressed s
 
 ### Requirement: A stored PDF submits as a capture on the blob route
 
-A successfully stored PDF SHALL submit the same idempotent capture operation flow as a URL capture, except that the request goes to Platform's blob route `POST /v1/captures/blobs` with a body whose `blob` member is the stored BlobRef (owner service, sha256 digest, media type, byte length) instead of a URL; acknowledgment, binding, intent record and projection follow behave exactly as for URL captures. URL captures continue to use `POST /v1/captures`.
+A successfully stored PDF SHALL submit the same idempotent capture operation flow as a URL capture, except that the request goes to Platform's blob route `POST /v1/captures/blobs` with a body whose `blob` member is the stored BlobRef (owner service, sha256 digest, media type, byte length) instead of a URL; acknowledgment, binding, intent record and projection follow behave exactly as for URL captures. URL captures continue to use `POST /v1/captures`. The idempotency key SHALL describe the exact body, so the same PDF sent plain and then forwarded SHALL be two accepted operations and a media type that differs for the same bytes SHALL be a separate operation.
 
 #### Scenario: A stored PDF becomes a blob-referencing capture
 
@@ -76,6 +76,21 @@ A successfully stored PDF SHALL submit the same idempotent capture operation flo
 
 - **WHEN** an authorized sender sends a bare URL
 - **THEN** Platform receives the capture on `POST /v1/captures` with a `url` member
+
+#### Scenario: A PDF sent plain and then forwarded yields two operations
+
+- **WHEN** a sender sends a PDF and later forwards the same bytes with a forward origin
+- **THEN** Platform accepts both submissions under different keys, both updates settle processed, two acknowledgments are enqueued and no refusal reply exists
+
+#### Scenario: The same message sent twice converges
+
+- **WHEN** the same PDF message is delivered twice
+- **THEN** both submissions carry one key and Platform replays one operation
+
+#### Scenario: Another media type is another operation
+
+- **WHEN** the same bytes are submitted with a different media type
+- **THEN** the derived key differs from the key of the first submission
 
 #### Scenario: Storage failure fails the update truthfully
 
