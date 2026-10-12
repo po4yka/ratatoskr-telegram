@@ -246,7 +246,7 @@ kill -TERM <pid>
 
 Both roles demand their database URL **and** the `RATATOSKR__PLATFORM__` section since item 5:
 `BASE_URL` (default `http://127.0.0.1:8080`, the allocated Edge listener; https off loopback only),
-`TIMEOUT_SECONDS`, `AUDIENCE` (default `edge`, the audience Edge accepts), and
+`TIMEOUT_SECONDS` (bounds request/response calls and the stream connect, not the progress stream, which ends after 45 seconds without a byte), `AUDIENCE` (default `edge`, the audience Edge accepts), and
 `ASSERTION_SIGNING_KEY` (64 hex chars = one Ed25519 seed; SECRET). Either role refuses to start
 when the signing key is missing, an audience is set empty, or any other requirement fails, and the
 report names every violation. The dispatcher's outbound workers start after database preparation and drain in-flight delivery on shutdown; a job left

@@ -170,6 +170,8 @@ The final response may contain:
 - `Open`, `Retry`, `Add to collection`, and related actions;
 - a deep link into the Mini App or full web client.
 
+The dispatcher follows each operation over Platform's Server-Sent Events stream. `RATATOSKR__PLATFORM__TIMEOUT_SECONDS` (default 10) bounds Platform request/response calls and the connection to the stream, not the stream itself: a progress stream stays open for as long as Platform keeps sending frames or its 15 second keep-alives, and it ends only when it has received no byte for 45 seconds (`PLATFORM_STREAM_IDLE_TIMEOUT`, three keep-alive intervals). An operation that stays queued or running for minutes is therefore followed over one connection. The Bot API client keeps its own whole-call timeout.
+
 ## GitHub repository workflows
 
 A bare GitHub repository URL opens the safe metadata workflow by default:
