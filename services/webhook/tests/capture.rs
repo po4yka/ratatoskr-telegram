@@ -12,6 +12,7 @@ mod capture_attachments;
 mod capture_failures;
 mod capture_identity;
 mod capture_recovery;
+mod capture_submission;
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -60,6 +61,9 @@ enum CaptureAnswer {
     RefuseBadRequest,
     /// `503`, a transient outage on every attempt.
     Unavailable,
+    /// The real idempotency ledger: the same key with the same body replays its operation, the
+    /// same key with another body is `409`, and every new key mints a new operation.
+    Ledger,
 }
 #[derive(Default)]
 struct PlatformState {
@@ -77,6 +81,10 @@ struct PlatformState {
     /// When set, the file download route answers `500` instead of the attachment bytes.
     download_fails: std::sync::atomic::AtomicBool,
     attachment_bytes: std::sync::Mutex<Vec<u8>>,
+    /// The `Ledger` answer's memory: every key with the exact body first sent under it.
+    ledger: std::sync::Mutex<Vec<(String, Vec<u8>)>>,
+    /// The bearer credential of every capture request, in arrival order.
+    bearers: std::sync::Mutex<Vec<String>>,
 }
 
 async fn platform_harness(answer: CaptureAnswer) -> (String, Arc<PlatformState>) {
@@ -100,11 +108,13 @@ fn platform_router(answer: CaptureAnswer, state: Arc<PlatformState>) -> axum::Ro
         .route(
             "/v1/sessions/telegram",
             post(move |State(state): State<Arc<PlatformState>>| async move {
-                state.exchange_calls.fetch_add(1, Ordering::SeqCst);
+                // Every exchange mints a distinguishable credential, so a test can tell a
+                // dropped session from a reused one.
+                let minted = state.exchange_calls.fetch_add(1, Ordering::SeqCst) + 1;
                 (
                     StatusCode::CREATED,
                     Json(json!({
-                        "credential": "synthetic-session-credential",
+                        "credential": format!("synthetic-session-credential-{minted}"),
                         "expires_at": "2030-01-01T00:00:00Z",
                         "user_id": OPERATION_ID,
                     })),
@@ -175,6 +185,12 @@ fn capture_route(
               headers: axum::http::HeaderMap,
               body: axum::body::Bytes| async move {
             state.capture_calls.fetch_add(1, Ordering::SeqCst);
+            let bearer = headers
+                .get("authorization")
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or_default()
+                .to_owned();
+            state.bearers.lock().expect("bearer lock").push(bearer);
             state
                 .capture_paths
                 .lock()
@@ -197,11 +213,20 @@ fn capture_route(
                     Json(json!({"error": {"code": "synthetic", "message": "refused"}})),
                 )
             };
-            match answer {
-                CaptureAnswer::Accept => (
+            let accepted = |operation_id: &str| {
+                (
                     StatusCode::ACCEPTED,
-                    Json(json!({"operation_id": OPERATION_ID, "status": "accepted"})),
-                ),
+                    Json(json!({"operation_id": operation_id, "status": "accepted"})),
+                )
+            };
+            match answer {
+                CaptureAnswer::Accept => accepted(OPERATION_ID),
+                CaptureAnswer::Ledger => {
+                    match capture_submission::ledger_verdict(&state, &headers, &body) {
+                        Some(operation_id) => accepted(&operation_id),
+                        None => refusal(StatusCode::CONFLICT),
+                    }
+                }
                 CaptureAnswer::RefuseAuth => refusal(StatusCode::UNAUTHORIZED),
                 CaptureAnswer::RefuseBadRequest => refusal(StatusCode::BAD_REQUEST),
                 CaptureAnswer::Unavailable => refusal(StatusCode::SERVICE_UNAVAILABLE),

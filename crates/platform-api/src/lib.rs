@@ -543,31 +543,7 @@ impl Client {
         session: &str,
         submission: &CaptureSubmission,
     ) -> Result<OperationAccepted, PlatformError> {
-        // A URL capture posts to `/v1/captures`; a blob capture posts the `BlobRef` to its own
-        // route, `/v1/captures/blobs` (XR-021 CONTRACTS S11). The optional `origin` provenance is
-        // an additive member that both routes tolerate and ignore.
-        let (path, mut body) = match &submission.source {
-            CaptureSource::Url(url) => ("/v1/captures", serde_json::json!({ "url": url })),
-            CaptureSource::Blob {
-                owner_service,
-                digest_hex,
-                media_type,
-                length_bytes,
-            } => (
-                "/v1/captures/blobs",
-                serde_json::json!({
-                    "blob": {
-                        "owner_service": owner_service,
-                        "digest": { "algorithm": "sha256", "hex": digest_hex },
-                        "media_type": media_type,
-                        "length_bytes": length_bytes,
-                    }
-                }),
-            ),
-        };
-        if let (Some(map), Some(origin)) = (body.as_object_mut(), submission.origin.as_ref()) {
-            map.insert("origin".to_owned(), origin.clone());
-        }
+        let (path, body) = submission.request_parts();
 
         let response = self
             .send(
@@ -610,12 +586,49 @@ pub enum CaptureSource {
 /// provenance facts carried additively (Platform tolerates and ignores unknown members).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CaptureSubmission {
-    /// The deterministic per-sender key Platform deduplicates on.
+    /// The key Platform deduplicates on. It must describe [`CaptureSubmission::request_parts`]:
+    /// Platform fingerprints the exact body, so one key with two bodies is refused.
     pub idempotency_key: String,
     /// What to capture.
     pub source: CaptureSource,
     /// Bounded provenance facts (e.g. forward origin), pre-serialized by the caller.
     pub origin: Option<serde_json::Value>,
+}
+
+impl CaptureSubmission {
+    /// The route path and JSON body this submission sends, and nothing else: `submit_capture`
+    /// serialises exactly this value, so anything derived from it (the idempotency key above all)
+    /// describes the request that goes on the wire.
+    ///
+    /// A URL capture posts `{"url": ...}` to `/v1/captures`; a blob capture posts the `BlobRef`
+    /// to its own route, `/v1/captures/blobs` (XR-021 CONTRACTS S11). The optional `origin`
+    /// provenance is an additive member that both routes tolerate and ignore.
+    #[must_use]
+    pub fn request_parts(&self) -> (&'static str, serde_json::Value) {
+        let (path, mut body) = match &self.source {
+            CaptureSource::Url(url) => ("/v1/captures", serde_json::json!({ "url": url })),
+            CaptureSource::Blob {
+                owner_service,
+                digest_hex,
+                media_type,
+                length_bytes,
+            } => (
+                "/v1/captures/blobs",
+                serde_json::json!({
+                    "blob": {
+                        "owner_service": owner_service,
+                        "digest": { "algorithm": "sha256", "hex": digest_hex },
+                        "media_type": media_type,
+                        "length_bytes": length_bytes,
+                    }
+                }),
+            ),
+        };
+        if let (Some(map), Some(origin)) = (body.as_object_mut(), self.origin.as_ref()) {
+            map.insert("origin".to_owned(), origin.clone());
+        }
+        (path, body)
+    }
 }
 
 fn classify(response: reqwest::Response) -> Result<reqwest::Response, PlatformError> {

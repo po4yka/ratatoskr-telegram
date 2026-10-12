@@ -68,18 +68,10 @@ pub(crate) async fn submit(
     // Resending a link whose operation is already tracked must not duplicate the message:
     // Platform replays the original operation, and an existing live binding means the chat
     // already holds the acknowledgment for it.
-    let key = key_for_source(telegram_user_id, &source);
     let origin = origin_of(metadata.as_ref()).map_err(|_| SubmitClass::TransientExhausted)?;
-    let accepted: platform_api::OperationAccepted = submit_with_retries(
-        client,
-        &session,
-        &platform_api::CaptureSubmission {
-            idempotency_key: key,
-            source: source.clone(),
-            origin,
-        },
-    )
-    .await?;
+    let submission = intent::capture_submission(telegram_user_id, source.clone(), origin);
+    let accepted: platform_api::OperationAccepted =
+        submit_with_retries(client, &session, &submission).await?;
     let operation_id = accepted.operation_id;
 
     let now = now_secs();
@@ -141,16 +133,6 @@ fn origin_of(
             serde_json::to_value(std::collections::BTreeMap::from([("forward", forward)]))
         })
         .transpose()
-}
-
-/// Derive the idempotency source without letting a Bot API file identifier escape this boundary.
-fn key_for_source(telegram_user_id: i64, source: &platform_api::CaptureSource) -> String {
-    match source {
-        platform_api::CaptureSource::Url(url) => intent::capture_key(telegram_user_id, url),
-        platform_api::CaptureSource::Blob { digest_hex, .. } => {
-            intent::blob_capture_key(telegram_user_id, digest_hex)
-        }
-    }
 }
 
 /// An attachment has no address; persisting one would make an opaque Bot API detail look like a

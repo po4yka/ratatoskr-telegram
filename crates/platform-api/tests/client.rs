@@ -33,6 +33,8 @@ struct Captured {
     path: String,
     headers: HeaderMap,
     body: Option<Value>,
+    /// The exact bytes received, for byte-identity assertions.
+    raw_body: Vec<u8>,
 }
 
 impl Captured {
@@ -69,6 +71,7 @@ impl Harness {
                             path: format!("/{path}"),
                             headers,
                             body: serde_json::from_slice::<Value>(&body).ok(),
+                            raw_body: body.to_vec(),
                         };
                         let (status, payload) = respond(&entry);
                         state.lock().expect("capture lock").push(entry);
@@ -245,6 +248,63 @@ async fn blob_capture_posts_the_blobref_to_the_blob_route() {
         })),
         "the body is exactly the BlobRef member and no URL"
     );
+}
+
+/// `request_parts` is the single description of a capture request: the path and body it returns
+/// are exactly what `submit_capture` sends, byte for byte, with and without `origin`, for a URL
+/// and for a blob (XR-021 CONTRACTS R4-08 rule 1).
+#[tokio::test]
+async fn request_parts_are_exactly_what_submit_capture_sends() {
+    let harness = Harness::spawn(move |_| {
+        (
+            StatusCode::ACCEPTED,
+            json!({"operation_id": "018f0000-0000-7000-8000-00000000cafe", "status": "accepted"}),
+        )
+    })
+    .await;
+    let origin = json!({
+        "forward": {"kind": "channel", "chat_id": -100_200_300, "message_id": 77,
+                     "sent_at_secs": 1_700_000_000}
+    });
+    let blob = || CaptureSource::Blob {
+        owner_service: "ratatoskr-telegram".to_owned(),
+        digest_hex: "ab".repeat(32),
+        media_type: "application/pdf".to_owned(),
+        length_bytes: 1024,
+    };
+    let url = || CaptureSource::Url("https://example.test/story".to_owned());
+    let submissions = [
+        (url(), None),
+        (url(), Some(origin.clone())),
+        (blob(), None),
+        (blob(), Some(origin.clone())),
+    ]
+    .map(|(source, origin)| CaptureSubmission {
+        idempotency_key: "parts-key".to_owned(),
+        source,
+        origin,
+    });
+
+    for submission in &submissions {
+        client(&harness.base_url)
+            .submit_capture(SESSION, submission)
+            .await
+            .expect("the submission must resolve");
+    }
+
+    let requests = harness.requests();
+    assert_eq!(requests.len(), submissions.len());
+    for (submission, received) in submissions.iter().zip(&requests) {
+        let (path, body) = submission.request_parts();
+        assert_eq!(received.path, path);
+        assert_eq!(
+            received.raw_body,
+            serde_json::to_vec(&body).expect("the parts serialise"),
+            "the bytes on the wire are the serialised parts"
+        );
+    }
+    assert_eq!(submissions[0].request_parts().0, "/v1/captures");
+    assert_eq!(submissions[3].request_parts().0, "/v1/captures/blobs");
 }
 
 /// Provenance rides additively on URL captures, which stay byte-compatible when absent.

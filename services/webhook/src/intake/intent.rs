@@ -41,40 +41,57 @@ pub(crate) fn parse_start_token(text: &str) -> Option<DeepLinkToken> {
     Some(DeepLinkToken(token.to_owned()))
 }
 
-/// The deterministic idempotency key for a first capture attempt.
+/// One capture submission with the idempotency key that describes it.
 ///
-/// Hex-encoded SHA-256 over a versioned binding of sender, address, and intent kind, so the
-/// same sender resending one address converges on Platform's original operation.
+/// The key is `hex(sha256("capture.v2|" || sender || "|" || route path || "|" || body bytes))`
+/// over [`platform_api::CaptureSubmission::request_parts`], the very value the Platform client
+/// sends, so a key can never describe a body other than the one posted (XR-021 CONTRACTS R4-08).
+/// The same body replays its original Platform operation; a different body (the same file
+/// forwarded, another media type) is a separate operation over the same content.
 #[must_use]
-pub(crate) fn capture_key(telegram_user_id: i64, normalized_url: &str) -> String {
-    digest(&format!("capture.v1|{telegram_user_id}|{normalized_url}"))
+pub(crate) fn capture_submission(
+    telegram_user_id: i64,
+    source: platform_api::CaptureSource,
+    origin: Option<serde_json::Value>,
+) -> platform_api::CaptureSubmission {
+    let unkeyed = platform_api::CaptureSubmission {
+        idempotency_key: String::new(),
+        source,
+        origin,
+    };
+    platform_api::CaptureSubmission {
+        idempotency_key: derive_key(telegram_user_id, &unkeyed, None),
+        ..unkeyed
+    }
 }
 
-/// The deterministic idempotency key for an attachment capture.
-///
-/// The source is the bytes' verified SHA-256 digest rather than a Bot API file identifier: those
-/// identifiers are provider-local and can change, whereas identical content must converge on one
-/// Platform operation for the sending Telegram user.
-#[must_use]
-pub(crate) fn blob_capture_key(telegram_user_id: i64, digest_hex: &str) -> String {
-    digest(&format!(
-        "capture.v1|{telegram_user_id}|sha256:{digest_hex}"
-    ))
-}
-
-/// The deterministic key for a deliberate retry of one FAILED operation: salted with that
-/// operation's identifier, so Platform creates a fresh operation instead of replaying it.
-/// The unit tests in this module pin the derivation; the production consumer arrives with the
-/// callback-token item.
+/// The deterministic key for a deliberate retry of one FAILED operation: the submission's own key
+/// derivation, salted with that operation's identifier so Platform creates a fresh operation
+/// instead of replaying it. The unit tests in this module pin the derivation; the production
+/// consumer arrives with the callback-token item.
 #[cfg(test)]
 #[must_use]
 pub(crate) fn retry_key(
     telegram_user_id: i64,
-    normalized_url: &str,
+    submission: &platform_api::CaptureSubmission,
     failed_operation_id: uuid::Uuid,
 ) -> String {
+    derive_key(telegram_user_id, submission, Some(failed_operation_id))
+}
+
+/// The one derivation: `capture.v2`, the sender, the route path and the serialised body, plus the
+/// failed operation for a retry. Only the request parts feed it, never the stored key.
+fn derive_key(
+    telegram_user_id: i64,
+    submission: &platform_api::CaptureSubmission,
+    retry_of: Option<uuid::Uuid>,
+) -> String {
+    let (path, body) = submission.request_parts();
+    // A `serde_json::Value` always serialises: its object keys are strings.
+    let body = serde_json::to_string(&body).unwrap_or_default();
+    let salt = retry_of.map_or_else(String::new, |failed| format!("|retry:{failed}"));
     digest(&format!(
-        "capture.v1|{telegram_user_id}|{normalized_url}|retry:{failed_operation_id}"
+        "capture.v2|{telegram_user_id}|{path}|{body}{salt}"
     ))
 }
 
@@ -131,7 +148,9 @@ pub(crate) fn parse(text: &str) -> Option<CaptureIntent> {
     reason = "assertions inside the in-crate test module"
 )]
 mod tests {
-    use super::{CaptureIntent, MAX_URL_CHARS, capture_key, parse, parse_start_token, retry_key};
+    use super::{
+        CaptureIntent, MAX_URL_CHARS, capture_submission, parse, parse_start_token, retry_key,
+    };
 
     #[test]
     fn start_command_parses_only_a_64_character_opaque_token() {
@@ -209,21 +228,60 @@ mod tests {
         );
     }
 
+    fn url_submission(
+        sender: i64,
+        url: &str,
+        origin: Option<serde_json::Value>,
+    ) -> platform_api::CaptureSubmission {
+        capture_submission(
+            sender,
+            platform_api::CaptureSource::Url(url.to_owned()),
+            origin,
+        )
+    }
+
+    fn blob_submission(
+        sender: i64,
+        media_type: &str,
+        length_bytes: u64,
+        origin: Option<serde_json::Value>,
+    ) -> platform_api::CaptureSubmission {
+        capture_submission(
+            sender,
+            platform_api::CaptureSource::Blob {
+                owner_service: "ratatoskr-telegram".to_owned(),
+                digest_hex: "ab".repeat(32),
+                media_type: media_type.to_owned(),
+                length_bytes,
+            },
+            origin,
+        )
+    }
+
+    fn forward(message_id: i64) -> Option<serde_json::Value> {
+        Some(serde_json::json!({
+            "forward": {"kind": "channel", "chat_id": -100_200_300, "message_id": message_id,
+                         "sent_at_secs": 1_700_000_000}
+        }))
+    }
+
     #[test]
     fn keys_are_stable_across_repeats_and_normalizations() {
-        let first = capture_key(900_700_601, "https://example.test/article");
-        let again = capture_key(900_700_601, "https://example.test/article");
+        let first =
+            url_submission(900_700_601, "https://example.test/article", None).idempotency_key;
+        let again =
+            url_submission(900_700_601, "https://example.test/article", None).idempotency_key;
         assert_eq!(first, again, "the same sender and URL derive one key");
         assert_eq!(
             first,
             parse("HTTPS://EXAMPLE.test/article")
-                .map(|intent| capture_key(900_700_601, &intent.url))
+                .map(|intent| url_submission(900_700_601, &intent.url, None).idempotency_key)
                 .expect("the variant parses"),
             "host and scheme case never changes the key"
         );
         assert_ne!(
             first,
-            capture_key(900_700_602, "https://example.test/article"),
+            url_submission(900_700_602, "https://example.test/article", None).idempotency_key,
             "another sender derives another key"
         );
         assert_eq!(first.len(), 64, "the key is lowercase hex sha256");
@@ -236,26 +294,83 @@ mod tests {
     }
 
     #[test]
+    fn two_different_bodies_never_share_a_key_and_the_same_body_always_does() {
+        let build: [fn() -> platform_api::CaptureSubmission; 9] = [
+            || url_submission(900_700_601, "https://example.test/a", None),
+            || url_submission(900_700_601, "https://example.test/a", forward(77)),
+            || url_submission(900_700_601, "https://example.test/a", forward(78)),
+            || url_submission(900_700_601, "https://example.test/b", None),
+            || url_submission(900_700_602, "https://example.test/a", None),
+            || blob_submission(900_700_601, "application/pdf", 1_024, None),
+            || blob_submission(900_700_601, "application/pdf", 1_024, forward(77)),
+            || blob_submission(900_700_601, "application/x-pdf", 1_024, None),
+            || blob_submission(900_700_601, "application/pdf", 2_048, None),
+        ];
+        let keys: Vec<String> = build.iter().map(|make| make().idempotency_key).collect();
+        for (index, key) in keys.iter().enumerate() {
+            assert_eq!(key.len(), 64, "submission {index} has a sha256 key");
+            assert_eq!(
+                key,
+                &build[index]().idempotency_key,
+                "submission {index} derives one key every time"
+            );
+        }
+        let distinct: std::collections::HashSet<&String> = keys.iter().collect();
+        assert_eq!(
+            distinct.len(),
+            keys.len(),
+            "no two bodies share a key: {keys:?}"
+        );
+    }
+
+    /// The webhook only admits `application/pdf` today, so this is pinned on the derivation: the
+    /// same bytes under another media type are another body, hence another operation.
+    #[test]
+    fn a_different_media_type_for_the_same_bytes_is_a_separate_operation() {
+        let pdf = blob_submission(900_700_601, "application/pdf", 1_024, None);
+        let other = blob_submission(900_700_601, "application/octet-stream", 1_024, None);
+        assert_ne!(pdf.idempotency_key, other.idempotency_key);
+        assert_eq!(
+            pdf.idempotency_key,
+            blob_submission(900_700_601, "application/pdf", 1_024, None).idempotency_key,
+            "the same media type still converges"
+        );
+    }
+
+    #[test]
+    fn the_key_is_the_documented_digest_over_the_request_parts() {
+        use sha2::{Digest as _, Sha256};
+        let submission = url_submission(900_700_601, "https://example.test/a", forward(77));
+        let (path, body) = submission.request_parts();
+        let mut input = b"capture.v2|900700601|".to_vec();
+        input.extend_from_slice(path.as_bytes());
+        input.push(b'|');
+        input.extend_from_slice(&serde_json::to_vec(&body).expect("the body serialises"));
+        assert_eq!(
+            submission.idempotency_key,
+            format!("{:x}", Sha256::digest(&input)),
+            "the key is sha256 over the versioned sender, path and body bytes"
+        );
+    }
+
+    #[test]
     fn retry_keys_salt_with_the_failed_operation() {
-        let base = capture_key(900_700_601, "https://example.test/article");
+        let submission = url_submission(900_700_601, "https://example.test/article", None);
         let failed = uuid::Uuid::now_v7();
-        let retry = retry_key(900_700_601, "https://example.test/article", failed);
+        let retry = retry_key(900_700_601, &submission, failed);
+        assert_eq!(retry.len(), 64, "a retry key is a sha256 hex digest");
         assert_ne!(
-            base, retry,
+            submission.idempotency_key, retry,
             "a retry must not reuse the failed attempt's key"
         );
         assert_eq!(
             retry,
-            retry_key(900_700_601, "https://example.test/article", failed),
+            retry_key(900_700_601, &submission, failed),
             "the same failed operation derives one stable retry key"
         );
         assert_ne!(
             retry,
-            retry_key(
-                900_700_601,
-                "https://example.test/article",
-                uuid::Uuid::now_v7()
-            ),
+            retry_key(900_700_601, &submission, uuid::Uuid::now_v7()),
             "a different failure salts differently"
         );
     }
