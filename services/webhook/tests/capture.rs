@@ -64,6 +64,10 @@ enum CaptureAnswer {
     /// The real idempotency ledger: the same key with the same body replays its operation, the
     /// same key with another body is `409`, and every new key mints a new operation.
     Ledger,
+    /// `409` on every attempt.
+    ConflictAlways,
+    /// `409` on the first attempt, then `202`.
+    ConflictOnce,
 }
 #[derive(Default)]
 struct PlatformState {
@@ -184,13 +188,17 @@ fn capture_route(
         move |State(state): State<Arc<PlatformState>>,
               headers: axum::http::HeaderMap,
               body: axum::body::Bytes| async move {
-            state.capture_calls.fetch_add(1, Ordering::SeqCst);
+            let call = state.capture_calls.fetch_add(1, Ordering::SeqCst) + 1;
             let bearer = headers
                 .get("authorization")
                 .and_then(|v| v.to_str().ok())
                 .unwrap_or_default()
                 .to_owned();
-            state.bearers.lock().expect("bearer lock").push(bearer);
+            state
+                .bearers
+                .lock()
+                .expect("bearer lock")
+                .push(bearer.clone());
             state
                 .capture_paths
                 .lock()
@@ -227,6 +235,9 @@ fn capture_route(
                         None => refusal(StatusCode::CONFLICT),
                     }
                 }
+                CaptureAnswer::ConflictAlways => refusal(StatusCode::CONFLICT),
+                CaptureAnswer::ConflictOnce if call == 1 => refusal(StatusCode::CONFLICT),
+                CaptureAnswer::ConflictOnce => accepted(OPERATION_ID),
                 CaptureAnswer::RefuseAuth => refusal(StatusCode::UNAUTHORIZED),
                 CaptureAnswer::RefuseBadRequest => refusal(StatusCode::BAD_REQUEST),
                 CaptureAnswer::Unavailable => refusal(StatusCode::SERVICE_UNAVAILABLE),

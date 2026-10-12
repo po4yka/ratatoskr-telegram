@@ -172,6 +172,9 @@ fn is_transient(error: &platform_api::PlatformError) -> bool {
             | platform_api::PlatformError::Timeout
             | platform_api::PlatformError::ServerError { .. }
             | platform_api::PlatformError::RateLimited
+            // With the key tied to the exact body, Platform can only answer a conflict for a
+            // request that is still in flight; waiting and asking again is the honest response.
+            | platform_api::PlatformError::Conflict
     )
 }
 

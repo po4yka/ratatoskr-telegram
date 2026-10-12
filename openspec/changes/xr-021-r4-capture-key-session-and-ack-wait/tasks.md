@@ -11,8 +11,8 @@ Environment for every command: `export CARGO_INCREMENTAL=0 CARGO_PROFILE_DEV_DEB
 
 ## 2. A conflict is transient (CONTRACTS R4-08 rule 2)
 
-- [ ] 2.1 RED: add `a_conflict_is_retried_then_answered_unavailable_not_refused` and `a_conflict_that_clears_on_the_second_attempt_is_accepted` in `services/webhook/tests/capture_failures/mod.rs`; run them and confirm the conflict is classed a permanent refusal today.
-- [ ] 2.2 GREEN: add `PlatformError::Conflict` to `is_transient`; rerun.
+- [x] 2.1 RED: add `a_conflict_is_retried_then_answered_unavailable_not_refused` and `a_conflict_that_clears_on_the_second_attempt_is_accepted` in `services/webhook/tests/capture_failures/mod.rs`; run them and confirm the conflict is classed a permanent refusal today.
+- [x] 2.2 GREEN: add `PlatformError::Conflict` to `is_transient`; rerun.
 
 ## 3. A rejected credential is dropped and the capture retried once (CONTRACTS R4-08 rule 3)
 

@@ -75,6 +75,49 @@ async fn permanent_refusal_settles_immediately() {
     assert_eq!(outbound_bodies(&fixture).await, [REFUSED_BODY]);
 }
 
+/// With the key tied to the body, a conflict can only mean "still in flight": it is retried
+/// within the bound and exhaustion says the item was not saved yet, never that Platform refused
+/// it (XR-021 CONTRACTS R4-08 rule 2).
+#[tokio::test]
+async fn a_conflict_is_retried_then_answered_unavailable_not_refused() {
+    let (base_url, state) = platform_harness(CaptureAnswer::ConflictAlways).await;
+    let fixture =
+        Fixture::create(&base_url, CaptureAnswer::ConflictAlways, Arc::clone(&state)).await;
+    fixture
+        .deliver(message_update(9_531, "https://example.test/article"))
+        .await;
+    assert_eq!(fixture.settled_state(9_531).await, "failed");
+    assert_eq!(state.capture_calls.load(Ordering::SeqCst), 2);
+    assert_eq!(
+        state.exchange_calls.load(Ordering::SeqCst),
+        1,
+        "a conflict is not a credential problem"
+    );
+    assert_eq!(outbound_bodies(&fixture).await, [UNAVAILABLE_BODY]);
+}
+
+/// A conflict that clears (the first request finished meanwhile) is accepted on the retry.
+#[tokio::test]
+async fn a_conflict_that_clears_on_the_second_attempt_is_accepted() {
+    let (base_url, state) = platform_harness(CaptureAnswer::ConflictOnce).await;
+    let fixture = Fixture::create(&base_url, CaptureAnswer::ConflictOnce, Arc::clone(&state)).await;
+    fixture
+        .deliver(message_update(9_541, "https://example.test/article"))
+        .await;
+    assert_eq!(fixture.settled_state(9_541).await, "processed");
+    assert_eq!(state.capture_calls.load(Ordering::SeqCst), 2);
+    let operation: uuid::Uuid = OPERATION_ID.parse().expect("synthetic uuid");
+    assert_eq!(binding_count(&fixture, operation).await, 1);
+    assert_eq!(outbound_job_count(&fixture).await, 1);
+    assert!(
+        outbound_bodies(&fixture)
+            .await
+            .iter()
+            .all(|body| body.starts_with("<b>Capturing")),
+        "only the acknowledgment is enqueued"
+    );
+}
+
 /// A reply that cannot be enqueued must not change the settled state: the update still fails.
 #[tokio::test]
 async fn a_reply_that_cannot_be_enqueued_still_settles_the_update_failed() {
