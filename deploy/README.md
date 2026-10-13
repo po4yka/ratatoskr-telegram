@@ -10,6 +10,11 @@ dependencies. Listener bind addresses, the trusted cloudflared route, and the ta
 remain authoritative for ingress. A deployment that needs narrower directional egress must enforce
 it in a host network policy without pinning provider-controlled DNS answers in these shared units.
 
+`/etc/ratatoskr` is `0750 root:ratatoskr` and `/mnt/nvme/ratatoskr/logs` is `0770 root:ratatoskr`,
+as ratatoskr-platform's `deploy/README.md` creates them; both units name `ratatoskr` in
+`SupplementaryGroups=`. The webhook unit's `ReadWritePaths=` includes `/var/lib/ratatoskr-telegram`,
+which systemd refuses to start without, so it is created below.
+
 Install the binaries in `/usr/local/bin`, the two examples in `/etc/ratatoskr`, three root-owned
 secret files under `/etc/ratatoskr/secrets`, the dispatcher's NATS seed at
 `/etc/ratatoskr/telegram.nkey` (where Platform's NATS README and every other service of the fleet
@@ -40,8 +45,11 @@ After creating the named service users/groups and provisioning PostgreSQL/NATS u
 profile, an authorized operator installs the non-secret artifacts explicitly:
 
 ```console
-$ sudo install -d -o root -g root -m 0755 /etc/ratatoskr /etc/ratatoskr/secrets
-$ sudo install -d -o root -g root -m 0755 /mnt/nvme/ratatoskr/logs
+$ sudo getent group ratatoskr >/dev/null || sudo groupadd --system ratatoskr
+$ sudo install -d -o root -g ratatoskr -m 0750 /etc/ratatoskr
+$ sudo install -d -o root -g root -m 0755 /etc/ratatoskr/secrets
+$ sudo install -d -o root -g ratatoskr -m 0770 /mnt/nvme/ratatoskr/logs
+$ sudo install -d -o ratatoskr-telegram-webhook -g ratatoskr-telegram-webhook -m 0750 /var/lib/ratatoskr-telegram
 $ sudo groupadd --system ratatoskr-telegram-blobs
 $ sudo install -d -o ratatoskr-telegram-webhook -g ratatoskr-telegram-blobs -m 2750 /mnt/nvme/ratatoskr/blobs/ratatoskr-telegram
 $ sudo install -o root -g root -m 0755 out/ratatoskr-telegram-webhook /usr/local/bin/
