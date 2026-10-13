@@ -22,6 +22,20 @@ not group-writable. Logs stay on NVMe under `/mnt/nvme/ratatoskr/logs`.
 
 Both examples target the allocated Edge: `RATATOSKR__PLATFORM__AUDIENCE=edge` (the fixed audience of the Edge binary) and `RATATOSKR__PLATFORM__BASE_URL=http://127.0.0.1:8080` (Edge's public API listener in the workspace port allocation).
 
+The binaries are never built on the host. Every commit on main publishes them, after the gate and
+the arm64 smoke test (`deploy/tests/artifact_smoke.sh`), as
+`ghcr.io/po4yka/ratatoskr-telegram:sha-<commit>` with `SHA256SUMS` and a provenance attestation, and
+`ratatoskr-workspace`'s `deploy/ansible` playbook installs exactly that. By hand, verify it on a
+machine with `oras` and `gh`, then copy `out/` to the host:
+
+```console
+$ oras pull "ghcr.io/po4yka/ratatoskr-telegram:sha-$COMMIT" -o out
+$ gh attestation verify "oci://ghcr.io/po4yka/ratatoskr-telegram:sha-$COMMIT" \
+    --repo po4yka/ratatoskr-telegram --source-digest "$COMMIT" \
+    --signer-workflow po4yka/ratatoskr-workspace/.github/workflows/reusable-release-artifact.yml
+$ (cd out && sha256sum -c SHA256SUMS)
+```
+
 After creating the named service users/groups and provisioning PostgreSQL/NATS under the workspace
 profile, an authorized operator installs the non-secret artifacts explicitly:
 
@@ -30,8 +44,8 @@ $ sudo install -d -o root -g root -m 0755 /etc/ratatoskr /etc/ratatoskr/secrets
 $ sudo install -d -o root -g root -m 0755 /mnt/nvme/ratatoskr/logs
 $ sudo groupadd --system ratatoskr-telegram-blobs
 $ sudo install -d -o ratatoskr-telegram-webhook -g ratatoskr-telegram-blobs -m 2750 /mnt/nvme/ratatoskr/blobs/ratatoskr-telegram
-$ sudo install -o root -g root -m 0755 target/release/ratatoskr-telegram-webhook /usr/local/bin/
-$ sudo install -o root -g root -m 0755 target/release/ratatoskr-telegram-dispatcher /usr/local/bin/
+$ sudo install -o root -g root -m 0755 out/ratatoskr-telegram-webhook /usr/local/bin/
+$ sudo install -o root -g root -m 0755 out/ratatoskr-telegram-dispatcher /usr/local/bin/
 $ sudo install -o root -g root -m 0644 deploy/systemd/*.service /etc/systemd/system/
 $ sudo install -o root -g root -m 0644 deploy/logrotate/ratatoskr-telegram /etc/logrotate.d/
 $ sudo install -o root -g ratatoskr-telegram-webhook -m 0640 deploy/systemd/webhook.conf.example /etc/ratatoskr/telegram-webhook.conf

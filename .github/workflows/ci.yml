@@ -161,3 +161,63 @@ jobs:
         with:
           tool: cargo-deny
       - run: cargo deny check
+
+  # The artifact the deployment runs, built for the architecture it runs on, and started once.
+  #
+  # The gate above certifies an x86-64 build. The target is `aarch64` with glibc 2.36
+  # (`ratatoskr-workspace/docs/DEPLOYMENT_TARGET.md`), so this job builds the Dockerfile natively on
+  # an arm64 runner and answers the one question the suite cannot: do the things we ship start on
+  # the thing we ship them to. `deploy/tests/artifact_smoke.sh` runs each role's `check-config`,
+  # starts it against PostgreSQL, the shipped NATS identity and a loopback Bot API stand-in, waits for
+  # readiness, sends SIGTERM and requires exit 0. A native runner, not QEMU: this repository is public,
+  # so GitHub's arm64 runners cost nothing.
+  artifact:
+    name: linux/arm64 artifact
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 45
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Build the image
+        run: |
+          docker build \
+            --build-arg RATATOSKR_GIT_SHA="$GITHUB_SHA" \
+            --tag ratatoskr-telegram:ci .
+
+      # The deployable set, exactly. `export` is the stage `ratatoskr-workspace`'s
+      # reusable-release-artifact workflow publishes; its check refuses a binary no unit starts as
+      # firmly as a missing one.
+      - name: The export stage holds exactly the two roles, for aarch64
+        run: |
+          set -euo pipefail
+          docker buildx build \
+            --target export \
+            --build-arg RATATOSKR_GIT_SHA="$GITHUB_SHA" \
+            --output "type=local,dest=$RUNNER_TEMP/export" .
+          actual=$(python3 -c 'import os, sys; print(" ".join(sorted(os.listdir(sys.argv[1]))))' "$RUNNER_TEMP/export")
+          expected="ratatoskr-telegram-dispatcher ratatoskr-telegram-webhook"
+          if [ "$actual" != "$expected" ]; then
+            echo "::error::the export stage holds '$actual', expected '$expected'"
+            exit 1
+          fi
+          file "$RUNNER_TEMP"/export/* | tee /dev/stderr | grep -c 'ARM aarch64' | grep -qx 2
+
+      - name: The artifact serves and stops cleanly
+        run: deploy/tests/artifact_smoke.sh ratatoskr-telegram:ci
+
+  # The artifact of this commit, published only after the gate and the arm64 smoke test have passed
+  # on it: `ghcr.io/po4yka/ratatoskr-telegram:sha-<commit>` with SHA256SUMS, an SPDX SBOM and a
+  # build-provenance attestation. The steps live once, in ratatoskr-workspace (openspec
+  # `release-artifacts`). A tag that already exists is never moved.
+  release-artifact:
+    needs: [gate, artifact]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    permissions:
+      contents: read
+      packages: write      # push to ghcr.io
+      id-token: write      # the OIDC token the attestation is signed with
+      attestations: write  # record the attestation against this repository
+    uses: po4yka/ratatoskr-workspace/.github/workflows/reusable-release-artifact.yml@b4c4b87e3f4cc527eb646c2a3786ea77cbdeb731 # main

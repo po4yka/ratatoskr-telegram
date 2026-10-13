@@ -1,0 +1,10 @@
+# The build context is the source tree and nothing else: a local `target/` is gigabytes, and the
+# rest is history, CI and agent configuration that no build step reads.
+target/
+.git/
+.github/
+.omc/
+.agents/
+.claude/
+.opencode/
+openspec/
