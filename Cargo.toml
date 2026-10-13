@@ -33,10 +33,10 @@ ratatoskr-telegram-blob-store  = { version = "0.1.0", path = "crates/blob-store"
 # The published BlobRef wire types (`ratatoskr-identifiers`). Pinned by revision exactly like the
 # extractor pins the same crate, so every fleet member speaks one contract version; `deny.toml`'s
 # `required-git-spec = "rev"` enforces this form.
-ratatoskr-identifiers = { git = "https://github.com/po4yka/ratatoskr-contracts.git", rev = "d98967b7b7ee80442c93ef4657140068955c8f61" }
-ratatoskr-github-contracts = { git = "https://github.com/po4yka/ratatoskr-contracts.git", rev = "d98967b7b7ee80442c93ef4657140068955c8f61" }
-ratatoskr-event-envelope = { git = "https://github.com/po4yka/ratatoskr-contracts.git", rev = "d98967b7b7ee80442c93ef4657140068955c8f61" }
-ratatoskr-notification-contracts = { git = "https://github.com/po4yka/ratatoskr-contracts.git", rev = "d98967b7b7ee80442c93ef4657140068955c8f61" }
+ratatoskr-identifiers = { git = "https://github.com/po4yka/ratatoskr-contracts.git", rev = "a9289e27bcf53f496b5917889580965d97ff2358" }
+ratatoskr-github-contracts = { git = "https://github.com/po4yka/ratatoskr-contracts.git", rev = "a9289e27bcf53f496b5917889580965d97ff2358" }
+ratatoskr-event-envelope = { git = "https://github.com/po4yka/ratatoskr-contracts.git", rev = "a9289e27bcf53f496b5917889580965d97ff2358" }
+ratatoskr-notification-contracts = { git = "https://github.com/po4yka/ratatoskr-contracts.git", rev = "a9289e27bcf53f496b5917889580965d97ff2358" }
 
 # ---- Telegram Bot API ----
 # The sanctioned client for every Telegram API call this service makes (plan item 2 onward:
