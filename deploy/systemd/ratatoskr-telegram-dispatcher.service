@@ -6,6 +6,8 @@ After=ratatoskr-telegram-webhook.service
 Wants=network-online.target docker.service ratatoskr-telegram-webhook.service
 Requires=ratatoskr-telegram-webhook.service
 StartLimitIntervalSec=0
+# Stopped and restarted with the rest of the deployment; see ratatoskr.target in ratatoskr-platform.
+PartOf=ratatoskr.target
 
 [Service]
 Type=exec
@@ -54,4 +56,4 @@ AmbientCapabilities=
 UMask=0077
 
 [Install]
-WantedBy=multi-user.target
+WantedBy=ratatoskr.target

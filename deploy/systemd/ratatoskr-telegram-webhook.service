@@ -4,6 +4,8 @@ Documentation=https://github.com/po4yka/ratatoskr-telegram/blob/main/deploy/READ
 After=network-online.target docker.service
 Wants=network-online.target docker.service
 StartLimitIntervalSec=0
+# Stopped and restarted with the rest of the deployment; see ratatoskr.target in ratatoskr-platform.
+PartOf=ratatoskr.target
 
 [Service]
 Type=exec
@@ -52,4 +54,4 @@ AmbientCapabilities=
 UMask=0027
 
 [Install]
-WantedBy=multi-user.target
+WantedBy=ratatoskr.target

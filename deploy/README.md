@@ -56,6 +56,10 @@ $ sudo -u ratatoskr-telegram-dispatcher /usr/local/bin/ratatoskr-telegram-dispat
 $ sudo -u ratatoskr-telegram-dispatcher /usr/local/bin/ratatoskr-telegram-dispatcher check-schema
 ```
 
+Both units are `WantedBy=` and `PartOf=ratatoskr.target`, which `ratatoskr-platform` installs and
+enables (its `deploy/README.md`). Without that target they start now but not at boot, and
+`sudo systemctl stop ratatoskr.target` stops them with the rest of the deployment.
+
 Starting services and changing firewall/ingress are separate approved writes. When authorized:
 
 ```console
