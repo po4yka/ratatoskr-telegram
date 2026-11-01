@@ -76,7 +76,7 @@ jobs:
       - name: Show the pinned toolchain
         run: rustup show           # rust-toolchain.toml is the only supported toolchain
 
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
 
       - name: Start disposable JetStream for notification-consumer tests
         run: docker run --detach --rm --name telegram-ci-nats --publish 4222:4222 nats@sha256:d4ac35882ac65aff236cd65b9d3fa4d24332c681e1a85f94eedccd3cdd65b1da --jetstream --store_dir=/data
@@ -157,7 +157,7 @@ jobs:
       # Reads RustSec, the licence set, duplicate versions and the source policy. Nothing else in
       # the gate looks at any of them. The sibling services found real advisories this way that
       # neither clippy nor test can see.
-      - uses: taiki-e/install-action@ab6895351a88b908e96a4697860d4ffea5e57dbe # v2.87.27
+      - uses: taiki-e/install-action@1e29709c0ec63babbe8f266397a465f29a825f91 # v2.87.31
         with:
           tool: cargo-deny
       - run: cargo deny check
